@@ -16,6 +16,15 @@
   --color-fog-soft: #eef4f7;
   --shadow-soft: 0 24px 70px rgba(63, 58, 61, 0.1);
   --shadow-tight: 0 14px 30px rgba(63, 58, 61, 0.08);
+  --paper: var(--color-surface-strong);
+  --paper-soft: var(--color-surface);
+  --ink: var(--color-text);
+  --muted: var(--color-muted);
+  --line: var(--color-line);
+  --green: #587080;
+  --red: var(--color-rose);
+  --gold: var(--color-rose-mid);
+  --blue: #587080;
 }
 
 * {

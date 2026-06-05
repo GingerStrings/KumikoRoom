@@ -16,12 +16,30 @@ describe("approved Palette C tokens", () => {
     expect(css).toContain("--color-fog-soft: #eef4f7");
   });
 
-  it("removes the old green and brass room palette tokens", () => {
+  it("keeps legacy room variable aliases mapped to Palette C values", () => {
     const css = fs.readFileSync(cssPath, "utf8");
 
-    expect(css).not.toContain("--ink:");
+    expect(css).toContain("--paper: var(--color-surface-strong);");
+    expect(css).toContain("--paper-soft: var(--color-surface);");
+    expect(css).toContain("--ink: var(--color-text);");
+    expect(css).toContain("--muted: var(--color-muted);");
+    expect(css).toContain("--line: var(--color-line);");
+    expect(css).toContain("--green: #587080;");
+    expect(css).toContain("--red: var(--color-rose);");
+    expect(css).toContain("--gold: var(--color-rose-mid);");
+    expect(css).toContain("--blue: #587080;");
+  });
+
+  it("removes the old green and brass room palette values", () => {
+    const css = fs.readFileSync(cssPath, "utf8");
+
     expect(css).not.toContain("--brass:");
     expect(css).not.toContain("#385b68");
     expect(css).not.toContain("#e6ddcf");
+    expect(css).not.toContain("#315c54");
+    expect(css).not.toContain("#8d3f3f");
+    expect(css).not.toContain("#b8894a");
+    expect(css).not.toContain("#405a72");
+    expect(css).not.toContain("#252b2b");
   });
 });
