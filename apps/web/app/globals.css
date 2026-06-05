@@ -305,6 +305,69 @@ h2 {
   margin-top: 4px;
 }
 
+.studio-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 18px;
+  padding: 18px;
+}
+
+.studio-header,
+.studio-module {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--paper) 92%, transparent);
+}
+
+.studio-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px;
+}
+
+.studio-header h1 {
+  margin-bottom: 0;
+}
+
+.studio-back-link {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 14px;
+  border: 1px solid var(--green);
+  border-radius: 8px;
+  color: var(--green);
+  font-weight: 700;
+}
+
+.studio-back-link:hover {
+  background: color-mix(in srgb, var(--green) 10%, transparent);
+}
+
+.studio-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.studio-module {
+  min-height: 220px;
+  padding: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 253, 248, 0.95), rgba(248, 245, 238, 0.95)),
+    repeating-linear-gradient(0deg, rgba(64, 90, 114, 0.08) 0 1px, transparent 1px 20px);
+}
+
+.studio-module p {
+  color: var(--muted);
+  line-height: 1.7;
+  text-wrap: pretty;
+}
+
 @media (max-width: 1080px) {
   .room-shell {
     grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
@@ -352,5 +415,20 @@ h2 {
 
   .transport {
     flex-wrap: wrap;
+  }
+
+  .studio-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .studio-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (min-width: 761px) and (max-width: 1120px) {
+  .studio-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
