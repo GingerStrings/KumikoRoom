@@ -4,6 +4,7 @@ dist/
 __pycache__/
 .pytest_cache/
 .venv/
+.runtime/
 *.egg-info/
 *.sqlite3
 user-data/
