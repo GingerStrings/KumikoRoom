@@ -1,0 +1,11 @@
+node_modules/
+.next/
+dist/
+__pycache__/
+.pytest_cache/
+.venv/
+*.sqlite3
+user-data/
+.env
+.env.local
+.pytest-tmp/
