@@ -244,6 +244,12 @@ h2 {
   line-height: 1.6;
 }
 
+.composer-error {
+  margin-bottom: 0;
+  color: var(--red);
+  font-size: 14px;
+}
+
 .composer-actions {
   justify-content: flex-end;
   flex-wrap: wrap;

@@ -1,5 +1,7 @@
 "use client";
 
+import { FormEvent, useState } from "react";
+import { postChat } from "../api/client";
 import type { ChatMessage, RoomState } from "../api/types";
 import { getIdleLine } from "../lib/roomState";
 
@@ -8,13 +10,45 @@ interface RoomShellProps {
 }
 
 export function RoomShell({ initialState }: RoomShellProps) {
-  const messages: ChatMessage[] = [
+  const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: "idle-line",
       role: "kumiko",
       content: getIdleLine(initialState)
     }
-  ];
+  ]);
+  const [draft, setDraft] = useState("");
+  const [currentExpression, setCurrentExpression] = useState(initialState.character.expression);
+  const [isSending, setIsSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const message = draft.trim();
+    if (!message || isSending) return;
+
+    setDraft("");
+    setSendError(null);
+    setIsSending(true);
+    setMessages((current) => [
+      ...current,
+      {
+        id: `user-${Date.now()}`,
+        role: "user",
+        content: message
+      }
+    ]);
+
+    try {
+      const response = await postChat({ message, roomState: initialState });
+      setCurrentExpression(response.expression);
+      setMessages((current) => [...current, response.reply]);
+    } catch {
+      setSendError("消息发送失败");
+    } finally {
+      setIsSending(false);
+    }
+  }
 
   return (
     <main className="room-shell">
@@ -33,7 +67,7 @@ export function RoomShell({ initialState }: RoomShellProps) {
         </div>
         <div className="presence-meta">
           <span>表情</span>
-          <strong>{expressionLabel[initialState.character.expression]}</strong>
+          <strong>{expressionLabel[currentExpression]}</strong>
         </div>
       </section>
 
@@ -57,14 +91,21 @@ export function RoomShell({ initialState }: RoomShellProps) {
           ))}
         </div>
 
-        <form className="chat-composer">
+        <form className="chat-composer" onSubmit={handleSubmit}>
           <label htmlFor="room-message">给久美子发消息</label>
           <textarea
             id="room-message"
             aria-label="给久美子发消息"
             placeholder="今天想听什么，或者想聊哪首歌？"
             rows={3}
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
           />
+          {sendError ? (
+            <p className="composer-error" role="alert">
+              {sendError}
+            </p>
+          ) : null}
           <div className="composer-actions" aria-label="消息操作">
             <button type="button" disabled>
               存到日记
@@ -72,8 +113,8 @@ export function RoomShell({ initialState }: RoomShellProps) {
             <button type="button" disabled>
               存为灵感
             </button>
-            <button type="submit" disabled>
-              发送
+            <button type="submit" disabled={isSending || draft.trim().length === 0}>
+              {isSending ? "发送中" : "发送"}
             </button>
           </div>
         </form>
