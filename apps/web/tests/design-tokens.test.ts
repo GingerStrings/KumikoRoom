@@ -30,6 +30,21 @@ describe("approved Palette C tokens", () => {
     expect(css).toContain("--blue: #587080;");
   });
 
+  it("covers all dynamic connection tone selectors", () => {
+    const css = fs.readFileSync(cssPath, "utf8");
+
+    [
+      "connection-chip--muted",
+      "connection-chip--ready",
+      "connection-chip--warning",
+      "connection-pill--muted",
+      "connection-pill--ready",
+      "connection-pill--warning",
+    ].forEach((selector) => {
+      expect(css).toContain(`.${selector}`);
+    });
+  });
+
   it("removes the old green and brass room palette values", () => {
     const css = fs.readFileSync(cssPath, "utf8");
 

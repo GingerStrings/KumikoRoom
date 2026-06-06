@@ -172,6 +172,7 @@ p {
   white-space: nowrap;
 }
 
+.connection-chip--muted,
 .connection-chip--ready {
   border-color: rgba(167, 184, 200, 0.4);
   background: var(--color-fog-soft);
@@ -246,6 +247,31 @@ p {
 .connection-pill p {
   margin-bottom: 0;
   color: var(--color-muted);
+}
+
+.connection-pill--muted,
+.connection-pill--ready {
+  border-color: rgba(167, 184, 200, 0.4);
+  background: var(--color-fog-soft);
+  color: #587080;
+}
+
+.connection-pill--muted span,
+.connection-pill--muted p,
+.connection-pill--ready span,
+.connection-pill--ready p {
+  color: #587080;
+}
+
+.connection-pill--warning {
+  border-color: rgba(201, 127, 142, 0.3);
+  background: #fff4e9;
+  color: #9a5d45;
+}
+
+.connection-pill--warning span,
+.connection-pill--warning p {
+  color: #9a5d45;
 }
 
 .route-grid {
