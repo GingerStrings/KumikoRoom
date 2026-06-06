@@ -45,7 +45,7 @@ describe("RoomShell", () => {
   it("sends a message through the room API", async () => {
     apiMocks.postChat.mockResolvedValue({
       reply: { id: "api-reply", role: "kumiko", content: "嗯，我在听。" },
-      expression: "listening",
+      expression: "thinking",
       suggestedActions: ["save_diary"]
     });
 
@@ -57,6 +57,7 @@ describe("RoomShell", () => {
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
 
     expect(await screen.findByText("嗯，我在听。")).toBeTruthy();
+    expect(screen.getByText("思考")).toBeTruthy();
     expect(apiMocks.postChat).toHaveBeenCalledWith({
       message: "晚上好",
       roomState: DEFAULT_ROOM_STATE

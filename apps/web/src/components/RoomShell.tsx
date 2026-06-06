@@ -79,7 +79,11 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
             <p className="eyebrow">KumikoRoom</p>
             <h1>对话工作区</h1>
           </div>
-          <span className={`connection-chip connection-chip--${connectionStatus.tone}`} aria-label={connectionStatus.label}>
+          <span
+            className={`connection-chip connection-chip--${connectionStatus.tone}`}
+            role="status"
+            aria-label={connectionStatus.label}
+          >
             连接状态
           </span>
         </header>
