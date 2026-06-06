@@ -1,5 +1,6 @@
-import { redirect } from "next/navigation";
+import { HomeNavigation } from "../src/components/HomeNavigation";
+import { getConnectionStatus } from "../src/lib/connectionStatus";
 
 export default function HomePage() {
-  redirect("/room");
+  return <HomeNavigation connectionStatus={getConnectionStatus()} />;
 }
