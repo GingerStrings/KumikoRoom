@@ -3,13 +3,15 @@
 import { FormEvent, useState } from "react";
 import { postChat } from "../api/client";
 import type { ChatMessage, RoomState } from "../api/types";
+import type { ConnectionStatus } from "../lib/connectionStatus";
 import { getIdleLine } from "../lib/roomState";
 
 interface RoomShellProps {
   initialState: RoomState;
+  connectionStatus: ConnectionStatus;
 }
 
-export function RoomShell({ initialState }: RoomShellProps) {
+export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: "idle-line",
@@ -21,6 +23,25 @@ export function RoomShell({ initialState }: RoomShellProps) {
   const [currentExpression, setCurrentExpression] = useState(initialState.character.expression);
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+
+  const summaryItems = [
+    {
+      label: "今日心情",
+      value: initialState.music.listeningMood ?? "还没记录"
+    },
+    {
+      label: "听歌日记",
+      value: initialState.diarySummary
+    },
+    {
+      label: "灵感便签",
+      value: `${initialState.inspirationCount} 条灵感`
+    },
+    {
+      label: "创作工程",
+      value: `${initialState.studio.unfinishedCount} 个待整理`
+    }
+  ];
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -44,43 +65,24 @@ export function RoomShell({ initialState }: RoomShellProps) {
       setCurrentExpression(response.expression);
       setMessages((current) => [...current, response.reply]);
     } catch {
-      setSendError("消息发送失败");
+      setSendError("消息发送失败，请确认本地 API 是否在运行。");
     } finally {
       setIsSending(false);
     }
   }
 
   return (
-    <main className="room-shell">
-      <section className="room-presence" aria-label="久美子状态">
-        <p className="room-kicker">{initialState.roomName}</p>
-        <h1>KumikoRoom</h1>
-        <div className="portrait-panel" aria-label="久美子立绘占位">
-          <div className="portrait-mark" aria-hidden="true">
-            K
-          </div>
+    <main className="room-workspace">
+      <section className="workspace-card dialogue-card" aria-label="对话工作区">
+        <header className="panel-heading">
           <div>
-            <strong>{initialState.character.displayName}</strong>
-            <span>{initialState.character.romanizedName}</span>
+            <p className="eyebrow">KumikoRoom</p>
+            <h1>对话工作区</h1>
           </div>
-          <p>{initialState.character.statusText}</p>
-        </div>
-        <div className="presence-meta">
-          <span>表情</span>
-          <strong>{expressionLabel[currentExpression]}</strong>
-        </div>
-      </section>
-
-      <section className="chat-panel" aria-label="聊天区域">
-        <div className="chat-panel__header">
-          <div>
-            <p className="room-kicker">conversation</p>
-            <h2>今天的声音</h2>
-          </div>
-          <button className="ghost-button" type="button" disabled>
-            TTS
-          </button>
-        </div>
+          <span className={`connection-chip connection-chip--${connectionStatus.tone}`} aria-label={connectionStatus.label}>
+            连接状态
+          </span>
+        </header>
 
         <div className="chat-timeline" aria-label="聊天时间线">
           {messages.map((message) => (
@@ -92,11 +94,13 @@ export function RoomShell({ initialState }: RoomShellProps) {
         </div>
 
         <form className="chat-composer" onSubmit={handleSubmit}>
-          <label htmlFor="room-message">给久美子发消息</label>
+          <label className="sr-only" htmlFor="workspace-message">
+            写一条消息
+          </label>
           <textarea
-            id="room-message"
-            aria-label="给久美子发消息"
-            placeholder="今天想听什么，或者想聊哪首歌？"
+            id="workspace-message"
+            aria-label="写一条消息"
+            placeholder="今天想聊哪首歌，或者记录一个灵感？"
             rows={3}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
@@ -107,12 +111,6 @@ export function RoomShell({ initialState }: RoomShellProps) {
             </p>
           ) : null}
           <div className="composer-actions" aria-label="消息操作">
-            <button type="button" disabled>
-              存到日记
-            </button>
-            <button type="button" disabled>
-              存为灵感
-            </button>
             <button type="submit" disabled={isSending || draft.trim().length === 0}>
               {isSending ? "发送中" : "发送"}
             </button>
@@ -120,45 +118,46 @@ export function RoomShell({ initialState }: RoomShellProps) {
         </form>
       </section>
 
-      <aside className="room-sidebar" aria-label="房间侧栏">
-        <section>
-          <h2>今日心情</h2>
-          <p>{initialState.music.listeningMood ?? "还没记录"}</p>
+      <aside className="workspace-side">
+        <section className="workspace-card summary-card" aria-label="今日摘要">
+          <div className="panel-heading">
+            <div>
+              <p className="eyebrow">Today</p>
+              <h2>今日摘要</h2>
+            </div>
+            <span className="soft-badge">{expressionLabel[currentExpression]}</span>
+          </div>
+          <div className="summary-list">
+            {summaryItems.map((item) => (
+              <div className="summary-row" key={item.label}>
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+              </div>
+            ))}
+          </div>
+          <a className="text-link" href={initialState.studio.route} aria-label="打开创作资料">
+            打开创作资料
+          </a>
         </section>
-        <section>
-          <h2>听歌日记</h2>
-          <p>{initialState.diarySummary}</p>
-        </section>
-        <section>
-          <h2>灵感便签</h2>
-          <p>{initialState.inspirationCount} 条灵感</p>
-        </section>
-        <section>
-          <h2>未完成工程</h2>
-          <p>{initialState.studio.unfinishedCount} 个工程</p>
-        </section>
-        <a className="studio-link" href={initialState.studio.route} aria-label="打开创作资料室">
-          打开{initialState.studio.label}
-        </a>
-      </aside>
 
-      <section className="music-dock" aria-label="本地音乐播放器">
-        <div>
-          <span>当前曲目</span>
-          <strong>{initialState.music.currentTrackTitle ?? "未选择歌曲"}</strong>
-        </div>
-        <div className="transport" aria-label="播放控制">
-          <button type="button" disabled>
-            上一首
-          </button>
-          <button type="button" disabled>
-            播放
-          </button>
-          <button type="button" disabled>
-            下一首
-          </button>
-        </div>
-      </section>
+        <section className="workspace-card utility-card" aria-label="本地音乐状态">
+          <p className="eyebrow">Local</p>
+          <h2>本地音乐状态</h2>
+          <div className="utility-row">
+            <span>当前曲目</span>
+            <strong>{initialState.music.currentTrackTitle ?? "未选择歌曲"}</strong>
+          </div>
+          <div className="utility-row">
+            <span>播放器</span>
+            <strong>待接入</strong>
+          </div>
+          <div className="utility-row">
+            <span>模型连接</span>
+            <strong>{connectionStatus.label}</strong>
+          </div>
+          <p className="utility-note">{connectionStatus.detail}</p>
+        </section>
+      </aside>
     </main>
   );
 }
