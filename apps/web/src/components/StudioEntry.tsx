@@ -1,7 +1,7 @@
 const studioSections = [
   {
-    title: "工程架",
-    body: "这里会汇总本地音乐工程、主 FLP、状态和标签。"
+    title: "工程概览",
+    body: "后续会汇总本地音乐工程、主 FLP、状态和标签。"
   },
   {
     title: "工程档案",
@@ -20,19 +20,19 @@ const studioSections = [
 export function StudioEntry() {
   return (
     <main className="studio-shell">
-      <header className="studio-header">
+      <header className="studio-header workspace-card">
         <div>
-          <p className="room-kicker">KumikoRoom</p>
-          <h1>创作资料室</h1>
+          <p className="eyebrow">KumikoRoom</p>
+          <h1>创作资料</h1>
         </div>
-        <a className="studio-back-link" href="/room">
-          回到陪伴房间
+        <a className="text-link" href="/">
+          回到导航页
         </a>
       </header>
 
-      <section className="studio-grid" aria-label="创作资料室模块">
+      <section className="studio-grid" aria-label="创作资料模块">
         {studioSections.map((section) => (
-          <article className="studio-module" key={section.title}>
+          <article className="studio-module workspace-card" key={section.title}>
             <h2>{section.title}</h2>
             <p>{section.body}</p>
           </article>
