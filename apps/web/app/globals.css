@@ -155,8 +155,8 @@ h3 {
   border: 1px dashed color-mix(in srgb, var(--green) 45%, var(--line));
   border-radius: 8px;
   background:
-    linear-gradient(180deg, rgba(255, 253, 248, 0.9), rgba(238, 232, 218, 0.82)),
-    repeating-linear-gradient(90deg, rgba(49, 92, 84, 0.08) 0 1px, transparent 1px 18px);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(238, 244, 247, 0.82)),
+    repeating-linear-gradient(90deg, rgba(88, 112, 128, 0.08) 0 1px, transparent 1px 18px);
   text-align: center;
 }
 
@@ -399,8 +399,8 @@ h3 {
   min-height: 220px;
   padding: 18px;
   background:
-    linear-gradient(180deg, rgba(255, 253, 248, 0.95), rgba(248, 245, 238, 0.95)),
-    repeating-linear-gradient(0deg, rgba(64, 90, 114, 0.08) 0 1px, transparent 1px 20px);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(238, 244, 247, 0.95)),
+    repeating-linear-gradient(0deg, rgba(167, 184, 200, 0.12) 0 1px, transparent 1px 20px);
 }
 
 .studio-module p {

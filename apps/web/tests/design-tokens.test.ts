@@ -41,5 +41,10 @@ describe("approved Palette C tokens", () => {
     expect(css).not.toContain("#b8894a");
     expect(css).not.toContain("#405a72");
     expect(css).not.toContain("#252b2b");
+    expect(css).not.toContain("49, 92, 84");
+    expect(css).not.toContain("64, 90, 114");
+    expect(css).not.toContain("255, 253, 248");
+    expect(css).not.toContain("248, 245, 238");
+    expect(css).not.toContain("238, 232, 218");
   });
 });
