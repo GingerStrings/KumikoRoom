@@ -58,8 +58,11 @@ class ProviderStatusOut(BaseModel):
 
 
 class MemoryEventOut(BaseModel):
+    id: str
     category: MemoryCategory
-    content: str
+    text: str
+    confidence: float
+    created_at: str
 
 
 class ChatOut(BaseModel):

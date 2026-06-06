@@ -35,7 +35,7 @@ def load_settings() -> ApiSettings:
         llm_provider=llm_provider,
         deepseek_api_key=deepseek_api_key,
         deepseek_model=_env_value("DEEPSEEK_MODEL") or DEFAULT_DEEPSEEK_MODEL,
-        deepseek_base_url=_env_value("DEEPSEEK_BASE_URL") or DEFAULT_DEEPSEEK_BASE_URL,
+        deepseek_base_url=_deepseek_base_url(),
         memory_db_path=Path(
             _env_value("KUMIKOROOM_MEMORY_DB_PATH") or DEFAULT_MEMORY_DB_PATH
         ),
@@ -49,6 +49,10 @@ def _env_value(name: str) -> str | None:
 
     stripped = value.strip()
     return stripped or None
+
+
+def _deepseek_base_url() -> str:
+    return (_env_value("DEEPSEEK_BASE_URL") or DEFAULT_DEEPSEEK_BASE_URL).rstrip("/")
 
 
 def _resolve_llm_provider(

@@ -1,5 +1,7 @@
 from fastapi.testclient import TestClient
 
+from kumikoroom.schemas import MemoryEventOut
+
 
 def test_room_state_uses_kumikoroom_identity(client: TestClient):
     response = client.get("/api/room/state")
@@ -36,3 +38,21 @@ def test_mock_chat_returns_kumiko_reply(client: TestClient):
         "label": "\u672c\u5730 Mock API",
     }
     assert body["memory_events"] == []
+
+
+def test_memory_event_schema_uses_conversation_manager_fields() -> None:
+    event = MemoryEventOut(
+        id="memory-1",
+        category="preference",
+        text="prefers quiet songs",
+        confidence=0.85,
+        created_at="2026-06-06T23:00:00Z",
+    )
+
+    assert event.model_dump() == {
+        "id": "memory-1",
+        "category": "preference",
+        "text": "prefers quiet songs",
+        "confidence": 0.85,
+        "created_at": "2026-06-06T23:00:00Z",
+    }
