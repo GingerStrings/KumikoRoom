@@ -1,6 +1,12 @@
 from fastapi import APIRouter
 
-from kumikoroom.schemas import ChatIn, ChatMessageOut, ChatOut, RoomStateOut
+from kumikoroom.schemas import (
+    ChatIn,
+    ChatMessageOut,
+    ChatOut,
+    ProviderStatusOut,
+    RoomStateOut,
+)
 
 router = APIRouter(prefix="/api/room", tags=["room"])
 
@@ -47,4 +53,11 @@ def post_chat(payload: ChatIn) -> ChatOut:
         ),
         expression="listening",
         suggested_actions=["save_diary", "save_inspiration"],
+        provider_status=ProviderStatusOut(
+            provider="mock",
+            model=None,
+            configured=True,
+            label="本地 Mock API",
+        ),
+        memory_events=[],
     )

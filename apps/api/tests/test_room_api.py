@@ -14,7 +14,14 @@ def test_room_state_uses_kumikoroom_identity(client: TestClient):
 
 
 def test_mock_chat_returns_kumiko_reply(client: TestClient):
-    response = client.post("/api/room/chat", json={"message": "想听安静的歌"})
+    response = client.post(
+        "/api/room/chat",
+        json={
+            "message": "想听安静的歌",
+            "persona_strength": "medium",
+            "memory_enabled": True,
+        },
+    )
 
     assert response.status_code == 200
     body = response.json()
@@ -22,3 +29,10 @@ def test_mock_chat_returns_kumiko_reply(client: TestClient):
     assert "想听安静的歌" in body["reply"]["content"]
     assert body["expression"] == "listening"
     assert body["suggested_actions"] == ["save_diary", "save_inspiration"]
+    assert body["provider_status"] == {
+        "provider": "mock",
+        "model": None,
+        "configured": True,
+        "label": "\u672c\u5730 Mock API",
+    }
+    assert body["memory_events"] == []
