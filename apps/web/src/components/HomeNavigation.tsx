@@ -41,7 +41,7 @@ export function HomeNavigation({ connectionStatus }: HomeNavigationProps) {
       <section className="home-panel home-panel--intro">
         <p className="eyebrow">KumikoRoom</p>
         <h1>KumikoRoom</h1>
-        <p className="home-lede">暖白、玫瑰灰与雾蓝。先从一个清爽入口开始，把对话、音乐记录和创作资料放在同一张地图上。</p>
+        <p className="home-lede">把对话、音乐日记和创作资料放在一个安静入口里，今天的想法可以先从这里开始。</p>
 
         <div className={`connection-pill connection-pill--${connectionStatus.tone}`}>
           <span>{connectionStatus.label}</span>
@@ -55,7 +55,7 @@ export function HomeNavigation({ connectionStatus }: HomeNavigationProps) {
             <p className="eyebrow">Start</p>
             <h2 id="home-routes-heading">今天从哪里开始？</h2>
           </div>
-          <span className="soft-badge">导航页样本</span>
+          <span className="soft-badge">今日入口</span>
         </div>
 
         <div className="route-grid">

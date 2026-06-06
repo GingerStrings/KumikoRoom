@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata = {
   title: "KumikoRoom",
-  description: "A local-first music companion room."
+  description: "A local-first music and creative workspace."
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

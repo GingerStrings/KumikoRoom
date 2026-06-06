@@ -58,4 +58,3 @@ Browser acceptance confirmed:
 - `/room` returns `200`, shows `对话工作区`, shows summary and local music panels, shows `本地 Mock API`, and has no horizontal overflow.
 - The previous character placeholder and repeated `陪伴房间` wording are absent from the checked screens.
 - Chat send flow reaches the mock API and receives a reply in the acceptance run.
-
