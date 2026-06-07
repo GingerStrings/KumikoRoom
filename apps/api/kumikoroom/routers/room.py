@@ -1,10 +1,14 @@
-from fastapi import APIRouter
+from dataclasses import asdict
 
+from fastapi import APIRouter, Response, status
+
+from kumikoroom.config import load_settings
+from kumikoroom.conversation import ConversationManager
+from kumikoroom.memory import MemoryStore
 from kumikoroom.schemas import (
     ChatIn,
-    ChatMessageOut,
     ChatOut,
-    ProviderStatusOut,
+    MemoryEventOut,
     RoomStateOut,
 )
 
@@ -43,21 +47,33 @@ def get_room_state() -> RoomStateOut:
 
 @router.post("/chat", response_model=ChatOut)
 def post_chat(payload: ChatIn) -> ChatOut:
-    message = payload.message.strip()
-    quoted = message if message else "今天的音乐"
-    return ChatOut(
-        reply=ChatMessageOut(
-            id="mock-kumiko-reply",
-            role="kumiko",
-            content=f"嗯，我听到了。你说的是「{quoted}」。先把这句话记下来也不错。",
-        ),
-        expression="listening",
-        suggested_actions=["save_diary", "save_inspiration"],
-        provider_status=ProviderStatusOut(
-            provider="mock",
-            model=None,
-            configured=True,
-            label="本地 Mock API",
-        ),
-        memory_events=[],
-    )
+    return ConversationManager(settings=load_settings()).chat(payload)
+
+
+def memory_store() -> MemoryStore:
+    return MemoryStore(load_settings().memory_db_path)
+
+
+@router.get("/memory", response_model=list[MemoryEventOut])
+def list_memory() -> list[MemoryEventOut]:
+    return [
+        _memory_event_out(memory) for memory in memory_store().list_recent(limit=50)
+    ]
+
+
+@router.delete("/memory/{memory_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_memory(memory_id: str) -> Response:
+    memory_store().delete(memory_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete("/memory", status_code=status.HTTP_204_NO_CONTENT)
+def clear_memory() -> Response:
+    memory_store().clear()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+def _memory_event_out(memory) -> MemoryEventOut:
+    data = asdict(memory)
+    data.pop("source", None)
+    return MemoryEventOut(**data)
