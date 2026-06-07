@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -11,6 +12,23 @@ from kumikoroom.llm import (
     build_provider,
     unconfigured_deepseek_status,
 )
+
+
+def _deepseek_provider(
+    tmp_path: Path,
+    transport: httpx.BaseTransport | None = None,
+    api_key: str | None = "test-key",
+) -> DeepSeekLLMProvider:
+    return DeepSeekLLMProvider(
+        settings=ApiSettings(
+            llm_provider="deepseek",
+            deepseek_api_key=api_key,
+            deepseek_model="deepseek-v4-flash",
+            deepseek_base_url="https://api.deepseek.com",
+            memory_db_path=tmp_path / "memory.sqlite3",
+        ),
+        transport=transport,
+    )
 
 
 def test_mock_provider_mentions_user_message() -> None:
@@ -72,7 +90,7 @@ def test_deepseek_provider_posts_openai_compatible_payload(tmp_path) -> None:
     provider = DeepSeekLLMProvider(
         settings=ApiSettings(
             llm_provider="deepseek",
-            deepseek_api_key="test-key",
+            deepseek_api_key=" test-key ",
             deepseek_model="deepseek-v4-flash",
             deepseek_base_url="https://api.deepseek.com",
             memory_db_path=tmp_path / "memory.sqlite3",
@@ -127,6 +145,118 @@ def test_deepseek_provider_requires_key_before_network_call(tmp_path) -> None:
         provider.generate([{"role": "user", "content": "晚上好"}])
 
     assert call_count == 0
+
+
+def test_deepseek_provider_requires_nonblank_key_before_network_call(tmp_path) -> None:
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        raise AssertionError("DeepSeek transport should not be called without a key")
+
+    provider = _deepseek_provider(
+        tmp_path=tmp_path,
+        api_key="   ",
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(ProviderUnavailable, match="DEEPSEEK_API_KEY"):
+        provider.generate([{"role": "user", "content": "hello"}])
+
+    assert call_count == 0
+
+
+@pytest.mark.parametrize("status_code", [401, 500])
+def test_deepseek_provider_wraps_http_status_errors(
+    tmp_path, status_code: int
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code,
+            request=request,
+            json={"error": "upstream details should stay private"},
+        )
+
+    provider = _deepseek_provider(
+        tmp_path=tmp_path,
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(ProviderUnavailable, match="DeepSeek request failed") as exc_info:
+        provider.generate([{"role": "user", "content": "hello"}])
+
+    assert isinstance(exc_info.value.__cause__, httpx.HTTPStatusError)
+
+
+def test_deepseek_provider_wraps_request_failures(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection failed", request=request)
+
+    provider = _deepseek_provider(
+        tmp_path=tmp_path,
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(ProviderUnavailable, match="DeepSeek request failed") as exc_info:
+        provider.generate([{"role": "user", "content": "hello"}])
+
+    assert isinstance(exc_info.value.__cause__, httpx.HTTPError)
+
+
+def test_deepseek_provider_wraps_invalid_json_response(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, request=request, text="not json")
+
+    provider = _deepseek_provider(
+        tmp_path=tmp_path,
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(
+        ProviderUnavailable, match="DeepSeek response was malformed"
+    ) as exc_info:
+        provider.generate([{"role": "user", "content": "hello"}])
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+
+
+def test_deepseek_provider_wraps_empty_choices_response(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, request=request, json={"choices": []})
+
+    provider = _deepseek_provider(
+        tmp_path=tmp_path,
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(
+        ProviderUnavailable, match="DeepSeek response was malformed"
+    ) as exc_info:
+        provider.generate([{"role": "user", "content": "hello"}])
+
+    assert isinstance(exc_info.value.__cause__, IndexError)
+
+
+def test_deepseek_provider_wraps_missing_message_content(tmp_path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            json={"choices": [{"message": {}}]},
+        )
+
+    provider = _deepseek_provider(
+        tmp_path=tmp_path,
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(
+        ProviderUnavailable, match="DeepSeek response was malformed"
+    ) as exc_info:
+        provider.generate([{"role": "user", "content": "hello"}])
+
+    assert isinstance(exc_info.value.__cause__, KeyError)
 
 
 def test_build_provider_uses_deepseek_when_configured(tmp_path) -> None:

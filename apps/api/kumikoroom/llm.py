@@ -63,26 +63,41 @@ class DeepSeekLLMProvider:
         self.transport = transport
 
     def generate(self, messages: list[LLMMessage]) -> LLMResult:
-        if not self.settings.deepseek_api_key:
+        api_key = self.settings.deepseek_api_key
+        if not api_key or not api_key.strip():
             raise ProviderUnavailable("DEEPSEEK_API_KEY is not configured")
 
-        with httpx.Client(timeout=45.0, transport=self.transport) as client:
-            response = client.post(
-                f"{self.settings.deepseek_base_url.rstrip('/')}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.settings.deepseek_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": self.settings.deepseek_model,
-                    "messages": messages,
-                    "temperature": 0.8,
-                },
-            )
-            response.raise_for_status()
+        api_key = api_key.strip()
+        try:
+            with httpx.Client(timeout=45.0, transport=self.transport) as client:
+                response = client.post(
+                    f"{self.settings.deepseek_base_url.rstrip('/')}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": self.settings.deepseek_model,
+                        "messages": messages,
+                        "temperature": 0.8,
+                    },
+                )
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise ProviderUnavailable("DeepSeek request failed") from exc
+
+        try:
+            content = response.json()["choices"][0]["message"]["content"]
+            if not isinstance(content, str):
+                raise TypeError("DeepSeek message content must be a string")
+            content = content.strip()
+        except (ValueError, KeyError, IndexError, TypeError) as exc:
+            raise ProviderUnavailable(
+                "DeepSeek response was malformed"
+            ) from exc
 
         return LLMResult(
-            content=response.json()["choices"][0]["message"]["content"].strip(),
+            content=content,
             provider_status=ProviderStatus(
                 provider="deepseek",
                 model=self.settings.deepseek_model,
