@@ -1,0 +1,77 @@
+from kumikoroom.memory import MemoryStore, extract_memories
+
+
+def test_memory_store_saves_lists_deletes_and_clears(tmp_path):
+    store = MemoryStore(tmp_path / "memory.sqlite3")
+
+    saved = store.save(
+        category="preference",
+        text="用户喜欢安静的钢琴曲。",
+        confidence=0.82,
+        source="喜欢安静的钢琴",
+    )
+
+    assert saved.category == "preference"
+    assert saved.text == "用户喜欢安静的钢琴曲。"
+    assert saved.confidence == 0.82
+    assert len(store.list_recent(limit=10)) == 1
+
+    assert store.delete(saved.id) is True
+    assert store.list_recent(limit=10) == []
+
+    store.save(
+        category="diary",
+        text="用户今天听歌时心情平静。",
+        confidence=0.78,
+        source="今天听歌",
+    )
+    store.clear()
+    assert store.list_recent(limit=10) == []
+
+
+def test_extract_memories_captures_medium_sensitivity_items():
+    memories = extract_memories(
+        user_message="我喜欢安静的钢琴，也想把这个 demo 明天继续编曲。",
+        assistant_reply="嗯，我记一下。",
+    )
+
+    assert [memory.category for memory in memories] == ["preference", "creative_note"]
+    assert any("安静的钢琴" in memory.text for memory in memories)
+    assert any("demo" in memory.text for memory in memories)
+
+
+def test_extract_memories_filters_secrets_and_casual_text():
+    fake_secret = "sk-" + "abc12345678900000000"
+    assert extract_memories(f"我的 key 是 {fake_secret}", "别保存。") == []
+    assert extract_memories("我的key是abc123，我喜欢钢琴。", "别保存。") == []
+    assert extract_memories("哈哈，随便聊聊。", "嗯。") == []
+
+
+def test_memory_store_lists_newest_first_and_normalizes_saved_values(tmp_path):
+    store = MemoryStore(tmp_path / "memory.sqlite3")
+
+    first = store.save(
+        category="preference",
+        text="  用户喜欢钢琴。  ",
+        confidence=0.824,
+        source="  喜欢钢琴  ",
+    )
+    second = store.save(
+        category="creative_note",
+        text="用户想继续 demo 编曲。",
+        confidence=0.786,
+        source="demo 编曲",
+    )
+
+    records = store.list_recent(limit=10)
+
+    assert [record.id for record in records] == [second.id, first.id]
+    assert records[0].confidence == 0.79
+    assert records[1].text == "用户喜欢钢琴。"
+    assert records[1].source == "喜欢钢琴"
+
+
+def test_memory_store_delete_missing_returns_false(tmp_path):
+    store = MemoryStore(tmp_path / "memory.sqlite3")
+
+    assert store.delete("missing") is False
