@@ -35,12 +35,41 @@ _VALID_CATEGORIES: tuple[MemoryCategory, ...] = (
     "profile_fact",
 )
 _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"sk-[A-Za-z0-9]{16,}"),
+    re.compile(r"sk-(?:proj-)?[A-Za-z0-9_-]{16,}"),
+    re.compile(r"Bearer\s+[A-Za-z0-9._~+/=-]{16,}", re.IGNORECASE),
+    re.compile(r"ghp_[A-Za-z0-9_]{20,}"),
+    re.compile(r"AKIA[0-9A-Z]{16}"),
     re.compile(
-        r"(api[\s_]*key|apikey|密码|口令|token|密钥|(?<![A-Za-z0-9])key(?![A-Za-z0-9]))",
+        r"(?<![A-Za-z0-9_-])"
+        r"[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
+        r"(?![A-Za-z0-9_-])"
+    ),
+    re.compile(
+        r"(?<![A-Za-z0-9_])"
+        r"(password|secret|token|api[\s_-]*key|apikey)"
+        r"(?![A-Za-z0-9_])|密码|口令|密钥",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?<![A-Za-z0-9])key(?![A-Za-z0-9])"
+        r"\s*(?:[:=：]|是)\s*[A-Za-z0-9._~+/=-]{4,}",
         re.IGNORECASE,
     ),
 )
+_PREFERENCE_TRIGGERS = ("不喜欢", "喜欢", "偏好", "希望你", "更想要")
+_CREATIVE_TRIGGERS = ("demo", "Demo", "FLP", "工程", "歌词", "旋律", "编曲", "创作")
+_PROFILE_TRIGGERS = ("我叫", "我的项目", "我的工作流")
+_TRANSIENT_TERMS = (
+    "接口",
+    "按钮",
+    "没反应",
+    "报错",
+    "刚才",
+    "页面",
+    "请求",
+    "链接",
+)
+_QUESTION_TERMS = ("怎么", "如何", "为什么", "吗", "?", "？")
 _CLAUSE_SPLIT_RE = re.compile(r"[，。！？；,.!?;\n]+")
 _WHITESPACE_RE = re.compile(r"\s+")
 
@@ -176,6 +205,8 @@ def extract_memories(user_message: str, assistant_reply: str) -> list[NewMemory]
     source = _normalize_spaces(user_message)
     if not source or _contains_secret(source):
         return []
+    if _is_transient_message(source):
+        return []
 
     candidates: list[NewMemory] = []
 
@@ -230,8 +261,31 @@ def _contains_secret(text: str) -> bool:
     return any(pattern.search(text) for pattern in _SECRET_PATTERNS)
 
 
+def _is_transient_message(source: str) -> bool:
+    has_persistent_signal = _has_preference_creative_or_profile_signal(source)
+    if has_persistent_signal:
+        return False
+
+    if source.startswith("我是说"):
+        return True
+
+    has_question = source.endswith(("?", "？")) or any(
+        term in source for term in _QUESTION_TERMS
+    )
+    if has_question:
+        return True
+
+    return any(term in source for term in _TRANSIENT_TERMS)
+
+
+def _has_preference_creative_or_profile_signal(source: str) -> bool:
+    if _first_trigger(source, _PREFERENCE_TRIGGERS + _CREATIVE_TRIGGERS):
+        return True
+    return bool(_profile_clause(source))
+
+
 def _preference_text(source: str) -> str | None:
-    trigger = _first_trigger(source, ("不喜欢", "喜欢", "偏好", "希望你", "更想要"))
+    trigger = _first_trigger(source, _PREFERENCE_TRIGGERS)
     if not trigger:
         return None
 
@@ -257,10 +311,7 @@ def _diary_text(source: str) -> str | None:
 
 
 def _creative_note_text(source: str) -> str | None:
-    trigger = _first_trigger(
-        source,
-        ("demo", "Demo", "FLP", "工程", "歌词", "旋律", "编曲", "创作"),
-    )
+    trigger = _first_trigger(source, _CREATIVE_TRIGGERS)
     if not trigger:
         return None
 
@@ -272,15 +323,33 @@ def _creative_note_text(source: str) -> str | None:
 
 
 def _profile_fact_text(source: str) -> str | None:
-    trigger = _first_trigger(source, ("我叫", "我是", "我的项目", "我的工作流"))
-    if not trigger:
-        return None
-
-    clause = _clause_from_trigger(source, trigger)
+    clause = _profile_clause(source)
     if not clause:
         return None
 
     return _memory_sentence(f"用户资料：{clause}")
+
+
+def _profile_clause(source: str) -> str:
+    trigger_start: int | None = None
+    for trigger in _PROFILE_TRIGGERS:
+        start = source.find(trigger)
+        if start != -1 and (trigger_start is None or start < trigger_start):
+            trigger_start = start
+
+    start = source.find("我是")
+    while start != -1:
+        if not source.startswith("我是说", start) and (
+            trigger_start is None or start < trigger_start
+        ):
+            trigger_start = start
+            break
+        start = source.find("我是", start + len("我是"))
+
+    if trigger_start is None:
+        return ""
+
+    return _clause_from_start(source, trigger_start)
 
 
 def _first_trigger(source: str, triggers: tuple[str, ...]) -> str | None:
@@ -298,6 +367,10 @@ def _clause_from_trigger(source: str, trigger: str) -> str:
     start = source.find(trigger)
     if start == -1:
         return ""
+    return _clause_from_start(source, start)
+
+
+def _clause_from_start(source: str, start: int) -> str:
     tail = source[start:]
     return _normalize_clause(_CLAUSE_SPLIT_RE.split(tail, maxsplit=1)[0])
 

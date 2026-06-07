@@ -47,6 +47,31 @@ def test_extract_memories_filters_secrets_and_casual_text():
     assert extract_memories("哈哈，随便聊聊。", "嗯。") == []
 
 
+def test_extract_memories_filters_common_secret_shapes():
+    secret_messages = [
+        "我的 password 是 abc123，我喜欢钢琴。",
+        "Bearer abcdef1234567890abcdef1234567890，我喜欢钢琴。",
+        "ghp_abcdefghijklmnopqrstuvwxyz123456，我喜欢钢琴。",
+        "AKIAIOSFODNN7EXAMPLE，我喜欢钢琴。",
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjMifQ.signature，我喜欢钢琴。",
+        "sk-proj-abc12345678900000000，我喜欢钢琴。",
+    ]
+
+    for message in secret_messages:
+        assert extract_memories(message, "别保存。") == []
+
+
+def test_extract_memories_allows_musical_key_context():
+    memories = extract_memories("我喜欢这首歌的 key 定成 C major，之后继续编曲。", "嗯。")
+
+    assert [memory.category for memory in memories] == ["preference", "creative_note"]
+
+
+def test_extract_memories_skips_short_term_questions_and_clarifications():
+    assert extract_memories("今天这个接口怎么用？", "我解释一下。") == []
+    assert extract_memories("我是说刚才那个按钮没反应。", "明白。") == []
+
+
 def test_memory_store_lists_newest_first_and_normalizes_saved_values(tmp_path):
     store = MemoryStore(tmp_path / "memory.sqlite3")
 
