@@ -304,6 +304,10 @@ def _contains_credential_context_secret(text: str) -> bool:
         label = label.replace(" ", "")
         if match.group("operator") or label in {"apikey", "密钥"}:
             return True
+        if label in {"password", "secret", "token", "密码", "口令"} and (
+            _looks_like_labeled_credential_value(match.group("value"))
+        ):
+            return True
         if _looks_like_credential_value(match.group("value")):
             return True
     return False
@@ -329,6 +333,17 @@ def _looks_like_credential_value(value: str) -> bool:
     has_digit = any(character.isdigit() for character in value)
     has_symbol = any(character in "._~+/=-" for character in value)
     return has_letter and (has_digit or has_symbol)
+
+
+def _looks_like_labeled_credential_value(value: str) -> bool:
+    value = value.strip(".,;!?，。！？；")
+    if len(value) < 3:
+        return False
+
+    has_alnum = any(character.isalnum() for character in value)
+    has_digit = any(character.isdigit() for character in value)
+    has_symbol = any(character in "._~+/=-" for character in value)
+    return has_alnum and (has_digit or has_symbol)
 
 
 def _is_transient_message(source: str) -> bool:

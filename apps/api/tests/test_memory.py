@@ -63,6 +63,17 @@ def test_extract_memories_filters_common_secret_shapes():
         assert extract_memories(message, "别保存。") == []
 
 
+def test_extract_memories_filters_labeled_short_credentials_without_assignment():
+    secret_messages = [
+        "my password abc123，我喜欢钢琴。",
+        "my token abc123，我喜欢钢琴。",
+        "my secret abc123，我喜欢钢琴。",
+    ]
+
+    for message in secret_messages:
+        assert extract_memories(message, "别保存。") == []
+
+
 def test_extract_memories_allows_musical_key_context():
     memories = extract_memories("我喜欢这首歌的 key 定成 C major，之后继续编曲。", "嗯。")
 
