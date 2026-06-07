@@ -23,6 +23,23 @@ def test_mock_provider_mentions_user_message() -> None:
     assert result.provider_status.configured is True
 
 
+def test_mock_provider_uses_last_nonblank_user_message() -> None:
+    provider = MockLLMProvider()
+
+    result = provider.generate(
+        [
+            {"role": "user", "content": "第一句"},
+            {"role": "assistant", "content": "我在听。"},
+            {"role": "user", "content": "   "},
+            {"role": "user", "content": "最后一句"},
+            {"role": "user", "content": "\n\t"},
+        ]
+    )
+
+    assert "最后一句" in result.content
+    assert "第一句" not in result.content
+
+
 def test_mock_provider_falls_back_without_user_message() -> None:
     provider = MockLLMProvider()
 
@@ -85,6 +102,31 @@ def test_deepseek_provider_requires_key(tmp_path) -> None:
 
     with pytest.raises(ProviderUnavailable, match="DEEPSEEK_API_KEY"):
         provider.generate([{"role": "user", "content": "晚上好"}])
+
+
+def test_deepseek_provider_requires_key_before_network_call(tmp_path) -> None:
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        raise AssertionError("DeepSeek transport should not be called without a key")
+
+    provider = DeepSeekLLMProvider(
+        settings=ApiSettings(
+            llm_provider="deepseek",
+            deepseek_api_key=None,
+            deepseek_model="deepseek-v4-flash",
+            deepseek_base_url="https://api.deepseek.com",
+            memory_db_path=tmp_path / "memory.sqlite3",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(ProviderUnavailable, match="DEEPSEEK_API_KEY"):
+        provider.generate([{"role": "user", "content": "晚上好"}])
+
+    assert call_count == 0
 
 
 def test_build_provider_uses_deepseek_when_configured(tmp_path) -> None:
