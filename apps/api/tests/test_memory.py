@@ -50,6 +50,8 @@ def test_extract_memories_filters_secrets_and_casual_text():
 def test_extract_memories_filters_common_secret_shapes():
     secret_messages = [
         "我的 password 是 abc123，我喜欢钢琴。",
+        "my secret is abc，我喜欢钢琴。",
+        "token: abc123，我喜欢钢琴。",
         "Bearer abcdef1234567890abcdef1234567890，我喜欢钢琴。",
         "ghp_abcdefghijklmnopqrstuvwxyz123456，我喜欢钢琴。",
         "AKIAIOSFODNN7EXAMPLE，我喜欢钢琴。",
@@ -65,6 +67,23 @@ def test_extract_memories_allows_musical_key_context():
     memories = extract_memories("我喜欢这首歌的 key 定成 C major，之后继续编曲。", "嗯。")
 
     assert [memory.category for memory in memories] == ["preference", "creative_note"]
+
+
+def test_extract_memories_allows_secret_garden_music_context():
+    memories = extract_memories("我喜欢 Secret Garden 那种旋律，之后继续编曲。", "嗯。")
+
+    assert [memory.category for memory in memories] == ["preference", "creative_note"]
+    assert any("Secret Garden" in memory.text for memory in memories)
+
+
+def test_extract_memories_allows_compact_musical_key_context():
+    memories = extract_memories("我喜欢这首歌的 key=Cmajor，之后继续编曲。", "嗯。")
+
+    assert [memory.category for memory in memories] == ["preference", "creative_note"]
+
+
+def test_extract_memories_still_filters_key_assignments_with_credentials():
+    assert extract_memories("我的 key=abc123456789abcdef，我喜欢钢琴。", "别保存。") == []
 
 
 def test_extract_memories_skips_short_term_questions_and_clarifications():

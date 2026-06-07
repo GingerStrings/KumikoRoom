@@ -44,17 +44,38 @@ _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"
         r"(?![A-Za-z0-9_-])"
     ),
-    re.compile(
-        r"(?<![A-Za-z0-9_])"
-        r"(password|secret|token|api[\s_-]*key|apikey)"
-        r"(?![A-Za-z0-9_])|密码|口令|密钥",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?<![A-Za-z0-9])key(?![A-Za-z0-9])"
-        r"\s*(?:[:=：]|是)\s*[A-Za-z0-9._~+/=-]{4,}",
-        re.IGNORECASE,
-    ),
+)
+_CREDENTIAL_CONTEXT_RE = re.compile(
+    r"(?<![A-Za-z0-9_])"
+    r"(?P<label>password|secret|token|api[\s_-]*key|apikey|密码|口令|密钥)"
+    r"(?![A-Za-z0-9_])"
+    r"\s*(?P<operator>[:=：]|is|是)?\s*"
+    r"(?P<value>[A-Za-z0-9._~+/=-]{3,})",
+    re.IGNORECASE,
+)
+_KEY_ASSIGNMENT_RE = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?P<api_prefix>api[\s_-]*)?key"
+    r"(?![A-Za-z0-9])"
+    r"\s*(?:[:=：]|is|是)\s*"
+    r"(?P<value>[A-Za-z0-9._~+/=#-]{2,})",
+    re.IGNORECASE,
+)
+_MUSICAL_KEY_VALUE_RE = re.compile(
+    r"[A-G](?:#|b)?(?:major|minor|maj|min)?",
+    re.IGNORECASE,
+)
+_MUSIC_CONTEXT_TERMS = (
+    "歌",
+    "音乐",
+    "旋律",
+    "编曲",
+    "和弦",
+    "调",
+    "major",
+    "minor",
+    "cmajor",
+    "f#",
 )
 _PREFERENCE_TRIGGERS = ("不喜欢", "喜欢", "偏好", "希望你", "更想要")
 _CREATIVE_TRIGGERS = ("demo", "Demo", "FLP", "工程", "歌词", "旋律", "编曲", "创作")
@@ -258,7 +279,56 @@ def extract_memories(user_message: str, assistant_reply: str) -> list[NewMemory]
 
 
 def _contains_secret(text: str) -> bool:
-    return any(pattern.search(text) for pattern in _SECRET_PATTERNS)
+    if any(pattern.search(text) for pattern in _SECRET_PATTERNS):
+        return True
+    if _contains_key_assignment_secret(text):
+        return True
+    return _contains_credential_context_secret(text)
+
+
+def _contains_key_assignment_secret(text: str) -> bool:
+    for match in _KEY_ASSIGNMENT_RE.finditer(text):
+        if match.group("api_prefix"):
+            return True
+
+        value = match.group("value")
+        if _has_music_context(text) and _looks_like_musical_key_value(value):
+            continue
+        return True
+    return False
+
+
+def _contains_credential_context_secret(text: str) -> bool:
+    for match in _CREDENTIAL_CONTEXT_RE.finditer(text):
+        label = match.group("label").lower().replace("_", "").replace("-", "")
+        label = label.replace(" ", "")
+        if match.group("operator") or label in {"apikey", "密钥"}:
+            return True
+        if _looks_like_credential_value(match.group("value")):
+            return True
+    return False
+
+
+def _has_music_context(text: str) -> bool:
+    folded = text.lower()
+    return any(term in folded for term in _MUSIC_CONTEXT_TERMS)
+
+
+def _looks_like_musical_key_value(value: str) -> bool:
+    return bool(_MUSICAL_KEY_VALUE_RE.fullmatch(value.strip()))
+
+
+def _looks_like_credential_value(value: str) -> bool:
+    value = value.strip(".,;!?，。！？；")
+    if any(pattern.fullmatch(value) for pattern in _SECRET_PATTERNS):
+        return True
+    if len(value) < 12:
+        return False
+
+    has_letter = any(character.isalpha() for character in value)
+    has_digit = any(character.isdigit() for character in value)
+    has_symbol = any(character in "._~+/=-" for character in value)
+    return has_letter and (has_digit or has_symbol)
 
 
 def _is_transient_message(source: str) -> bool:
