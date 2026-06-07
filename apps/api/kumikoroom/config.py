@@ -27,7 +27,7 @@ class ApiSettings:
 def load_settings() -> ApiSettings:
     deepseek_api_key = _env_value("DEEPSEEK_API_KEY")
     llm_provider = _resolve_llm_provider(
-        provider_value=_env_value("KUMIKOROOM_LLM_PROVIDER"),
+        provider_value=_explicit_env_value("KUMIKOROOM_LLM_PROVIDER"),
         deepseek_api_key=deepseek_api_key,
     )
 
@@ -51,6 +51,13 @@ def _env_value(name: str) -> str | None:
     return stripped or None
 
 
+def _explicit_env_value(name: str) -> str | None:
+    if name not in os.environ:
+        return None
+
+    return os.environ[name]
+
+
 def _deepseek_base_url() -> str:
     return (_env_value("DEEPSEEK_BASE_URL") or DEFAULT_DEEPSEEK_BASE_URL).rstrip("/")
 
@@ -60,7 +67,7 @@ def _resolve_llm_provider(
     deepseek_api_key: str | None,
 ) -> LlmProvider:
     if provider_value is not None:
-        normalized_provider = provider_value.lower()
+        normalized_provider = provider_value.strip().lower()
         if normalized_provider in ("mock", "deepseek"):
             return normalized_provider
         raise ValueError(

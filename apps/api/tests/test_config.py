@@ -48,6 +48,14 @@ def test_invalid_explicit_provider_raises_value_error(monkeypatch) -> None:
         load_settings()
 
 
+def test_blank_explicit_provider_raises_value_error(monkeypatch) -> None:
+    monkeypatch.setenv("KUMIKOROOM_LLM_PROVIDER", "   ")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+
+    with pytest.raises(ValueError, match="KUMIKOROOM_LLM_PROVIDER"):
+        load_settings()
+
+
 def test_explicit_mock_provider_overrides_deepseek_key(monkeypatch) -> None:
     monkeypatch.setenv("KUMIKOROOM_LLM_PROVIDER", " MoCk ")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
