@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from kumikoroom.config import load_settings
 
 
@@ -37,6 +39,23 @@ def test_explicit_deepseek_provider_without_key_is_unconfigured(
 
     assert settings.llm_provider == "deepseek"
     assert settings.is_deepseek_configured is False
+
+
+def test_invalid_explicit_provider_raises_value_error(monkeypatch) -> None:
+    monkeypatch.setenv("KUMIKOROOM_LLM_PROVIDER", " OpenAI ")
+
+    with pytest.raises(ValueError, match="KUMIKOROOM_LLM_PROVIDER"):
+        load_settings()
+
+
+def test_explicit_mock_provider_overrides_deepseek_key(monkeypatch) -> None:
+    monkeypatch.setenv("KUMIKOROOM_LLM_PROVIDER", " MoCk ")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+
+    settings = load_settings()
+
+    assert settings.llm_provider == "mock"
+    assert settings.deepseek_api_key == "test-key"
 
 
 def test_deepseek_base_url_override_strips_trailing_slash(monkeypatch) -> None:

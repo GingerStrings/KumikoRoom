@@ -63,6 +63,9 @@ def _resolve_llm_provider(
         normalized_provider = provider_value.lower()
         if normalized_provider in ("mock", "deepseek"):
             return normalized_provider
+        raise ValueError(
+            "KUMIKOROOM_LLM_PROVIDER must be either 'mock' or 'deepseek'"
+        )
 
     if deepseek_api_key:
         return "deepseek"

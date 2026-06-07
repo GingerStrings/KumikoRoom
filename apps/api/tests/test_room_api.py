@@ -40,6 +40,18 @@ def test_mock_chat_returns_kumiko_reply(client: TestClient):
     assert body["memory_events"] == []
 
 
+def test_mock_chat_accepts_minimal_payload(client: TestClient):
+    response = client.post(
+        "/api/room/chat",
+        json={"message": "想听安静的歌"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider_status"]["provider"] == "mock"
+    assert body["memory_events"] == []
+
+
 def test_memory_event_schema_uses_conversation_manager_fields() -> None:
     event = MemoryEventOut(
         id="memory-1",
