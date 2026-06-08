@@ -34,6 +34,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const [settingsHydrated, setSettingsHydrated] = useState(false);
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
   const [recentMemoryEvents, setRecentMemoryEvents] = useState<MemoryEvent[]>([]);
+  const connectionLabel = providerStatus?.label ?? connectionStatus.label;
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -124,14 +125,14 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
         <header className="panel-heading">
           <div>
             <p className="eyebrow">KumikoRoom</p>
-            <h1>对话工作区</h1>
+            <h1>和久美子说会儿话</h1>
           </div>
           <span
             className={`connection-chip connection-chip--${connectionStatus.tone}`}
             role="status"
-            aria-label={connectionStatus.label}
+            aria-label={connectionLabel}
           >
-            连接状态
+            {connectionLabel}
           </span>
         </header>
 
@@ -202,15 +203,14 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
             <span>播放器</span>
             <strong>待接入</strong>
           </div>
-          <p className="utility-note">{connectionStatus.detail}</p>
         </section>
 
         <section className="workspace-card ai-card" aria-label="AI 设置">
           <p className="eyebrow">AI</p>
           <h2>模型与记忆</h2>
           <div className="utility-row">
-            <span>模型连接</span>
-            <strong>{providerStatus?.label ?? connectionStatus.label}</strong>
+            <span>当前连接</span>
+            <strong>{connectionLabel}</strong>
           </div>
           <div className="ai-setting-row">
             <span>人设强度</span>

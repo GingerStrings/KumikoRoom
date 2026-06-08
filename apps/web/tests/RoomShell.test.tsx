@@ -24,7 +24,7 @@ describe("RoomShell", () => {
   it("renders a chat-first workspace without the character placeholder", () => {
     render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
 
-    expect(screen.getByRole("heading", { name: "对话工作区" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "和久美子说会儿话" })).toBeTruthy();
     expect(screen.getByLabelText("聊天时间线").textContent).toContain("今天想从哪首歌开始聊");
     expect(screen.getByRole("textbox", { name: "写一条消息" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "打开创作资料" }).getAttribute("href")).toBe("/studio");
@@ -45,9 +45,11 @@ describe("RoomShell", () => {
     expect(screen.getByRole("button", { name: "强" })).toBeTruthy();
     expect(screen.getByRole("checkbox", { name: "自动记忆" })).toBeTruthy();
     expect(within(localMusicCard).queryByText("模型连接")).toBeNull();
-    expect(within(localMusicCard).queryByText("本地 Mock API")).toBeNull();
-    expect(within(aiCard).getByText("本地 Mock API")).toBeTruthy();
-    expect(screen.getAllByText("模型连接")).toHaveLength(1);
+    expect(within(localMusicCard).queryByText("本地 API")).toBeNull();
+    expect(within(aiCard).getByText("本地 API")).toBeTruthy();
+    expect(screen.getAllByText("当前连接")).toHaveLength(1);
+    expect(screen.queryByText(/127\.0\.0\.1/)).toBeNull();
+    expect(screen.queryByText(/聊天请求会转发到/)).toBeNull();
     expect(screen.queryByRole("button", { name: "TTS" })).toBeNull();
     expect(screen.queryByRole("button", { name: "存到日记" })).toBeNull();
     expect(screen.queryByRole("button", { name: "存为灵感" })).toBeNull();
@@ -97,7 +99,8 @@ describe("RoomShell", () => {
     fireEvent.click(screen.getByRole("button", { name: "发送" }));
 
     expect(await screen.findByText("嗯，我在听。")).toBeTruthy();
-    expect(screen.getByText("DeepSeek deepseek-v4-flash")).toBeTruthy();
+    expect(screen.getByRole("status", { name: "DeepSeek deepseek-v4-flash" })).toBeTruthy();
+    expect(screen.getAllByText("DeepSeek deepseek-v4-flash")).toHaveLength(2);
     expect(screen.getByText("用户喜欢安静的钢琴。")).toBeTruthy();
     expect(screen.getByText("思考")).toBeTruthy();
     expect(apiMocks.postChat).toHaveBeenNthCalledWith(1, {

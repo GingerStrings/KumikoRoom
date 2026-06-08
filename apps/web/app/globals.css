@@ -104,7 +104,7 @@ h3 {
 
 h1 {
   margin-bottom: 0;
-  font-size: 42px;
+  font-size: 36px;
   line-height: 1.08;
 }
 
@@ -337,11 +337,12 @@ p {
 }
 
 .room-workspace {
-  min-height: 100vh;
+  height: 100vh;
   display: grid;
   grid-template-columns: minmax(420px, 1fr) minmax(280px, 0.42fr);
   gap: 20px;
   padding: 32px;
+  overflow: hidden;
 }
 
 .dialogue-card,
@@ -352,19 +353,26 @@ p {
 }
 
 .dialogue-card {
-  min-height: calc(100vh - 64px);
-  display: grid;
-  grid-template-rows: auto minmax(240px, 1fr) auto;
-  gap: 20px;
+  height: calc(100vh - 64px);
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow: hidden;
 }
 
 .workspace-side {
   display: grid;
   align-content: start;
   gap: 20px;
+  max-height: calc(100vh - 64px);
+  overflow: auto;
+  padding-right: 2px;
 }
 
 .chat-timeline {
+  min-height: 0;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -402,17 +410,25 @@ p {
 }
 
 .chat-composer {
+  flex: 0 0 auto;
   display: grid;
-  gap: 12px;
+  grid-template-columns: 1fr auto;
+  gap: 10px 12px;
+  align-items: end;
+  padding: 14px;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.68);
 }
 
 .chat-composer textarea {
   width: 100%;
-  min-height: 92px;
+  min-height: 64px;
+  max-height: 128px;
   resize: vertical;
   border: 1px solid var(--color-line);
   border-radius: 8px;
-  padding: 14px;
+  padding: 12px 14px;
   background: var(--color-surface-strong);
   color: var(--color-text);
 }
@@ -422,6 +438,7 @@ p {
 }
 
 .composer-error {
+  grid-column: 1 / -1;
   margin-bottom: 0;
   color: #9a5d45;
   font-weight: 700;
@@ -583,8 +600,21 @@ p {
     padding: 20px;
   }
 
+  .room-workspace {
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+  }
+
   .dialogue-card {
-    min-height: auto;
+    height: min(720px, calc(100vh - 40px));
+    min-height: 520px;
+  }
+
+  .workspace-side {
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
   }
 
   .studio-grid {
@@ -612,6 +642,10 @@ p {
 
   .chat-message {
     max-width: 88%;
+  }
+
+  .chat-composer {
+    grid-template-columns: 1fr;
   }
 
   .summary-row,
