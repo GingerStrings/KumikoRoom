@@ -11,3 +11,4 @@ user-data/
 .env
 .env.local
 .pytest-tmp/
+.superpowers/
