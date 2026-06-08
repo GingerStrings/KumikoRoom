@@ -4,7 +4,6 @@ from typing import Any
 from kumikoroom.config import ApiSettings, load_settings
 from kumikoroom.llm import (
     LLMProvider,
-    MockLLMProvider,
     ProviderUnavailable,
     build_provider,
     unconfigured_deepseek_status,
@@ -28,7 +27,7 @@ class ConversationManager:
         memory_store: MemoryStore | None = None,
     ) -> None:
         self.settings = settings or load_settings()
-        self.provider = provider or _default_provider(self.settings)
+        self.provider = provider or build_provider(self.settings)
         self.memory_store = memory_store or MemoryStore(self.settings.memory_db_path)
 
     def chat(self, payload: ChatIn) -> ChatOut:
@@ -61,9 +60,7 @@ class ConversationManager:
                 content=result.content,
             ),
             expression="listening",
-            suggested_actions=(
-                ["save_diary", "save_inspiration"] if memory_events else []
-            ),
+            suggested_actions=["save_diary", "save_inspiration"],
             provider_status=ProviderStatusOut(**asdict(result.provider_status)),
             memory_events=memory_events,
         )
@@ -103,12 +100,6 @@ class ConversationManager:
         )
 
 
-def _default_provider(settings: ApiSettings) -> LLMProvider:
-    if settings.llm_provider == "mock":
-        return MockLLMProvider()
-    return build_provider(settings)
-
-
 def _fallback_reply_id(settings: ApiSettings) -> str:
     if settings.llm_provider == "deepseek" and not settings.is_deepseek_configured:
         return "deepseek-unconfigured"
@@ -125,15 +116,8 @@ def _fallback_content(settings: ApiSettings) -> str:
 
 
 def _fallback_provider_status(settings: ApiSettings) -> ProviderStatusOut:
-    if settings.llm_provider == "deepseek" and not settings.is_deepseek_configured:
-        return ProviderStatusOut(**asdict(unconfigured_deepseek_status(settings)))
     if settings.llm_provider == "deepseek":
-        return ProviderStatusOut(
-            provider="deepseek",
-            model=settings.deepseek_model,
-            configured=False,
-            label="DeepSeek 暂不可用",
-        )
+        return ProviderStatusOut(**asdict(unconfigured_deepseek_status(settings)))
     return ProviderStatusOut(
         provider="mock",
         model=None,

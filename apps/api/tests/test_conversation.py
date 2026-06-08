@@ -1,6 +1,11 @@
 from kumikoroom.config import load_settings
 from kumikoroom.conversation import ConversationManager
-from kumikoroom.llm import LLMResult, ProviderStatus
+from kumikoroom.llm import (
+    LLMResult,
+    ProviderStatus,
+    ProviderUnavailable,
+    unconfigured_deepseek_status,
+)
 from kumikoroom.memory import MemoryStore
 from kumikoroom.schemas import ChatIn, ChatMessageOut
 
@@ -20,6 +25,37 @@ class FakeProvider:
                 label="DeepSeek deepseek-v4-flash",
             ),
         )
+
+
+class UnavailableProvider:
+    def generate(self, messages):
+        raise ProviderUnavailable("provider unavailable")
+
+
+def test_manager_builds_default_provider_with_build_provider(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("KUMIKOROOM_LLM_PROVIDER", "mock")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("KUMIKOROOM_MEMORY_DB_PATH", str(tmp_path / "memory.sqlite3"))
+    settings = load_settings()
+    provider = FakeProvider()
+    calls = []
+
+    def fake_build_provider(received_settings):
+        calls.append(received_settings)
+        return provider
+
+    monkeypatch.setattr("kumikoroom.conversation.build_provider", fake_build_provider)
+
+    response = ConversationManager(settings=settings).chat(
+        ChatIn(message="hello", memory_enabled=False)
+    )
+
+    assert calls == [settings]
+    assert provider.messages[-1] == {"role": "user", "content": "hello"}
+    assert response.reply.role == "kumiko"
 
 
 def test_manager_builds_persona_memory_and_user_prompt(monkeypatch, tmp_path) -> None:
@@ -73,6 +109,28 @@ def test_manager_falls_back_when_deepseek_is_unconfigured(monkeypatch, tmp_path)
     assert response.provider_status.provider == "deepseek"
     assert response.provider_status.configured is False
     assert "还没有配置 DeepSeek" in response.reply.content
+
+
+def test_manager_uses_unconfigured_deepseek_status_for_unavailable_deepseek(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("KUMIKOROOM_LLM_PROVIDER", "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.setenv("KUMIKOROOM_MEMORY_DB_PATH", str(tmp_path / "memory.sqlite3"))
+    settings = load_settings()
+
+    response = ConversationManager(
+        settings=settings,
+        provider=UnavailableProvider(),
+    ).chat(ChatIn(message="hello"))
+
+    expected = unconfigured_deepseek_status(settings)
+    assert response.provider_status.provider == expected.provider
+    assert response.provider_status.model == expected.model
+    assert response.provider_status.configured == expected.configured
+    assert response.provider_status.label == expected.label
+    assert "test-key" not in response.reply.content
 
 
 def test_manager_maps_recent_kumiko_messages_to_assistant(

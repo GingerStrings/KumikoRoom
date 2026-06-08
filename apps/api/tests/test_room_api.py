@@ -30,7 +30,7 @@ def test_mock_chat_returns_kumiko_reply(client: TestClient):
     assert body["reply"]["role"] == "kumiko"
     assert "想听安静的歌" in body["reply"]["content"]
     assert body["expression"] == "listening"
-    assert body["suggested_actions"] == []
+    assert body["suggested_actions"] == ["save_diary", "save_inspiration"]
     assert body["provider_status"] == {
         "provider": "mock",
         "model": None,
