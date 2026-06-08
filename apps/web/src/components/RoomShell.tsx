@@ -31,10 +31,13 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const [sendError, setSendError] = useState<string | null>(null);
   const [personaStrength, setPersonaStrength] = useState<PersonaStrength>("medium");
   const [memoryEnabled, setMemoryEnabled] = useState(true);
+  const [settingsHydrated, setSettingsHydrated] = useState(false);
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
   const [recentMemoryEvents, setRecentMemoryEvents] = useState<MemoryEvent[]>([]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+
     const savedPersona = window.localStorage.getItem("kumikoroom.personaStrength");
     if (savedPersona === "medium" || savedPersona === "strong") {
       setPersonaStrength(savedPersona);
@@ -44,15 +47,21 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     if (savedMemoryEnabled === "false") {
       setMemoryEnabled(false);
     }
+
+    setSettingsHydrated(true);
   }, []);
 
   useEffect(() => {
+    if (!settingsHydrated || typeof window === "undefined") return;
+
     window.localStorage.setItem("kumikoroom.personaStrength", personaStrength);
-  }, [personaStrength]);
+  }, [personaStrength, settingsHydrated]);
 
   useEffect(() => {
+    if (!settingsHydrated || typeof window === "undefined") return;
+
     window.localStorage.setItem("kumikoroom.memoryEnabled", String(memoryEnabled));
-  }, [memoryEnabled]);
+  }, [memoryEnabled, settingsHydrated]);
 
   const summaryItems = [
     {
@@ -192,10 +201,6 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
           <div className="utility-row">
             <span>播放器</span>
             <strong>待接入</strong>
-          </div>
-          <div className="utility-row">
-            <span>模型连接</span>
-            <strong>{connectionStatus.label}</strong>
           </div>
           <p className="utility-note">{connectionStatus.detail}</p>
         </section>
