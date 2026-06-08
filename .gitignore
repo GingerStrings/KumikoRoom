@@ -12,3 +12,4 @@ user-data/
 .env.local
 .pytest-tmp/
 .superpowers/
+.worktrees/
