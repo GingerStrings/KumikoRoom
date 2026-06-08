@@ -346,7 +346,8 @@ p {
 
 .dialogue-card,
 .summary-card,
-.utility-card {
+.utility-card,
+.ai-card {
   padding: 24px;
 }
 
@@ -440,7 +441,8 @@ p {
 }
 
 .summary-list,
-.utility-card {
+.utility-card,
+.ai-card {
   display: grid;
   gap: 12px;
 }
@@ -473,6 +475,76 @@ p {
 .utility-note {
   margin-bottom: 0;
   color: var(--color-muted);
+}
+
+.ai-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 13px 14px;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  background: var(--color-surface-strong);
+}
+
+.ai-setting-row > span {
+  color: var(--color-muted);
+}
+
+.segmented-control {
+  display: inline-grid;
+  grid-template-columns: repeat(2, 44px);
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  background: var(--color-fog-soft);
+}
+
+.segmented-control button {
+  min-height: 34px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-muted);
+  font-weight: 800;
+}
+
+.segmented-control button[aria-pressed="true"] {
+  background: var(--color-surface-strong);
+  color: var(--color-rose);
+  box-shadow: var(--shadow-tight);
+}
+
+.memory-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  color: var(--color-text);
+  font-weight: 700;
+}
+
+.memory-toggle input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--color-rose);
+}
+
+.memory-events {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.46);
+}
+
+.memory-events p {
+  margin-bottom: 0;
+  color: var(--color-muted);
+  overflow-wrap: anywhere;
 }
 
 .studio-shell {

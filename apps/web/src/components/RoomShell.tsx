@@ -1,8 +1,14 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { postChat } from "../api/client";
-import type { ChatMessage, RoomState } from "../api/types";
+import type {
+  ChatMessage,
+  MemoryEvent,
+  PersonaStrength,
+  ProviderStatus,
+  RoomState
+} from "../api/types";
 import type { ConnectionStatus } from "../lib/connectionStatus";
 import { getIdleLine } from "../lib/roomState";
 
@@ -23,6 +29,30 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const [currentExpression, setCurrentExpression] = useState(initialState.character.expression);
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [personaStrength, setPersonaStrength] = useState<PersonaStrength>("medium");
+  const [memoryEnabled, setMemoryEnabled] = useState(true);
+  const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
+  const [recentMemoryEvents, setRecentMemoryEvents] = useState<MemoryEvent[]>([]);
+
+  useEffect(() => {
+    const savedPersona = window.localStorage.getItem("kumikoroom.personaStrength");
+    if (savedPersona === "medium" || savedPersona === "strong") {
+      setPersonaStrength(savedPersona);
+    }
+
+    const savedMemoryEnabled = window.localStorage.getItem("kumikoroom.memoryEnabled");
+    if (savedMemoryEnabled === "false") {
+      setMemoryEnabled(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("kumikoroom.personaStrength", personaStrength);
+  }, [personaStrength]);
+
+  useEffect(() => {
+    window.localStorage.setItem("kumikoroom.memoryEnabled", String(memoryEnabled));
+  }, [memoryEnabled]);
 
   const summaryItems = [
     {
@@ -61,8 +91,16 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     ]);
 
     try {
-      const response = await postChat({ message, roomState: initialState });
+      const response = await postChat({
+        message,
+        roomState: initialState,
+        recentMessages: messages.slice(-8),
+        personaStrength,
+        memoryEnabled
+      });
       setCurrentExpression(response.expression);
+      setProviderStatus(response.providerStatus);
+      setRecentMemoryEvents(response.memoryEvents);
       setMessages((current) => [...current, response.reply]);
     } catch {
       setSendError("消息发送失败，请确认本地 API 是否在运行。");
@@ -160,6 +198,49 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
             <strong>{connectionStatus.label}</strong>
           </div>
           <p className="utility-note">{connectionStatus.detail}</p>
+        </section>
+
+        <section className="workspace-card ai-card" aria-label="AI 设置">
+          <p className="eyebrow">AI</p>
+          <h2>模型与记忆</h2>
+          <div className="utility-row">
+            <span>模型连接</span>
+            <strong>{providerStatus?.label ?? connectionStatus.label}</strong>
+          </div>
+          <div className="ai-setting-row">
+            <span>人设强度</span>
+            <div className="segmented-control" role="group" aria-label="人设强度">
+              <button
+                type="button"
+                aria-pressed={personaStrength === "medium"}
+                onClick={() => setPersonaStrength("medium")}
+              >
+                中
+              </button>
+              <button
+                type="button"
+                aria-pressed={personaStrength === "strong"}
+                onClick={() => setPersonaStrength("strong")}
+              >
+                强
+              </button>
+            </div>
+          </div>
+          <label className="memory-toggle">
+            <input
+              type="checkbox"
+              checked={memoryEnabled}
+              onChange={(event) => setMemoryEnabled(event.target.checked)}
+            />
+            自动记忆
+          </label>
+          <div className="memory-events" aria-label="最近记住的内容">
+            {recentMemoryEvents.length === 0 ? (
+              <p>还没有新的记忆。</p>
+            ) : (
+              recentMemoryEvents.map((event) => <p key={event.id}>{event.text}</p>)
+            )}
+          </div>
         </section>
       </aside>
     </main>
