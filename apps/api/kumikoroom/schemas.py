@@ -1,4 +1,10 @@
-from pydantic import BaseModel
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+
+PersonaStrength = Literal["medium", "strong"]
+MemoryCategory = Literal["preference", "diary", "creative_note", "profile_fact"]
 
 
 class CharacterStateOut(BaseModel):
@@ -30,17 +36,38 @@ class RoomStateOut(BaseModel):
     studio: StudioSummaryOut
 
 
-class ChatIn(BaseModel):
-    message: str
-
-
 class ChatMessageOut(BaseModel):
     id: str
     role: str
     content: str
 
 
+class ChatIn(BaseModel):
+    message: str
+    room_state: RoomStateOut | None = None
+    recent_messages: list[ChatMessageOut] = Field(default_factory=list)
+    persona_strength: PersonaStrength = "medium"
+    memory_enabled: bool = True
+
+
+class ProviderStatusOut(BaseModel):
+    provider: Literal["mock", "deepseek"]
+    model: str | None
+    configured: bool
+    label: str
+
+
+class MemoryEventOut(BaseModel):
+    id: str
+    category: MemoryCategory
+    text: str
+    confidence: float
+    created_at: str
+
+
 class ChatOut(BaseModel):
     reply: ChatMessageOut
     expression: str
     suggested_actions: list[str]
+    provider_status: ProviderStatusOut
+    memory_events: list[MemoryEventOut] = Field(default_factory=list)

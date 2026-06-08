@@ -1,4 +1,4 @@
-import type { ChatRequest, ChatResponse, RoomState } from "./types";
+import type { ChatRequest, ChatResponse, MemoryEvent, RoomState } from "./types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_KUMIKOROOM_API_BASE_URL ?? "";
 
@@ -39,8 +39,30 @@ export function getRoomState(): Promise<RoomState> {
 export function postChat(payload: ChatRequest): Promise<ChatResponse> {
   return request<ChatResponseApi>("/api/room/chat", {
     method: "POST",
-    body: JSON.stringify({ message: payload.message })
+    body: JSON.stringify({
+      message: payload.message,
+      room_state: mapRoomStateRequest(payload.roomState),
+      recent_messages: payload.recentMessages ?? [],
+      persona_strength: payload.personaStrength ?? "medium",
+      memory_enabled: payload.memoryEnabled ?? true
+    })
   }).then(mapChatResponse);
+}
+
+export function getMemories(): Promise<MemoryEvent[]> {
+  return request<MemoryEventApi[]>("/api/room/memory").then((items) => items.map(mapMemoryEvent));
+}
+
+export function deleteMemory(memoryId: string): Promise<void> {
+  return request<void>(`/api/room/memory/${encodeURIComponent(memoryId)}`, {
+    method: "DELETE"
+  });
+}
+
+export function clearMemories(): Promise<void> {
+  return request<void>("/api/room/memory", {
+    method: "DELETE"
+  });
 }
 
 async function parseResponseBody(response: Response): Promise<unknown> {
@@ -90,6 +112,16 @@ interface ChatResponseApi {
   reply: ChatResponse["reply"];
   expression: ChatResponse["expression"];
   suggested_actions: ChatResponse["suggestedActions"];
+  provider_status: ChatResponse["providerStatus"];
+  memory_events: MemoryEventApi[];
+}
+
+interface MemoryEventApi {
+  id: string;
+  category: MemoryEvent["category"];
+  text: string;
+  confidence: number;
+  created_at: string;
 }
 
 function mapRoomState(value: RoomStateApi): RoomState {
@@ -117,10 +149,47 @@ function mapRoomState(value: RoomStateApi): RoomState {
   };
 }
 
+function mapRoomStateRequest(value: RoomState): RoomStateApi {
+  return {
+    app_name: value.appName,
+    room_name: value.roomName,
+    character: {
+      display_name: value.character.displayName,
+      romanized_name: value.character.romanizedName,
+      expression: value.character.expression,
+      status_text: value.character.statusText
+    },
+    music: {
+      current_track_title: value.music.currentTrackTitle,
+      current_artist: value.music.currentArtist,
+      listening_mood: value.music.listeningMood
+    },
+    diary_summary: value.diarySummary,
+    inspiration_count: value.inspirationCount,
+    studio: {
+      label: value.studio.label,
+      route: value.studio.route,
+      unfinished_count: value.studio.unfinishedCount
+    }
+  };
+}
+
 function mapChatResponse(value: ChatResponseApi): ChatResponse {
   return {
     reply: value.reply,
     expression: value.expression,
-    suggestedActions: value.suggested_actions
+    suggestedActions: value.suggested_actions,
+    providerStatus: value.provider_status,
+    memoryEvents: value.memory_events.map(mapMemoryEvent)
+  };
+}
+
+function mapMemoryEvent(value: MemoryEventApi): MemoryEvent {
+  return {
+    id: value.id,
+    category: value.category,
+    text: value.text,
+    confidence: value.confidence,
+    createdAt: value.created_at
   };
 }

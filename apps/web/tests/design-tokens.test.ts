@@ -45,6 +45,15 @@ describe("approved Palette C tokens", () => {
     });
   });
 
+  it("keeps the room composer visible in the first viewport", () => {
+    const css = fs.readFileSync(cssPath, "utf8");
+
+    expect(css).toContain(".dialogue-card {\n  height: calc(100vh - 64px);");
+    expect(css).toContain("overflow: hidden;");
+    expect(css).toContain(".chat-timeline {\n  min-height: 0;");
+    expect(css).toContain(".chat-composer {\n  flex: 0 0 auto;");
+  });
+
   it("removes the old green and brass room palette values", () => {
     const css = fs.readFileSync(cssPath, "utf8");
 

@@ -14,8 +14,9 @@ describe("HomeNavigation", () => {
     expect(screen.getByRole("link", { name: "音乐日记 记录今天听到的东西" }).getAttribute("href")).toBe("/room");
     expect(screen.getByRole("link", { name: "创作资料 打开工程和灵感" }).getAttribute("href")).toBe("/studio");
     expect(screen.getByRole("link", { name: "本地工程 查看待接入状态" }).getAttribute("href")).toBe("/studio");
-    expect(screen.getByText("本地 Mock API")).toBeTruthy();
-    expect(screen.getByText("聊天请求会转发到 http://127.0.0.1:8000")).toBeTruthy();
+    expect(screen.getByText("本地 API")).toBeTruthy();
+    expect(screen.getByText("本地服务已连接。")).toBeTruthy();
+    expect(screen.queryByText(/127\.0\.0\.1/)).toBeNull();
   });
 
   it("keeps the first screen free of character placeholders", () => {

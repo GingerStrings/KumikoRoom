@@ -33,13 +33,37 @@ export interface ChatMessage {
   content: string;
 }
 
+export type PersonaStrength = "medium" | "strong";
+
+export type MemoryCategory = "preference" | "diary" | "creative_note" | "profile_fact";
+
+export interface ProviderStatus {
+  provider: "mock" | "deepseek";
+  model: string | null;
+  configured: boolean;
+  label: string;
+}
+
+export interface MemoryEvent {
+  id: string;
+  category: MemoryCategory;
+  text: string;
+  confidence: number;
+  createdAt: string;
+}
+
 export interface ChatRequest {
   message: string;
   roomState: RoomState;
+  recentMessages?: ChatMessage[];
+  personaStrength?: PersonaStrength;
+  memoryEnabled?: boolean;
 }
 
 export interface ChatResponse {
   reply: ChatMessage;
   expression: CharacterState["expression"];
   suggestedActions: Array<"save_diary" | "save_inspiration" | "open_studio">;
+  providerStatus: ProviderStatus;
+  memoryEvents: MemoryEvent[];
 }
