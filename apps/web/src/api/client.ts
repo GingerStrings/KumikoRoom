@@ -1,4 +1,11 @@
-import type { ChatRequest, ChatResponse, MemoryEvent, RoomState } from "./types";
+import type {
+  ChatRequest,
+  ChatResponse,
+  ChatSession,
+  MemoryEvent,
+  RoomState,
+  StoredChatMessage
+} from "./types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_KUMIKOROOM_API_BASE_URL ?? "";
 
@@ -36,6 +43,37 @@ export function getRoomState(): Promise<RoomState> {
   return request<RoomStateApi>("/api/room/state").then(mapRoomState);
 }
 
+export function getSessions(): Promise<ChatSession[]> {
+  return request<ChatSessionApi[]>("/api/room/sessions").then((items) =>
+    items.map(mapChatSession)
+  );
+}
+
+export function createSession(): Promise<ChatSession> {
+  return request<ChatSessionApi>("/api/room/sessions", {
+    method: "POST"
+  }).then(mapChatSession);
+}
+
+export function getSessionMessages(sessionId: string): Promise<StoredChatMessage[]> {
+  return request<StoredChatMessageApi[]>(
+    `/api/room/sessions/${encodeURIComponent(sessionId)}/messages`
+  ).then((items) => items.map(mapStoredChatMessage));
+}
+
+export function renameSession(sessionId: string, title: string): Promise<ChatSession> {
+  return request<ChatSessionApi>(`/api/room/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ title })
+  }).then(mapChatSession);
+}
+
+export function deleteSession(sessionId: string): Promise<void> {
+  return request<void>(`/api/room/sessions/${encodeURIComponent(sessionId)}`, {
+    method: "DELETE"
+  });
+}
+
 export function postChat(payload: ChatRequest): Promise<ChatResponse> {
   return request<ChatResponseApi>("/api/room/chat", {
     method: "POST",
@@ -44,7 +82,8 @@ export function postChat(payload: ChatRequest): Promise<ChatResponse> {
       room_state: mapRoomStateRequest(payload.roomState),
       recent_messages: payload.recentMessages ?? [],
       persona_strength: payload.personaStrength ?? "medium",
-      memory_enabled: payload.memoryEnabled ?? true
+      memory_enabled: payload.memoryEnabled ?? true,
+      session_id: payload.sessionId ?? null
     })
   }).then(mapChatResponse);
 }
@@ -114,6 +153,27 @@ interface ChatResponseApi {
   suggested_actions: ChatResponse["suggestedActions"];
   provider_status: ChatResponse["providerStatus"];
   memory_events: MemoryEventApi[];
+  session: ChatSessionApi | null;
+}
+
+interface ChatSessionApi {
+  id: string;
+  title: string;
+  latest_message_preview: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface StoredChatMessageApi {
+  id: string;
+  session_id: string;
+  role: StoredChatMessage["role"];
+  content: string;
+  created_at: string;
+  provider: StoredChatMessage["provider"];
+  provider_model: string | null;
+  provider_configured: boolean | null;
+  provider_label: string | null;
 }
 
 interface MemoryEventApi {
@@ -180,7 +240,32 @@ function mapChatResponse(value: ChatResponseApi): ChatResponse {
     expression: value.expression,
     suggestedActions: value.suggested_actions,
     providerStatus: value.provider_status,
-    memoryEvents: value.memory_events.map(mapMemoryEvent)
+    memoryEvents: value.memory_events.map(mapMemoryEvent),
+    session: value.session === null ? null : mapChatSession(value.session)
+  };
+}
+
+function mapChatSession(value: ChatSessionApi): ChatSession {
+  return {
+    id: value.id,
+    title: value.title,
+    latestMessagePreview: value.latest_message_preview,
+    createdAt: value.created_at,
+    updatedAt: value.updated_at
+  };
+}
+
+function mapStoredChatMessage(value: StoredChatMessageApi): StoredChatMessage {
+  return {
+    id: value.id,
+    sessionId: value.session_id,
+    role: value.role,
+    content: value.content,
+    createdAt: value.created_at,
+    provider: value.provider,
+    providerModel: value.provider_model,
+    providerConfigured: value.provider_configured,
+    providerLabel: value.provider_label
   };
 }
 

@@ -33,6 +33,14 @@ export interface ChatMessage {
   content: string;
 }
 
+export interface ChatSession {
+  id: string;
+  title: string;
+  latestMessagePreview: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type PersonaStrength = "medium" | "strong";
 
 export type MemoryCategory = "preference" | "diary" | "creative_note" | "profile_fact";
@@ -42,6 +50,15 @@ export interface ProviderStatus {
   model: string | null;
   configured: boolean;
   label: string;
+}
+
+export interface StoredChatMessage extends ChatMessage {
+  sessionId: string;
+  createdAt: string;
+  provider: ProviderStatus["provider"] | null;
+  providerModel: string | null;
+  providerConfigured: boolean | null;
+  providerLabel: string | null;
 }
 
 export interface MemoryEvent {
@@ -55,6 +72,7 @@ export interface MemoryEvent {
 export interface ChatRequest {
   message: string;
   roomState: RoomState;
+  sessionId?: string;
   recentMessages?: ChatMessage[];
   personaStrength?: PersonaStrength;
   memoryEnabled?: boolean;
@@ -66,4 +84,5 @@ export interface ChatResponse {
   suggestedActions: Array<"save_diary" | "save_inspiration" | "open_studio">;
   providerStatus: ProviderStatus;
   memoryEvents: MemoryEvent[];
+  session: ChatSession | null;
 }
