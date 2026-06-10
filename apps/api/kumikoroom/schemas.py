@@ -44,6 +44,7 @@ class ChatMessageOut(BaseModel):
 
 class ChatIn(BaseModel):
     message: str
+    session_id: str | None = None
     room_state: RoomStateOut | None = None
     recent_messages: list[ChatMessageOut] = Field(default_factory=list)
     persona_strength: PersonaStrength = "medium"
@@ -65,9 +66,34 @@ class MemoryEventOut(BaseModel):
     created_at: str
 
 
+class ChatSessionOut(BaseModel):
+    id: str
+    title: str
+    created_at: str
+    updated_at: str
+    latest_message_preview: str | None = None
+
+
+class StoredChatMessageOut(BaseModel):
+    id: str
+    session_id: str
+    role: Literal["user", "kumiko"]
+    content: str
+    created_at: str
+    provider: str | None = None
+    provider_model: str | None = None
+    provider_configured: bool | None = None
+    provider_label: str | None = None
+
+
+class SessionRenameIn(BaseModel):
+    title: str
+
+
 class ChatOut(BaseModel):
     reply: ChatMessageOut
     expression: str
     suggested_actions: list[str]
     provider_status: ProviderStatusOut
     memory_events: list[MemoryEventOut] = Field(default_factory=list)
+    session: ChatSessionOut | None = None

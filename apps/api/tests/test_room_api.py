@@ -103,3 +103,51 @@ def test_memory_event_schema_uses_conversation_manager_fields() -> None:
         "confidence": 0.85,
         "created_at": "2026-06-06T23:00:00Z",
     }
+
+
+def test_session_endpoints_create_list_rename_load_and_delete(client: TestClient):
+    create_response = client.post("/api/room/sessions")
+    assert create_response.status_code == 200
+    session = create_response.json()
+    assert session["title"] == "New conversation"
+
+    list_response = client.get("/api/room/sessions")
+    assert list_response.status_code == 200
+    assert list_response.json()[0]["id"] == session["id"]
+
+    rename_response = client.patch(
+        f"/api/room/sessions/{session['id']}",
+        json={"title": "Evening songs"},
+    )
+    assert rename_response.status_code == 200
+    assert rename_response.json()["title"] == "Evening songs"
+
+    messages_response = client.get(f"/api/room/sessions/{session['id']}/messages")
+    assert messages_response.status_code == 200
+    assert messages_response.json() == []
+
+    delete_response = client.delete(f"/api/room/sessions/{session['id']}")
+    assert delete_response.status_code == 204
+    assert client.get("/api/room/sessions").json() == []
+
+
+def test_session_rename_rejects_blank_title(client: TestClient):
+    session = client.post("/api/room/sessions").json()
+
+    response = client.patch(
+        f"/api/room/sessions/{session['id']}",
+        json={"title": "   "},
+    )
+
+    assert response.status_code == 400
+
+
+def test_missing_session_messages_and_rename_return_404(client: TestClient):
+    messages_response = client.get("/api/room/sessions/missing-session/messages")
+    assert messages_response.status_code == 404
+
+    rename_response = client.patch(
+        "/api/room/sessions/missing-session",
+        json={"title": "Still missing"},
+    )
+    assert rename_response.status_code == 404
