@@ -14,9 +14,11 @@ from kumikoroom.schemas import (
     ChatIn,
     ChatMessageOut,
     ChatOut,
+    ChatSessionOut,
     MemoryEventOut,
     ProviderStatusOut,
 )
+from kumikoroom.sessions import ChatSession, SessionStore
 
 
 class ConversationManager:
@@ -25,25 +27,44 @@ class ConversationManager:
         settings: ApiSettings | None = None,
         provider: LLMProvider | None = None,
         memory_store: MemoryStore | None = None,
+        session_store: SessionStore | None = None,
     ) -> None:
         self.settings = settings or load_settings()
         self.provider = provider or build_provider(self.settings)
         self.memory_store = memory_store or MemoryStore(self.settings.memory_db_path)
+        self.session_store = session_store or SessionStore(self.settings.memory_db_path)
 
     def chat(self, payload: ChatIn) -> ChatOut:
         message = payload.message.strip() or "今天的音乐"
-        messages = self._build_messages(payload, message)
+        session = self._resolve_session(payload.session_id)
+        saved_user_message = self.session_store.append_message(
+            session_id=session.id,
+            role="user",
+            content=message,
+        )
+        messages = self._build_messages(payload, saved_user_message.content)
 
         try:
             result = self.provider.generate(messages)
         except ProviderUnavailable:
-            return self._provider_unavailable_response()
+            return self._provider_unavailable_response(session)
+
+        saved_reply = self.session_store.append_message(
+            session_id=session.id,
+            role="kumiko",
+            content=result.content,
+            provider=result.provider_status.provider,
+            provider_model=result.provider_status.model,
+            provider_configured=result.provider_status.configured,
+            provider_label=result.provider_status.label,
+        )
+        session = self.session_store.get_session(session.id)
 
         memory_events: list[MemoryEventOut] = []
         if payload.memory_enabled:
             for memory in extract_memories(
-                user_message=message,
-                assistant_reply=result.content,
+                user_message=saved_user_message.content,
+                assistant_reply=saved_reply.content,
             ):
                 saved = self.memory_store.save(
                     category=memory.category,
@@ -55,15 +76,21 @@ class ConversationManager:
 
         return ChatOut(
             reply=ChatMessageOut(
-                id="llm-kumiko-reply",
+                id=saved_reply.id,
                 role="kumiko",
-                content=result.content,
+                content=saved_reply.content,
             ),
             expression="listening",
             suggested_actions=["save_diary", "save_inspiration"],
             provider_status=ProviderStatusOut(**asdict(result.provider_status)),
             memory_events=memory_events,
+            session=_session_out(session),
         )
+
+    def _resolve_session(self, session_id: str | None) -> ChatSession:
+        if session_id:
+            return self.session_store.get_session(session_id)
+        return self.session_store.ensure_default_session()
 
     def _build_messages(self, payload: ChatIn, message: str) -> list[dict[str, str]]:
         system_parts = [build_persona_prompt(payload.persona_strength).strip()]
@@ -86,24 +113,30 @@ class ConversationManager:
         messages.append({"role": "user", "content": message})
         return messages
 
-    def _provider_unavailable_response(self) -> ChatOut:
+    def _provider_unavailable_response(self, session: ChatSession) -> ChatOut:
+        provider_status = _fallback_provider_status(self.settings)
+        saved_reply = self.session_store.append_message(
+            session_id=session.id,
+            role="kumiko",
+            content=_fallback_content(self.settings),
+            provider=provider_status.provider,
+            provider_model=provider_status.model,
+            provider_configured=provider_status.configured,
+            provider_label=provider_status.label,
+        )
+        session = self.session_store.get_session(session.id)
         return ChatOut(
             reply=ChatMessageOut(
-                id=_fallback_reply_id(self.settings),
+                id=saved_reply.id,
                 role="kumiko",
-                content=_fallback_content(self.settings),
+                content=saved_reply.content,
             ),
             expression="thinking",
             suggested_actions=[],
-            provider_status=_fallback_provider_status(self.settings),
+            provider_status=provider_status,
             memory_events=[],
+            session=_session_out(session),
         )
-
-
-def _fallback_reply_id(settings: ApiSettings) -> str:
-    if settings.llm_provider == "deepseek" and not settings.is_deepseek_configured:
-        return "deepseek-unconfigured"
-    return "provider-unavailable"
 
 
 def _fallback_content(settings: ApiSettings) -> str:
@@ -117,7 +150,14 @@ def _fallback_content(settings: ApiSettings) -> str:
 
 def _fallback_provider_status(settings: ApiSettings) -> ProviderStatusOut:
     if settings.llm_provider == "deepseek":
-        return ProviderStatusOut(**asdict(unconfigured_deepseek_status(settings)))
+        if not settings.is_deepseek_configured:
+            return ProviderStatusOut(**asdict(unconfigured_deepseek_status(settings)))
+        return ProviderStatusOut(
+            provider="deepseek",
+            model=settings.deepseek_model,
+            configured=True,
+            label=f"DeepSeek {settings.deepseek_model}",
+        )
     return ProviderStatusOut(
         provider="mock",
         model=None,
@@ -130,6 +170,10 @@ def _memory_event_out(memory: Any) -> MemoryEventOut:
     data = asdict(memory)
     data.pop("source", None)
     return MemoryEventOut(**data)
+
+
+def _session_out(session: ChatSession) -> ChatSessionOut:
+    return ChatSessionOut(**asdict(session))
 
 
 def _recent_messages(payload: ChatIn) -> list[dict[str, str]]:

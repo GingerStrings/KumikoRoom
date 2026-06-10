@@ -51,7 +51,10 @@ def get_room_state() -> RoomStateOut:
 
 @router.post("/chat", response_model=ChatOut)
 def post_chat(payload: ChatIn) -> ChatOut:
-    return ConversationManager(settings=load_settings()).chat(payload)
+    try:
+        return ConversationManager(settings=load_settings()).chat(payload)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
 
 
 def memory_store() -> MemoryStore:

@@ -151,3 +151,43 @@ def test_missing_session_messages_and_rename_return_404(client: TestClient):
         json={"title": "Still missing"},
     )
     assert rename_response.status_code == 404
+
+
+def test_chat_saves_messages_to_session_and_returns_session(client: TestClient):
+    session = client.post("/api/room/sessions").json()
+
+    response = client.post(
+        "/api/room/chat",
+        json={
+            "session_id": session["id"],
+            "message": "I want quiet piano tonight.",
+            "memory_enabled": False,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["session"]["id"] == session["id"]
+    assert body["session"]["title"] == "I want quiet piano tonight."
+    assert body["session"]["latest_message_preview"]
+
+    messages = client.get(
+        f"/api/room/sessions/{session['id']}/messages"
+    ).json()
+    assert [message["role"] for message in messages] == ["user", "kumiko"]
+    assert messages[0]["content"] == "I want quiet piano tonight."
+    assert body["reply"]["id"] == messages[1]["id"]
+
+
+def test_chat_with_missing_session_returns_404(client: TestClient):
+    response = client.post(
+        "/api/room/chat",
+        json={
+            "session_id": "missing-session",
+            "message": "hello",
+            "memory_enabled": False,
+        },
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Session not found"
