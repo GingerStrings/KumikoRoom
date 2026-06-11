@@ -354,14 +354,6 @@ p {
   grid-template-columns: 64px minmax(0, 1fr);
 }
 
-.room-workspace:has(.workspace-side) {
-  grid-template-columns: minmax(232px, 280px) minmax(420px, 1fr) minmax(260px, 0.38fr);
-}
-
-.room-workspace--sessions-collapsed:has(.workspace-side) {
-  grid-template-columns: 64px minmax(420px, 1fr) minmax(260px, 0.38fr);
-}
-
 .session-sidebar {
   height: calc(100vh - 56px);
   min-width: 0;
@@ -572,15 +564,6 @@ p {
   backdrop-filter: blur(18px);
 }
 
-.workspace-side {
-  display: grid;
-  align-content: start;
-  gap: 20px;
-  max-height: calc(100vh - 56px);
-  overflow: auto;
-  padding-right: 2px;
-}
-
 .room-topbar {
   display: flex;
   align-items: flex-start;
@@ -767,54 +750,6 @@ p {
   font-weight: 800;
 }
 
-.summary-card,
-.utility-card,
-.ai-card {
-  padding: 24px;
-  border: 1px solid rgba(255, 255, 255, 0.72);
-  border-radius: 18px;
-  background: var(--color-surface);
-  box-shadow: var(--shadow-soft);
-  backdrop-filter: blur(18px);
-}
-
-.summary-list,
-.utility-card,
-.ai-card {
-  display: grid;
-  gap: 12px;
-}
-
-.summary-list {
-  margin: 22px 0;
-}
-
-.summary-row,
-.utility-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 13px 14px;
-  border: 1px solid var(--color-line);
-  border-radius: 14px;
-  background: var(--color-surface-strong);
-}
-
-.summary-row span,
-.utility-row span {
-  color: var(--color-muted);
-}
-
-.summary-row strong,
-.utility-row strong {
-  text-align: right;
-}
-
-.utility-note {
-  margin-bottom: 0;
-  color: var(--color-muted);
-}
-
 .segmented-control {
   display: inline-grid;
   grid-template-columns: repeat(2, 44px);
@@ -854,21 +789,6 @@ p {
   width: 18px;
   height: 18px;
   accent-color: var(--color-accent-blue);
-}
-
-.memory-events {
-  display: grid;
-  gap: 8px;
-  padding: 12px 14px;
-  border: 1px solid var(--color-line);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.46);
-}
-
-.memory-events p {
-  margin-bottom: 0;
-  color: var(--color-muted);
-  overflow-wrap: anywhere;
 }
 
 .studio-shell {
@@ -917,11 +837,6 @@ p {
     grid-template-columns: 1fr;
   }
 
-  .room-workspace:has(.workspace-side),
-  .room-workspace--sessions-collapsed:has(.workspace-side) {
-    grid-template-columns: 1fr;
-  }
-
   .session-sidebar {
     height: auto;
     max-height: 280px;
@@ -943,12 +858,6 @@ p {
   .dialogue-card {
     height: min(720px, calc(100vh - 40px));
     min-height: 520px;
-  }
-
-  .workspace-side {
-    max-height: none;
-    overflow: visible;
-    padding-right: 0;
   }
 
   .studio-grid {
@@ -992,16 +901,6 @@ p {
 
   .chat-composer {
     grid-template-columns: 1fr;
-  }
-
-  .summary-row,
-  .utility-row {
-    flex-direction: column;
-  }
-
-  .summary-row strong,
-  .utility-row strong {
-    text-align: left;
   }
 
   .studio-grid {

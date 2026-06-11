@@ -244,9 +244,11 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     const nativeEvent = event.nativeEvent as KeyboardEvent<HTMLTextAreaElement>["nativeEvent"] & {
       isComposing?: boolean;
+      keyCode?: number;
     };
+    const isComposing = nativeEvent.isComposing || nativeEvent.keyCode === 229;
 
-    if (event.key !== "Enter" || event.shiftKey || nativeEvent.isComposing) {
+    if (event.key !== "Enter" || event.shiftKey || isComposing) {
       return;
     }
 

@@ -94,6 +94,26 @@ describe("Liz Bluebird room visual tokens", () => {
     });
   });
 
+  it("removes stale right rail selectors", () => {
+    const css = fs.readFileSync(cssPath, "utf8");
+
+    [
+      ".room-workspace:has(.workspace-side)",
+      ".room-workspace--sessions-collapsed:has(.workspace-side)",
+      ".workspace-side",
+      ".summary-card",
+      ".utility-card",
+      ".ai-card",
+      ".summary-list",
+      ".summary-row",
+      ".utility-row",
+      ".utility-note",
+      ".memory-events",
+    ].forEach((selector) => {
+      expect(css).not.toContain(selector);
+    });
+  });
+
   it("removes the old rose, fog, green, and brass room palette values", () => {
     const css = fs.readFileSync(cssPath, "utf8");
 

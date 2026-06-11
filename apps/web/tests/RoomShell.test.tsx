@@ -496,6 +496,18 @@ describe("RoomShell", () => {
     expect(input.value).toBe("kumiko");
   });
 
+  it("does not send when IME Enter reports keyCode 229", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    const input = getComposerInput();
+    fireEvent.change(input, { target: { value: "kumiko" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter", keyCode: 229 });
+
+    expect(apiMocks.postChat).not.toHaveBeenCalled();
+    expect(input.value).toBe("kumiko");
+  });
+
   it("does not send from the keyboard while the composer is disabled", async () => {
     const pendingSession = deferred<ChatSession>();
     apiMocks.getSessions.mockResolvedValueOnce([]);
