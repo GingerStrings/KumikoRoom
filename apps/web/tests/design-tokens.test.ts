@@ -54,6 +54,21 @@ describe("approved Palette C tokens", () => {
     expect(css).toContain(".chat-composer {\n  flex: 0 0 auto;");
   });
 
+  it("defines room session sidebar layout selectors", () => {
+    const css = fs.readFileSync(cssPath, "utf8");
+
+    [
+      ".room-workspace--sessions-collapsed",
+      ".session-sidebar {",
+      ".session-sidebar--collapsed",
+      ".session-sidebar__item[data-active=\"true\"]",
+      ".session-sidebar__list",
+      ".session-sidebar__select",
+    ].forEach((selector) => {
+      expect(css).toContain(selector);
+    });
+  });
+
   it("removes the old green and brass room palette values", () => {
     const css = fs.readFileSync(cssPath, "utf8");
 

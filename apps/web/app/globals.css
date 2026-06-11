@@ -339,10 +339,14 @@ p {
 .room-workspace {
   height: 100vh;
   display: grid;
-  grid-template-columns: minmax(420px, 1fr) minmax(280px, 0.42fr);
+  grid-template-columns: minmax(232px, 280px) minmax(420px, 1fr) minmax(260px, 0.38fr);
   gap: 20px;
   padding: 32px;
   overflow: hidden;
+}
+
+.room-workspace--sessions-collapsed {
+  grid-template-columns: 60px minmax(420px, 1fr) minmax(260px, 0.38fr);
 }
 
 .dialogue-card,
@@ -350,6 +354,204 @@ p {
 .utility-card,
 .ai-card {
   padding: 24px;
+}
+
+.session-sidebar {
+  height: calc(100vh - 64px);
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+  overflow: hidden;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-soft);
+  backdrop-filter: blur(18px);
+}
+
+.session-sidebar--collapsed {
+  align-items: center;
+  padding: 12px 8px;
+}
+
+.session-sidebar__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.session-sidebar__header h2 {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-sidebar__toggle {
+  flex: 0 0 auto;
+  width: 44px;
+  min-width: 44px;
+  min-height: 40px;
+  padding: 0;
+  color: var(--color-muted);
+  font-weight: 800;
+}
+
+.session-sidebar__toggle:hover {
+  border-color: rgba(169, 85, 104, 0.28);
+  color: var(--color-rose);
+}
+
+.session-sidebar__create {
+  width: 100%;
+  border-color: transparent;
+  background: var(--color-rose);
+  color: white;
+  font-weight: 800;
+}
+
+.session-sidebar__error {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(201, 127, 142, 0.3);
+  border-radius: 8px;
+  background: #fff4e9;
+}
+
+.session-sidebar__error p {
+  margin-bottom: 0;
+  color: #9a5d45;
+  font-weight: 700;
+}
+
+.session-sidebar__error button {
+  min-height: 38px;
+  justify-self: start;
+  padding: 0 14px;
+}
+
+.session-sidebar__status {
+  margin-bottom: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  background: var(--color-fog-soft);
+  color: var(--color-muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.session-sidebar__list {
+  min-height: 0;
+  flex: 1 1 auto;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.session-sidebar__item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.46);
+}
+
+.session-sidebar__item[data-active="true"] {
+  border-color: rgba(169, 85, 104, 0.28);
+  background: var(--color-rose-soft);
+}
+
+.session-sidebar__select {
+  min-width: 0;
+  width: 100%;
+  min-height: 58px;
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  gap: 4px;
+  padding: 8px 10px;
+  border-color: transparent;
+  background: transparent;
+  text-align: left;
+}
+
+.session-sidebar__select:hover {
+  background: var(--color-surface-strong);
+}
+
+.session-sidebar__select strong,
+.session-sidebar__select span {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-sidebar__select strong {
+  font-size: 14px;
+}
+
+.session-sidebar__select span {
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.session-sidebar__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.session-sidebar__actions button {
+  width: 34px;
+  min-width: 34px;
+  min-height: 34px;
+  padding: 0;
+  color: var(--color-muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.session-sidebar__actions button:hover {
+  border-color: rgba(169, 85, 104, 0.28);
+  color: var(--color-rose);
+}
+
+.session-sidebar__rename {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  width: 100%;
+}
+
+.session-sidebar__rename input {
+  min-width: 0;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  background: var(--color-surface-strong);
+  color: var(--color-text);
+}
+
+.session-sidebar__rename button {
+  min-height: 42px;
+  padding: 0 14px;
+  font-weight: 800;
 }
 
 .dialogue-card {
@@ -604,6 +806,28 @@ p {
     height: auto;
     min-height: 100vh;
     overflow: visible;
+  }
+
+  .room-workspace--sessions-collapsed {
+    grid-template-columns: 1fr;
+  }
+
+  .session-sidebar {
+    height: auto;
+    max-height: 280px;
+  }
+
+  .session-sidebar--collapsed {
+    max-height: 72px;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 10px 12px;
+  }
+
+  .session-sidebar--collapsed .session-sidebar__toggle {
+    width: auto;
+    padding: 0 14px;
   }
 
   .dialogue-card {
