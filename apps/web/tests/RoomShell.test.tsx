@@ -454,6 +454,64 @@ describe("RoomShell", () => {
     });
   });
 
+  it("sends a non-empty draft when Enter is pressed in the composer", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: "默认会话" })).toBeTruthy();
+    const input = getComposerInput();
+    fireEvent.change(input, { target: { value: "晚上好" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    expect(await screen.findByText("收到。")).toBeTruthy();
+    expect(apiMocks.postChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "晚上好",
+        sessionId: "session-default"
+      })
+    );
+  });
+
+  it("keeps Shift+Enter available for multiline drafts", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: "默认会话" })).toBeTruthy();
+    const input = getComposerInput();
+    fireEvent.change(input, { target: { value: "第一行" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter", shiftKey: true });
+    fireEvent.change(input, { target: { value: "第一行\n第二行" } });
+
+    expect(apiMocks.postChat).not.toHaveBeenCalled();
+    expect(input.value).toBe("第一行\n第二行");
+  });
+
+  it("does not send while the IME composition Enter key is active", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: "默认会话" })).toBeTruthy();
+    const input = getComposerInput();
+    fireEvent.change(input, { target: { value: "kumiko" } });
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter", isComposing: true });
+
+    expect(apiMocks.postChat).not.toHaveBeenCalled();
+    expect(input.value).toBe("kumiko");
+  });
+
+  it("does not send from the keyboard while the composer is disabled", async () => {
+    const pendingSession = deferred<ChatSession>();
+    apiMocks.getSessions.mockResolvedValueOnce([]);
+    apiMocks.createSession.mockReturnValueOnce(pendingSession.promise);
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    const input = getComposerInput();
+    expect(input.disabled).toBe(true);
+    fireEvent.keyDown(input, { key: "Enter", code: "Enter" });
+
+    expect(apiMocks.postChat).not.toHaveBeenCalled();
+    pendingSession.resolve(defaultCreatedSession);
+    expect(await screen.findByRole("button", { name: "新会话" })).toBeTruthy();
+  });
+
   it("restores and persists AI control choices", async () => {
     localStorage.setItem("kumikoroom.personaStrength", "strong");
     localStorage.setItem("kumikoroom.memoryEnabled", "false");

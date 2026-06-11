@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   createSession,
   deleteSession,
@@ -241,6 +241,23 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     }
   }
 
+  function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    const nativeEvent = event.nativeEvent as KeyboardEvent<HTMLTextAreaElement>["nativeEvent"] & {
+      isComposing?: boolean;
+    };
+
+    if (event.key !== "Enter" || event.shiftKey || nativeEvent.isComposing) {
+      return;
+    }
+
+    event.preventDefault();
+    if (isComposerDisabled || draft.trim().length === 0) {
+      return;
+    }
+
+    event.currentTarget.form?.requestSubmit();
+  }
+
   async function handleCreateSession() {
     if (isSessionOperationBlocked()) return;
 
@@ -447,6 +464,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
             value={draft}
             disabled={isComposerDisabled}
             onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={handleComposerKeyDown}
           />
           {sendError ? (
             <p className="composer-error" role="alert">
