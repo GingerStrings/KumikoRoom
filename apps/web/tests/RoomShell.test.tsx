@@ -65,33 +65,39 @@ describe("RoomShell", () => {
     expect(screen.getByRole("heading", { name: "和久美子说会儿话" })).toBeTruthy();
     expect(screen.getByLabelText("聊天时间线").textContent).toContain("今天想从哪首歌开始聊");
     expect(screen.getByRole("textbox", { name: "写一条消息" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "打开创作资料" }).getAttribute("href")).toBe("/studio");
+    expect(screen.getByRole("button", { name: "模型与偏好" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "打开创作资料" })).toBeNull();
     expect(screen.queryByLabelText("久美子立绘占位")).toBeNull();
     expect(screen.queryByText("陪伴房间")).toBeNull();
+    expect(screen.queryByLabelText("今日摘要")).toBeNull();
+    expect(screen.queryByLabelText("本地音乐状态")).toBeNull();
+    expect(screen.queryByLabelText("AI 设置")).toBeNull();
+    expect(screen.queryByText("今日心情")).toBeNull();
+    expect(screen.queryByText("听歌日记")).toBeNull();
   });
 
-  it("shows local music and connection status as calm utility panels", async () => {
+  it("opens model and preference controls from the top-right popover", async () => {
     render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
 
     expect(await screen.findByRole("button", { name: "默认会话" })).toBeTruthy();
-    const localMusicCard = screen.getByLabelText("本地音乐状态");
-    const aiCard = screen.getByLabelText("AI 设置");
+    const settings = openModelPreferences();
 
-    expect(screen.getByLabelText("今日摘要")).toBeTruthy();
-    expect(localMusicCard).toBeTruthy();
-    expect(aiCard).toBeTruthy();
-    expect(screen.getByRole("button", { name: "中" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "强" })).toBeTruthy();
-    expect(screen.getByRole("checkbox", { name: "自动记忆" })).toBeTruthy();
-    expect(within(localMusicCard).queryByText("模型连接")).toBeNull();
-    expect(within(localMusicCard).queryByText("本地 API")).toBeNull();
-    expect(within(aiCard).getByText("本地 API")).toBeTruthy();
+    expect(within(settings).getByText("当前连接")).toBeTruthy();
+    expect(within(settings).getByText("本地 API")).toBeTruthy();
+    expect(within(settings).getByRole("group", { name: "人设强度" })).toBeTruthy();
+    expect(within(settings).getByRole("button", { name: "中" })).toBeTruthy();
+    expect(within(settings).getByRole("button", { name: "强" })).toBeTruthy();
+    expect(within(settings).getByRole("checkbox", { name: "自动记忆" })).toBeTruthy();
+    expect(within(settings).queryByLabelText("最近记住的内容")).toBeNull();
     expect(screen.getAllByText("当前连接")).toHaveLength(1);
     expect(screen.queryByText(/127\.0\.0\.1/)).toBeNull();
     expect(screen.queryByText(/聊天请求会转发到/)).toBeNull();
     expect(screen.queryByRole("button", { name: "TTS" })).toBeNull();
     expect(screen.queryByRole("button", { name: "存到日记" })).toBeNull();
     expect(screen.queryByRole("button", { name: "存为灵感" })).toBeNull();
+
+    fireEvent.click(within(settings).getByRole("button", { name: "关闭模型设置" }));
+    expect(screen.queryByRole("dialog", { name: "模型与偏好设置" })).toBeNull();
   });
 
   it("loads sessions and messages into the room", async () => {
@@ -388,8 +394,9 @@ describe("RoomShell", () => {
     render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
 
     expect(await screen.findByRole("button", { name: "默认会话" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "强" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: "自动记忆" }));
+    const settings = openModelPreferences();
+    fireEvent.click(within(settings).getByRole("button", { name: "强" }));
+    fireEvent.click(within(settings).getByRole("checkbox", { name: "自动记忆" }));
     fireEvent.change(screen.getByRole("textbox", { name: "写一条消息" }), {
       target: { value: "晚上好" }
     });
@@ -397,9 +404,9 @@ describe("RoomShell", () => {
 
     expect(await screen.findByText("嗯，我在听。")).toBeTruthy();
     expect(screen.getByRole("status", { name: "DeepSeek deepseek-v4-flash" })).toBeTruthy();
-    expect(screen.getAllByText("DeepSeek deepseek-v4-flash")).toHaveLength(2);
-    expect(screen.getByText("用户喜欢安静的钢琴。")).toBeTruthy();
-    expect(screen.getByText("思考")).toBeTruthy();
+    expect(screen.queryByLabelText("最近记住的内容")).toBeNull();
+    expect(screen.queryByText("用户喜欢安静的钢琴。")).toBeNull();
+    expect(screen.queryByText("思考")).toBeNull();
     expect(apiMocks.postChat).toHaveBeenNthCalledWith(1, {
       message: "晚上好",
       roomState: DEFAULT_ROOM_STATE,
@@ -461,9 +468,12 @@ describe("RoomShell", () => {
     await waitFor(() => expect(apiMocks.getSessions).toHaveBeenCalledTimes(1));
     expect(apiMocks.getSessionMessages).toHaveBeenCalledTimes(1);
     expect(apiMocks.createSession).not.toHaveBeenCalled();
-    const mediumButton = screen.getByRole("button", { name: "中" });
-    const strongButton = screen.getByRole("button", { name: "强" });
-    const memoryCheckbox = screen.getByRole("checkbox", { name: "自动记忆" }) as HTMLInputElement;
+    const settings = openModelPreferences();
+    const mediumButton = within(settings).getByRole("button", { name: "中" });
+    const strongButton = within(settings).getByRole("button", { name: "强" });
+    const memoryCheckbox = within(settings).getByRole("checkbox", {
+      name: "自动记忆"
+    }) as HTMLInputElement;
 
     expect(localStorage.getItem("kumikoroom.personaStrength")).toBe("strong");
     expect(localStorage.getItem("kumikoroom.memoryEnabled")).toBe("false");
@@ -484,8 +494,9 @@ describe("RoomShell", () => {
     render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
 
     expect(await screen.findByRole("button", { name: "默认会话" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "中" }).getAttribute("aria-pressed")).toBe("true");
-    expect(screen.getByRole("button", { name: "强" }).getAttribute("aria-pressed")).toBe("false");
+    const settings = openModelPreferences();
+    expect(within(settings).getByRole("button", { name: "中" }).getAttribute("aria-pressed")).toBe("true");
+    expect(within(settings).getByRole("button", { name: "强" }).getAttribute("aria-pressed")).toBe("false");
   });
 });
 
@@ -541,6 +552,11 @@ function deferred<T>() {
   });
 
   return { promise, resolve, reject };
+}
+
+function openModelPreferences(): HTMLElement {
+  fireEvent.click(screen.getByRole("button", { name: "模型与偏好" }));
+  return screen.getByRole("dialog", { name: "模型与偏好设置" });
 }
 
 function getComposerInput(): HTMLTextAreaElement {
