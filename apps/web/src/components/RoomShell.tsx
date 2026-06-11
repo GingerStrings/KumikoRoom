@@ -12,7 +12,6 @@ import {
 import type {
   ChatMessage,
   ChatSession,
-  MemoryEvent,
   PersonaStrength,
   ProviderStatus,
   RoomState,
@@ -44,14 +43,13 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     }
   ]);
   const [draft, setDraft] = useState("");
-  const [currentExpression, setCurrentExpression] = useState(initialState.character.expression);
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [personaStrength, setPersonaStrength] = useState<PersonaStrength>("medium");
   const [memoryEnabled, setMemoryEnabled] = useState(true);
   const [settingsHydrated, setSettingsHydrated] = useState(false);
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
-  const [recentMemoryEvents, setRecentMemoryEvents] = useState<MemoryEvent[]>([]);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionIdState] = useState<string | null>(null);
   const [sessionMessages, setSessionMessages] = useState<StoredChatMessage[]>([]);
@@ -185,25 +183,6 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(sessionsCollapsed));
   }, [sessionsCollapsed]);
 
-  const summaryItems = [
-    {
-      label: "今日心情",
-      value: initialState.music.listeningMood ?? "还没记录"
-    },
-    {
-      label: "听歌日记",
-      value: initialState.diarySummary
-    },
-    {
-      label: "灵感便签",
-      value: `${initialState.inspirationCount} 条灵感`
-    },
-    {
-      label: "创作工程",
-      value: `${initialState.studio.unfinishedCount} 个待整理`
-    }
-  ];
-
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const message = draft.trim();
@@ -239,9 +218,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
 
       const storedSessionId = response.session?.id ?? submittedSessionId;
 
-      setCurrentExpression(response.expression);
       setProviderStatus(response.providerStatus);
-      setRecentMemoryEvents(response.memoryEvents);
       setMessages((current) => [...current, response.reply]);
       if (storedSessionId) {
         setSessionMessages((current) => [
@@ -369,18 +346,84 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
         onToggleCollapsed={() => setSessionsCollapsed((current) => !current)}
       />
       <section className="workspace-card dialogue-card" aria-label="对话工作区">
-        <header className="panel-heading">
-          <div>
+        <header className="room-topbar">
+          <div className="room-topbar__meta">
             <p className="eyebrow">KumikoRoom</p>
             <h1>和久美子说会儿话</h1>
           </div>
-          <span
-            className={`connection-chip connection-chip--${connectionStatus.tone}`}
-            role="status"
-            aria-label={connectionLabel}
-          >
-            {connectionLabel}
-          </span>
+          <div className="room-topbar__actions">
+            <span
+              className={`connection-chip connection-chip--${connectionStatus.tone}`}
+              role="status"
+              aria-label={connectionLabel}
+            >
+              {connectionLabel}
+            </span>
+            <button
+              className="settings-trigger"
+              type="button"
+              aria-haspopup="dialog"
+              aria-expanded={settingsOpen}
+              aria-controls="room-settings-popover"
+              onClick={() => setSettingsOpen((current) => !current)}
+            >
+              模型与偏好
+            </button>
+            {settingsOpen ? (
+              <div
+                className="settings-popover"
+                id="room-settings-popover"
+                role="dialog"
+                aria-label="模型与偏好设置"
+              >
+                <div className="settings-popover__header">
+                  <h2>模型与偏好</h2>
+                  <button
+                    type="button"
+                    aria-label="关闭模型设置"
+                    onClick={() => setSettingsOpen(false)}
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="model-status-row">
+                  <span>当前连接</span>
+                  <strong>{connectionLabel}</strong>
+                </div>
+                <div className="settings-section">
+                  <span>模型</span>
+                  <strong>{providerStatus?.model ?? "发送后同步"}</strong>
+                </div>
+                <div className="ai-setting-row">
+                  <span>人设强度</span>
+                  <div className="segmented-control" role="group" aria-label="人设强度">
+                    <button
+                      type="button"
+                      aria-pressed={personaStrength === "medium"}
+                      onClick={() => setPersonaStrength("medium")}
+                    >
+                      中
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={personaStrength === "strong"}
+                      onClick={() => setPersonaStrength("strong")}
+                    >
+                      强
+                    </button>
+                  </div>
+                </div>
+                <label className="memory-toggle">
+                  <span>自动记忆</span>
+                  <input
+                    type="checkbox"
+                    checked={memoryEnabled}
+                    onChange={(event) => setMemoryEnabled(event.target.checked)}
+                  />
+                </label>
+              </div>
+            ) : null}
+          </div>
         </header>
 
         <div className="chat-timeline" aria-label="聊天时间线">
@@ -417,85 +460,6 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
           </div>
         </form>
       </section>
-
-      <aside className="workspace-side">
-        <section className="workspace-card summary-card" aria-label="今日摘要">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">Today</p>
-              <h2>今日摘要</h2>
-            </div>
-            <span className="soft-badge">{expressionLabel[currentExpression]}</span>
-          </div>
-          <div className="summary-list">
-            {summaryItems.map((item) => (
-              <div className="summary-row" key={item.label}>
-                <span>{item.label}</span>
-                <strong>{item.value}</strong>
-              </div>
-            ))}
-          </div>
-          <a className="text-link" href={initialState.studio.route} aria-label="打开创作资料">
-            打开创作资料
-          </a>
-        </section>
-
-        <section className="workspace-card utility-card" aria-label="本地音乐状态">
-          <p className="eyebrow">Local</p>
-          <h2>本地音乐状态</h2>
-          <div className="utility-row">
-            <span>当前曲目</span>
-            <strong>{initialState.music.currentTrackTitle ?? "未选择歌曲"}</strong>
-          </div>
-          <div className="utility-row">
-            <span>播放器</span>
-            <strong>待接入</strong>
-          </div>
-        </section>
-
-        <section className="workspace-card ai-card" aria-label="AI 设置">
-          <p className="eyebrow">AI</p>
-          <h2>模型与记忆</h2>
-          <div className="utility-row">
-            <span>当前连接</span>
-            <strong>{connectionLabel}</strong>
-          </div>
-          <div className="ai-setting-row">
-            <span>人设强度</span>
-            <div className="segmented-control" role="group" aria-label="人设强度">
-              <button
-                type="button"
-                aria-pressed={personaStrength === "medium"}
-                onClick={() => setPersonaStrength("medium")}
-              >
-                中
-              </button>
-              <button
-                type="button"
-                aria-pressed={personaStrength === "strong"}
-                onClick={() => setPersonaStrength("strong")}
-              >
-                强
-              </button>
-            </div>
-          </div>
-          <label className="memory-toggle">
-            <input
-              type="checkbox"
-              checked={memoryEnabled}
-              onChange={(event) => setMemoryEnabled(event.target.checked)}
-            />
-            自动记忆
-          </label>
-          <div className="memory-events" aria-label="最近记住的内容">
-            {recentMemoryEvents.length === 0 ? (
-              <p>还没有新的记忆。</p>
-            ) : (
-              recentMemoryEvents.map((event) => <p key={event.id}>{event.text}</p>)
-            )}
-          </div>
-        </section>
-      </aside>
     </main>
   );
 }
@@ -530,10 +494,3 @@ function upsertSessionToFront(sessions: ChatSession[], updatedSession: ChatSessi
     ...sessions.filter((session) => session.id !== updatedSession.id)
   ];
 }
-
-const expressionLabel: Record<RoomState["character"]["expression"], string> = {
-  neutral: "平静",
-  listening: "倾听",
-  thinking: "思考",
-  encouraging: "鼓励"
-};
