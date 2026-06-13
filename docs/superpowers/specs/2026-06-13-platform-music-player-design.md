@@ -29,6 +29,7 @@ The first version includes:
 - A `VideoMiniWindow` opened from the existing room player.
 - A player button that appears only when the current item has an embeddable video source.
 - Current music context included in chat payloads.
+- A lightweight room agent runtime that routes user intent to player, mini-window, and music-item tools.
 - UI tests for the unchanged default player surface and mini-window open/close behavior.
 
 The first version excludes:
@@ -151,6 +152,50 @@ Kumiko can use this to answer questions such as:
 
 The chat context should stay small. Full comment, danmaku, and recommendation analysis belong to later feature slices.
 
+## Room Agent Runtime
+
+The player and mini-window should be wired through a small agent runtime inspired by Codex-style local agent design: explicit context, bounded tools, observable actions, and project-level instructions.
+
+The MVP runtime has one coordinator, `RoomAgent`, that receives:
+
+- The latest user message.
+- Current room state.
+- Current `ListeningContext`.
+- Available music queue items.
+- Persisted user preferences and Kumiko persona rules.
+
+The coordinator classifies the user's intent into one of these actions:
+
+- `chat`: answer normally with listening context.
+- `play_item`: switch the active music item.
+- `open_video_window`: open the mini-window for the current or referenced Bilibili item.
+- `save_music_note`: attach a short note to the current item.
+- `explain_item`: summarize why the current item may fit the user's taste or creative mood.
+- `unsupported`: explain the missing capability without changing player state.
+
+Tools are narrow functions with typed inputs and outputs:
+
+```ts
+export type RoomAgentToolName =
+  | "parse_bilibili_url"
+  | "set_active_music_item"
+  | "open_video_mini_window"
+  | "save_music_note"
+  | "build_listening_context";
+```
+
+The first implementation can keep these tools local to the web app. Later slices may move durable operations to the API.
+
+Agent rules:
+
+- The agent may open the mini-window only from an explicit user request or a player button action.
+- The agent may save notes only when the user clearly asks to remember or record something.
+- The agent should keep platform limitations visible, especially iframe progress and unsupported links.
+- Tool results should update UI state and be reflected in the next chat reply.
+- Tool failures should be returned as calm chat-visible status, not thrown into the main room UI.
+
+This gives KumikoRoom a real Agent workflow without forcing the first player slice into a large recommendation platform.
+
 ## Studio Relationship
 
 The room player and the studio should share the same item model over time.
@@ -185,6 +230,8 @@ Frontend tests should cover:
 - Mini-window opens, changes size, and closes.
 - Mini-window fallback appears when no `embedUrl` exists.
 - Chat payload includes the compact listening context for the active item.
+- Room agent intent routing opens the video mini-window only for explicit user intent.
+- Room agent note-saving writes to the active item only when requested.
 
 If local audio playback logic is added in this slice, tests should mock media methods and assert state changes instead of depending on real playback.
 
@@ -196,6 +243,7 @@ If local audio playback logic is added in this slice, tests should mock media me
 - Closing the mini-window keeps the current item selected.
 - Local audio remains the path for full native playback control.
 - Chat requests can include current listening context.
+- Agent-routed player actions are typed, testable, and visible in the chat response.
 - No platform media is downloaded or committed.
 
 ## Later Work
