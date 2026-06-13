@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   PLAYER_TRACKS,
+  buildBilibiliEmbedUrl,
   buildListeningContext,
   makeBilibiliMusicItem,
   parseBilibiliVideoUrl
@@ -26,6 +27,12 @@ describe("music item platform helpers", () => {
     expect(parseBilibiliVideoUrl("https://music.163.com/song?id=123")).toBeNull();
   });
 
+  it("encodes Bilibili embed bvid values", () => {
+    expect(buildBilibiliEmbedUrl("BV1xx411c7mD&autoplay=1")).toBe(
+      "https://player.bilibili.com/player.html?bvid=BV1xx411c7mD%26autoplay%3D1&page=1&high_quality=1&autoplay=0"
+    );
+  });
+
   it("creates a Bilibili music item with an embeddable video surface", () => {
     const item = makeBilibiliMusicItem({
       id: "test-bv",
@@ -41,8 +48,20 @@ describe("music item platform helpers", () => {
       creator: "demo up",
       pageUrl: "https://www.bilibili.com/video/BV1xx411c7mD",
       embedUrl: "https://player.bilibili.com/player.html?bvid=BV1xx411c7mD&page=1&high_quality=1&autoplay=0",
+      tags: ["bilibili"],
       canOpenVideo: true
     });
+  });
+
+  it("throws when creating a Bilibili item from an invalid URL", () => {
+    expect(() =>
+      makeBilibiliMusicItem({
+        id: "bad-bv",
+        title: "Broken rehearsal",
+        creator: "demo up",
+        url: "https://music.163.com/song?id=123"
+      })
+    ).toThrow("Invalid Bilibili video URL");
   });
 
   it("keeps the default queue source-aware while preserving the current first track label", () => {

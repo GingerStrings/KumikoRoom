@@ -64,7 +64,7 @@ function makeLocalMusicItem(input: {
 }
 
 export function buildBilibiliEmbedUrl(bvid: string): string {
-  return `https://player.bilibili.com/player.html?bvid=${bvid}&page=1&high_quality=1&autoplay=0`;
+  return `https://player.bilibili.com/player.html?bvid=${encodeURIComponent(bvid)}&page=1&high_quality=1&autoplay=0`;
 }
 
 export function parseBilibiliVideoUrl(input: string): ParsedBilibiliVideo | null {
@@ -98,7 +98,7 @@ export function makeBilibiliMusicItem(input: BilibiliMusicItemInput): MusicItem 
     coverUrl: input.coverUrl,
     pageUrl: parsedVideo.pageUrl,
     embedUrl: parsedVideo.embedUrl,
-    tags: input.tags ?? [],
+    tags: input.tags ?? ["bilibili"],
     notes: input.notes,
     canOpenVideo: true
   };
