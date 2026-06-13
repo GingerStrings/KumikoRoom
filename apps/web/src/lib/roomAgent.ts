@@ -86,8 +86,12 @@ export function createRoomAgentToolRegistry(entries: Iterable<RoomAgentToolEntry
   return registry;
 }
 
-export function routeRoomAgentIntent(message: string, queue: MusicItem[]): RoomAgentAction {
+export function routeRoomAgentIntent(message: string, queue: MusicItem[]): RoomAgentAction | null {
   const trimmedMessage = message.trim();
+
+  if (!trimmedMessage) {
+    return null;
+  }
 
   if (NOTE_INTENT_PATTERN.test(trimmedMessage)) {
     return {
@@ -129,11 +133,7 @@ export function routeRoomAgentIntent(message: string, queue: MusicItem[]): RoomA
     };
   }
 
-  return {
-    id: "agent-action-save-note",
-    toolName: "save_music_note",
-    input: { note: trimmedMessage }
-  };
+  return null;
 }
 
 export function dispatchRoomAgentAction(
@@ -143,10 +143,20 @@ export function dispatchRoomAgentAction(
 ): RoomAgentToolResult {
   runtime.events.push({ type: "tool_start", actionId: action.id, toolName: action.toolName });
 
+  const stateBeforeDispatch = cloneState(runtime.state);
   const handler = runtime.registry.get(action.toolName);
-  const result =
-    handler?.(runtime, action, queue) ??
-    makeResult(false, action.toolName, `unsupported room agent tool: ${action.toolName}`, runtime.state);
+  let result: RoomAgentToolResult;
+
+  if (!handler) {
+    result = makeResult(false, action.toolName, `unsupported room agent tool: ${action.toolName}`, runtime.state);
+  } else {
+    try {
+      result = handler(runtime, action, queue);
+    } catch (error) {
+      restoreState(runtime.state, stateBeforeDispatch);
+      result = makeResult(false, action.toolName, `room agent tool failed: ${formatToolError(error)}`, runtime.state);
+    }
+  }
 
   runtime.events.push({
     type: "tool_finish",
@@ -256,4 +266,14 @@ function cloneState(state: RoomAgentState): RoomAgentState {
     videoWindowOpen: state.videoWindowOpen,
     notes: [...state.notes]
   };
+}
+
+function restoreState(target: RoomAgentState, source: RoomAgentState): void {
+  target.activeItemId = source.activeItemId;
+  target.videoWindowOpen = source.videoWindowOpen;
+  target.notes = [...source.notes];
+}
+
+function formatToolError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
