@@ -13,7 +13,8 @@ describe("StudioEntry", () => {
     expect(screen.getByRole("button", { name: "工程" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "素材" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "笔记" })).toBeTruthy();
-    expect(screen.getByText("还没有接入本地工程。")).toBeTruthy();
+    expect(screen.getByText("本地资料为空。")).toBeTruthy();
+    expect(screen.getByText("未连接本地目录")).toBeTruthy();
     expect(document.querySelector(".studio-workbench")).toBeTruthy();
     expect(document.querySelector(".studio-shelf")).toBeTruthy();
     expect(document.querySelector(".studio-module")).toBeNull();
@@ -25,5 +26,8 @@ describe("StudioEntry", () => {
     expect(screen.queryByText("创作资料")).toBeNull();
     expect(screen.queryByText("工程概览")).toBeNull();
     expect(screen.queryByText("Demo 音频")).toBeNull();
+    expect(screen.queryByText(/之后这里可以放/)).toBeNull();
+    expect(screen.queryByText(/不用假内容/)).toBeNull();
+    expect(screen.queryByText(/这里更像一个轻资料柜/)).toBeNull();
   });
 });

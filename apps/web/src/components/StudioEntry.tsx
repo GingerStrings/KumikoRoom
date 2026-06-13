@@ -40,9 +40,9 @@ export function StudioEntry() {
           <div className="studio-body">
             <div className="studio-empty">
               <div className="studio-empty-paper">
-                <p className="eyebrow">Empty</p>
-                <h2>还没有接入本地工程。</h2>
-                <p>之后这里可以放工程文件、音频素材和写作笔记。当前先保持清爽，不用假内容把页面填满。</p>
+                <p className="eyebrow">Local</p>
+                <h2>本地资料为空。</h2>
+                <p>未连接本地目录</p>
                 <a className="studio-soft-action" href="/room">
                   先回到房间
                 </a>
@@ -52,8 +52,8 @@ export function StudioEntry() {
             <aside className="studio-character" aria-label="角色侧栏">
               <div className="studio-character__figure" aria-hidden="true" />
               <div className="studio-note">
-                <strong>当前空间</strong>
-                <span>这里更像一个轻资料柜，承担整理入口和状态提示。</span>
+                <strong>本地目录</strong>
+                <span>未连接</span>
               </div>
             </aside>
           </div>

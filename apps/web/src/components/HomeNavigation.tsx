@@ -15,7 +15,7 @@ export function HomeNavigation({ connectionStatus }: HomeNavigationProps) {
           <h1 id="home-title" className="home-title">
             KumikoRoom
           </h1>
-          <p className="home-lede">安静一点，从房间开始。这里保留最少的入口，让用户不用先读一堆功能说明。</p>
+          <p className="home-lede">放学后的练习室，雨声和谱架都还在原位。</p>
 
           <div className={`connection-strip connection-strip--${connectionStatus.tone}`}>
             <div>

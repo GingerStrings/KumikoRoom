@@ -9,6 +9,7 @@ describe("HomeNavigation", () => {
     render(<HomeNavigation connectionStatus={getConnectionStatus("http://127.0.0.1:8000")} />);
 
     expect(screen.getByRole("heading", { name: "KumikoRoom" })).toBeTruthy();
+    expect(screen.getByText("放学后的练习室，雨声和谱架都还在原位。")).toBeTruthy();
     expect(screen.getByRole("link", { name: "进入聊天" }).getAttribute("href")).toBe("/room");
     expect(screen.getByRole("link", { name: "打开资料室" }).getAttribute("href")).toBe("/studio");
     expect(screen.getByText("本地 API")).toBeTruthy();
@@ -26,5 +27,7 @@ describe("HomeNavigation", () => {
     expect(screen.queryByText("今天从哪里开始？")).toBeNull();
     expect(screen.queryByText("今日入口")).toBeNull();
     expect(screen.queryByText("创作资料")).toBeNull();
+    expect(screen.queryByText(/功能说明/)).toBeNull();
+    expect(screen.queryByText(/不用先读/)).toBeNull();
   });
 });
