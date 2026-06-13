@@ -1,6 +1,6 @@
 # KumikoRoom
 
-KumikoRoom is a local-first music companionship app centered on Kumiko Oumae.
+KumikoRoom is a local-first music companionship app centered on Oumae Kumiko.
 
 The main entry is the companion room. The Creative Archive is an internal feature area for local music projects, demo audio, notes, and FL Studio project metadata.
 

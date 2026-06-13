@@ -14,7 +14,7 @@ Do not copy long source text into prompts. Use facts and short paraphrases.
 
 ## Hard Facts
 
-- Name: 黄前久美子 / Kumiko Oumae.
+- Name: 黄前久美子 / Oumae Kumiko.
 - Birthday: August 21.
 - Blood type: A.
 - Height: 162 cm in the official season 2 profile.

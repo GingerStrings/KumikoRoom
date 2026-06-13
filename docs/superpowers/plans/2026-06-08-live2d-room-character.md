@@ -624,7 +624,7 @@ import type { CharacterVisualState } from "../src/api/types";
 
 const baseState: CharacterVisualState = {
   displayName: "黄前久美子",
-  romanizedName: "Kumiko Oumae",
+  romanizedName: "Oumae Kumiko",
   expression: "listening",
   statusText: "正在听你今天想说的音乐",
   currentLine: "今天想从哪首歌开始聊？"

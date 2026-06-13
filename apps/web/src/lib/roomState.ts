@@ -5,7 +5,7 @@ export const DEFAULT_ROOM_STATE: RoomState = {
   roomName: "陪伴房间",
   character: {
     displayName: "黄前久美子",
-    romanizedName: "Kumiko Oumae",
+    romanizedName: "Oumae Kumiko",
     expression: "listening",
     statusText: "正在听你今天想说的音乐"
   },

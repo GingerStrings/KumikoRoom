@@ -149,7 +149,7 @@ Create `README.md`:
 ```markdown
 # KumikoRoom
 
-KumikoRoom is a local-first music companionship app centered on Kumiko Oumae.
+KumikoRoom is a local-first music companionship app centered on Oumae Kumiko.
 
 The main entry is the companion room. The Creative Archive is an internal feature area for local music projects, demo audio, notes, and FL Studio project metadata.
 
@@ -480,7 +480,7 @@ export const DEFAULT_ROOM_STATE: RoomState = {
   roomName: "陪伴房间",
   character: {
     displayName: "黄前久美子",
-    romanizedName: "Kumiko Oumae",
+    romanizedName: "Oumae Kumiko",
     expression: "listening",
     statusText: "在听你今天想说的音乐"
   },
@@ -1205,7 +1205,7 @@ def default_room_state() -> RoomStateOut:
         room_name="陪伴房间",
         character={
             "display_name": "黄前久美子",
-            "romanized_name": "Kumiko Oumae",
+            "romanized_name": "Oumae Kumiko",
             "expression": "listening",
             "status_text": "在听你今天想说的音乐",
         },
@@ -1330,7 +1330,7 @@ describe("room API client", () => {
             room_name: "陪伴房间",
             character: {
               display_name: "黄前久美子",
-              romanized_name: "Kumiko Oumae",
+              romanized_name: "Oumae Kumiko",
               expression: "listening",
               status_text: "在听你今天想说的音乐"
             },
