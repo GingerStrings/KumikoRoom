@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "test": "npm run test --workspace apps/web && npm run test --workspace apps/desktop",
+    "test": "npm run test --workspace apps/web && npm run test --workspace apps/desktop && npm run test:api",
+    "test:api": "cd apps/api && python -m pytest",
     "dev:web": "npm run dev --workspace apps/web",
     "dev:desktop": "npm run start --workspace apps/desktop"
   },

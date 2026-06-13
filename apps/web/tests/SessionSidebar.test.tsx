@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { ChatSession } from "../src/api/types";
@@ -32,14 +32,13 @@ function deferredPromise() {
   return { promise, resolve, reject };
 }
 
-function renderSidebar(
-  overrides: Partial<React.ComponentProps<typeof SessionSidebar>> = {}
-) {
+function renderSidebar(overrides: Partial<React.ComponentProps<typeof SessionSidebar>> = {}) {
   const props: React.ComponentProps<typeof SessionSidebar> = {
     collapsed: false,
     sessions,
     activeSessionId: "session-1",
     isLoading: false,
+    isBusy: false,
     error: null,
     onCreate: vi.fn(),
     onSelect: vi.fn(),
@@ -55,17 +54,20 @@ function renderSidebar(
 }
 
 describe("SessionSidebar", () => {
-  it("renders sessions and selects a conversation from the expanded list", () => {
+  it("renders the v6 conversation list and selects a conversation", () => {
     const props = renderSidebar();
 
-    expect(screen.getByRole("button", { name: "新建会话" })).toBeTruthy();
+    const createButton = screen.getByRole("button", { name: "新建会话" });
+    expect(createButton.classList.contains("tool")).toBe(true);
+    expect(createButton.textContent).toBe("+");
+    expect(document.querySelector(".brand .brand-mark")?.textContent).toBe("KR");
+    expect(screen.getByPlaceholderText("搜索会话")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "收起会话列表" })).toBeNull();
+
     expect(screen.getByText("Evening songs")).toBeTruthy();
     expect(screen.getByText("Quiet piano for the evening")).toBeTruthy();
     expect(screen.getByText("Practice notes")).toBeTruthy();
     expect(screen.getByText("还没有消息")).toBeTruthy();
-    expect(
-      screen.getByRole("button", { name: "收起会话列表" }).getAttribute("aria-expanded")
-    ).toBe("true");
 
     fireEvent.click(screen.getByRole("button", { name: "Practice notes" }));
 
@@ -88,80 +90,46 @@ describe("SessionSidebar", () => {
     expect(props.onToggleCollapsed).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the rename draft after an async failure and catches the rejection", async () => {
-    const rename = deferredPromise();
-    const onRename = vi.fn(() => rename.promise);
-    renderSidebar({ onRename });
+  it("keeps rename and delete actions behind the row menu", () => {
+    renderSidebar();
 
-    fireEvent.click(screen.getByRole("button", { name: "重命名 Evening songs" }));
-
-    const input = screen.getByRole("textbox", { name: "会话标题" });
-    fireEvent.change(input, { target: { value: "  Late night  " } });
-    fireEvent.click(screen.getByRole("button", { name: "保存标题" }));
-
-    expect(onRename).toHaveBeenCalledWith("session-1", "Late night");
-    expect(screen.getByRole("textbox", { name: "会话标题" })).toBeTruthy();
-    expect((screen.getByRole("button", { name: "保存标题" }) as HTMLButtonElement).disabled).toBe(
-      true
-    );
     expect(screen.queryByRole("button", { name: "重命名 Evening songs" })).toBeNull();
     expect(screen.queryByRole("button", { name: "删除 Evening songs" })).toBeNull();
-
-    await act(async () => {
-      rename.reject(new Error("rename failed"));
-      await Promise.resolve();
-    });
-
-    expect((screen.getByRole("textbox", { name: "会话标题" }) as HTMLInputElement).value).toBe(
-      "  Late night  "
-    );
-    expect((screen.getByRole("button", { name: "保存标题" }) as HTMLButtonElement).disabled).toBe(
-      false
-    );
   });
 
-  it("exits rename mode only after an async rename succeeds", async () => {
-    const rename = deferredPromise();
-    const onRename = vi.fn(() => rename.promise);
-    renderSidebar({ onRename });
-
-    fireEvent.click(screen.getByRole("button", { name: "重命名 Evening songs" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "会话标题" }), {
-      target: { value: "Late night" }
-    });
-    fireEvent.click(screen.getByRole("button", { name: "保存标题" }));
-
-    expect(screen.getByRole("textbox", { name: "会话标题" })).toBeTruthy();
-
-    await act(async () => {
-      rename.resolve();
-      await rename.promise;
-    });
-
-    expect(screen.queryByRole("textbox", { name: "会话标题" })).toBeNull();
-  });
-
-  it("does not submit an empty session title", () => {
+  it("renames and confirms deleting sessions from the row menu", async () => {
     const props = renderSidebar();
 
-    fireEvent.click(screen.getByRole("button", { name: "重命名 Evening songs" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "会话标题" }), {
-      target: { value: "   " }
-    });
-    fireEvent.submit(screen.getByRole("textbox", { name: "会话标题" }).closest("form")!);
+    fireEvent.click(screen.getByRole("button", { name: "更多 Evening songs" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "重命名 Evening songs" }));
 
-    expect(props.onRename).not.toHaveBeenCalled();
-    expect(screen.getByRole("textbox", { name: "会话标题" })).toBeTruthy();
+    const input = screen.getByLabelText("会话名称");
+    fireEvent.change(input, { target: { value: "Rehearsal log" } });
+    await act(async () => {
+      fireEvent.submit(input.closest("form")!);
+    });
+
+    await waitFor(() => expect(props.onRename).toHaveBeenCalledWith("session-1", "Rehearsal log"));
+    await waitFor(() => expect(screen.queryByLabelText("会话名称")).toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: "更多 Practice notes" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "删除 Practice notes" }));
+
+    expect(screen.getByText("删除这个会话？")).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "确认删除 Practice notes" }));
+    });
+
+    expect(props.onDelete).toHaveBeenCalledWith("session-2");
   });
 
-  it("deletes a session and retries after an error", () => {
+  it("retries after an error without replacing existing session rows", () => {
     const props = renderSidebar({ error: "会话加载失败" });
 
-    fireEvent.click(screen.getByRole("button", { name: "删除 Evening songs" }));
-    expect(props.onDelete).toHaveBeenCalledWith("session-1");
-
     expect(screen.getByRole("alert").textContent).toContain("会话加载失败");
+    expect(screen.getByRole("button", { name: "Evening songs" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
+
     expect(props.onRetry).toHaveBeenCalledTimes(1);
   });
 
@@ -179,9 +147,16 @@ describe("SessionSidebar", () => {
     expect((screen.getByRole("button", { name: "Practice notes" }) as HTMLButtonElement).disabled).toBe(
       true
     );
-    expect(
-      (screen.getByRole("button", { name: "删除 Evening songs" }) as HTMLButtonElement).disabled
-    ).toBe(true);
+  });
+
+  it("keeps rows visible when the parent is busy", () => {
+    renderSidebar({ isBusy: true });
+
+    expect(screen.queryByText("正在加载会话...")).toBeNull();
+    expect(screen.getByRole("button", { name: "Evening songs" })).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Practice notes" }) as HTMLButtonElement).disabled).toBe(
+      true
+    );
   });
 
   it("renders loading and empty states without conflicting copy", () => {

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatSession, StoredChatMessage } from "../src/api/types";
@@ -62,8 +62,10 @@ describe("RoomShell", () => {
     render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
 
     expect(await screen.findByRole("button", { name: "默认会话" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "和久美子说会儿话" })).toBeTruthy();
-    expect(screen.getByLabelText("聊天时间线").textContent).toContain("今天想从哪首歌开始聊");
+    expect(screen.queryByRole("heading", { name: "和久美子说会儿话" })).toBeNull();
+    const timeline = screen.getByLabelText("聊天时间线");
+    expect(timeline.textContent).toContain("还没有消息");
+    expect(timeline.textContent).not.toContain(getIdleLine(DEFAULT_ROOM_STATE));
     expect(screen.getByRole("textbox", { name: "写一条消息" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "模型与偏好" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "打开创作资料" })).toBeNull();
@@ -74,6 +76,78 @@ describe("RoomShell", () => {
     expect(screen.queryByLabelText("AI 设置")).toBeNull();
     expect(screen.queryByText("今日心情")).toBeNull();
     expect(screen.queryByText("听歌日记")).toBeNull();
+  });
+
+  it("uses the v6 room shell with a compact sidebar create tool", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: "默认会话" })).toBeTruthy();
+    expect(document.querySelector(".room-stage")).toBeTruthy();
+    expect(document.querySelector(".room-workspace")).toBeTruthy();
+    expect(document.querySelector(".chat")).toBeTruthy();
+    expect(document.querySelector(".profile")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "收起会话列表" })).toBeNull();
+
+    const brandMark = document.querySelector(".brand .brand-mark");
+    expect(brandMark?.tagName).toBe("SPAN");
+    expect(brandMark?.textContent).toBe("KR");
+
+    const createButton = screen.getByRole("button", { name: "新建会话" });
+    expect(createButton.classList.contains("tool")).toBe(true);
+    expect(createButton.textContent).toBe("+");
+  });
+
+  it("exposes compact session controls from the chat header", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    const panelTrigger = document.querySelector<HTMLButtonElement>(".mobile-session-trigger");
+    const createButton = document.querySelector<HTMLButtonElement>(".mobile-session-create");
+
+    expect(panelTrigger).toBeTruthy();
+    expect(createButton).toBeTruthy();
+
+    fireEvent.click(panelTrigger!);
+    const mobilePanel = document.querySelector<HTMLElement>(".mobile-session-panel");
+
+    expect(mobilePanel).toBeTruthy();
+    expect(within(mobilePanel!).getByRole("button", { name: defaultSession.title })).toBeTruthy();
+
+    fireEvent.click(createButton!);
+
+    await waitFor(() => expect(apiMocks.createSession).toHaveBeenCalledTimes(1));
+  });
+
+  it("renames and deletes sessions from the compact session panel", async () => {
+    const sessionOne = makeSession({ id: "session-1", title: "Session One", latestMessagePreview: null });
+    const sessionTwo = makeSession({ id: "session-2", title: "Session Two", latestMessagePreview: null });
+    apiMocks.getSessions.mockResolvedValueOnce([sessionOne, sessionTwo]);
+    apiMocks.getSessionMessages.mockResolvedValue([]);
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: "Session One" })).toBeTruthy();
+    fireEvent.click(document.querySelector<HTMLButtonElement>(".mobile-session-trigger")!);
+
+    const panel = document.querySelector<HTMLElement>(".mobile-session-panel");
+    expect(panel).toBeTruthy();
+
+    fireEvent.click(within(panel!).getByRole("button", { name: "更多 Session Two" }));
+    fireEvent.click(within(panel!).getByRole("menuitem", { name: "重命名 Session Two" }));
+    const input = within(panel!).getByLabelText("会话名称");
+    fireEvent.change(input, { target: { value: "Renamed Two" } });
+    fireEvent.submit(input.closest("form")!);
+
+    await waitFor(() => expect(apiMocks.renameSession).toHaveBeenCalledWith("session-2", "Renamed Two"));
+    expect(within(panel!).getByRole("button", { name: "Renamed Two" })).toBeTruthy();
+
+    fireEvent.click(within(panel!).getByRole("button", { name: "更多 Renamed Two" }));
+    fireEvent.click(within(panel!).getByRole("menuitem", { name: "删除 Renamed Two" }));
+
+    expect(within(panel!).getByText("删除这个会话？")).toBeTruthy();
+    fireEvent.click(within(panel!).getByRole("button", { name: "确认删除 Renamed Two" }));
+
+    await waitFor(() => expect(apiMocks.deleteSession).toHaveBeenCalledWith("session-2"));
   });
 
   it("opens model and preference controls from the top-right popover", async () => {
@@ -140,7 +214,9 @@ describe("RoomShell", () => {
     expect(await screen.findByRole("button", { name: "新的练习" })).toBeTruthy();
     expect(apiMocks.createSession).toHaveBeenCalledTimes(1);
     expect(apiMocks.getSessionMessages).toHaveBeenCalledWith("session-created");
-    expect(screen.getByLabelText("聊天时间线").textContent).toContain(getIdleLine(DEFAULT_ROOM_STATE));
+    const timeline = screen.getByLabelText("聊天时间线");
+    expect(timeline.textContent).toContain("还没有消息");
+    expect(timeline.textContent).not.toContain(getIdleLine(DEFAULT_ROOM_STATE));
   });
 
   it("sends chat with the active session and updates the sidebar", async () => {
@@ -183,6 +259,106 @@ describe("RoomShell", () => {
     expect(within(updatedSessionButton).getByText("I hear it")).toBeTruthy();
   });
 
+  it("shows a natural typing state while the reply is pending", async () => {
+    const session = makeSession({
+      id: "session-1",
+      title: "Session One",
+      latestMessagePreview: null
+    });
+    const pendingChat = deferred<Awaited<ReturnType<typeof apiMocks.postChat>>>();
+    apiMocks.getSessions.mockResolvedValueOnce([session]);
+    apiMocks.getSessionMessages.mockResolvedValueOnce([]);
+    apiMocks.postChat.mockReturnValueOnce(pendingChat.promise);
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: "Session One" })).toBeTruthy();
+    fireEvent.change(getComposerInput(), {
+      target: { value: "Are you there?" }
+    });
+    fireEvent.click(getComposerSubmit());
+
+    expect(await screen.findByLabelText("久美子正在输入")).toBeTruthy();
+    expect(screen.getByText("正在回复")).toBeTruthy();
+    expect(getComposerSubmit().textContent).toBe("发送中");
+
+    pendingChat.resolve(
+      makeChatResponse({
+        reply: { id: "reply-typing", role: "kumiko", content: "嗯，我在。" },
+        session
+      })
+    );
+
+    expect(await within(getTimeline()).findByText("嗯，我在。")).toBeTruthy();
+    expect(screen.queryByLabelText("久美子正在输入")).toBeNull();
+  });
+
+  it("scrolls the timeline to the latest optimistic message", async () => {
+    const session = makeSession({
+      id: "session-1",
+      title: "Session One",
+      latestMessagePreview: null
+    });
+    const pendingChat = deferred<Awaited<ReturnType<typeof apiMocks.postChat>>>();
+    apiMocks.getSessions.mockResolvedValueOnce([session]);
+    apiMocks.getSessionMessages.mockResolvedValueOnce([]);
+    apiMocks.postChat.mockReturnValueOnce(pendingChat.promise);
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: "Session One" })).toBeTruthy();
+    const timeline = getTimeline();
+    Object.defineProperty(timeline, "scrollHeight", { configurable: true, value: 1200 });
+    fireEvent.change(getComposerInput(), {
+      target: { value: "Please scroll down" }
+    });
+    fireEvent.click(getComposerSubmit());
+
+    await waitFor(() => expect(timeline.scrollTop).toBe(1200));
+    await act(async () => {
+      pendingChat.resolve(makeChatResponse({ session }));
+      await pendingChat.promise;
+    });
+  });
+
+  it("keeps a failed user message in place and retries it without duplication", async () => {
+    const session = makeSession({
+      id: "session-1",
+      title: "Session One",
+      latestMessagePreview: null
+    });
+    apiMocks.getSessions.mockResolvedValueOnce([session]);
+    apiMocks.getSessionMessages.mockResolvedValueOnce([]);
+    apiMocks.postChat
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValueOnce(
+        makeChatResponse({
+          reply: { id: "reply-retry", role: "kumiko", content: "这次收到了。" },
+          session
+        })
+      );
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: "Session One" })).toBeTruthy();
+    fireEvent.change(getComposerInput(), {
+      target: { value: "Can you hear me?" }
+    });
+    fireEvent.click(getComposerSubmit());
+
+    expect((await screen.findByRole("alert")).textContent).toContain("消息没送出去");
+    const timeline = within(getTimeline());
+    expect(timeline.getAllByText("Can you hear me?")).toHaveLength(1);
+    const failedMessage = timeline.getByText("Can you hear me?").closest("article");
+    expect(failedMessage?.classList.contains("message--failed")).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "重试发送" }));
+
+    expect(await timeline.findByText("这次收到了。")).toBeTruthy();
+    expect(timeline.getAllByText("Can you hear me?")).toHaveLength(1);
+    expect(apiMocks.postChat).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps the composer disabled and active session unchanged while selected session messages load", async () => {
     const sessionOne = makeSession({
       id: "session-1",
@@ -216,6 +392,9 @@ describe("RoomShell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Session Two" }));
 
     await waitFor(() => expect(apiMocks.getSessionMessages).toHaveBeenCalledWith("session-2"));
+    expect(screen.queryByText("正在加载会话...")).toBeNull();
+    expect(screen.getByRole("button", { name: "Session One" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Session Two" })).toBeTruthy();
     expect(localStorage.getItem("kumikoroom.lastSessionId")).toBe("session-1");
     expect(within(getTimeline()).getByText("Session one message")).toBeTruthy();
     expect(within(getTimeline()).queryByText("Session two message")).toBeNull();
@@ -266,6 +445,9 @@ describe("RoomShell", () => {
     fireEvent.click(getComposerSubmit());
 
     await waitFor(() => expect(apiMocks.postChat).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText("正在加载会话...")).toBeNull();
+    expect(screen.getByRole("button", { name: "Session One" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Session Two" })).toBeTruthy();
     fireEvent.click(getCreateSessionButton());
     screen.queryByRole("button", { name: "Session Two" })?.click();
     queryDeleteButtonFor("Session One")?.click();
@@ -291,7 +473,33 @@ describe("RoomShell", () => {
     );
   });
 
-  it("restores the last session and collapsed sidebar from localStorage", async () => {
+  it("uses sparse timeline alignment for one-speaker short messages", async () => {
+    const session = makeSession({
+      id: "session-1",
+      title: "Short note",
+      latestMessagePreview: "你好"
+    });
+    apiMocks.getSessions.mockResolvedValueOnce([session]);
+    apiMocks.getSessionMessages.mockResolvedValueOnce([
+      makeStoredMessage({
+        id: "message-short",
+        sessionId: "session-1",
+        role: "user",
+        content: "你好"
+      })
+    ]);
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: "Short note" })).toBeTruthy();
+    const timeline = getTimeline();
+    expect(timeline.classList.contains("chat-timeline--sparse")).toBe(true);
+    const shortMessage = within(timeline).getByText("你好").closest("article");
+    expect(shortMessage?.classList.contains("message--short")).toBe(true);
+    expect(shortMessage?.classList.contains("me")).toBe(true);
+  });
+
+  it("restores the last session while keeping the v6 sidebar expanded", async () => {
     localStorage.setItem("kumikoroom.lastSessionId", "session-2");
     localStorage.setItem("kumikoroom.sessionsCollapsed", "true");
     apiMocks.getSessions.mockResolvedValueOnce([
@@ -310,21 +518,19 @@ describe("RoomShell", () => {
     render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
 
     expect(await screen.findByText("Saved two")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "展开会话列表" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Session Two" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "展开会话列表" })).toBeNull();
     expect(apiMocks.getSessionMessages).toHaveBeenCalledWith("session-2");
     expect(localStorage.getItem("kumikoroom.lastSessionId")).toBe("session-2");
     expect(localStorage.getItem("kumikoroom.sessionsCollapsed")).toBe("true");
   });
 
-  it("creates renames and deletes the active session from the sidebar", async () => {
+  it("creates a new session from the compact sidebar tool", async () => {
     const sessionOne = makeSession({ id: "session-1", title: "Session One", latestMessagePreview: null });
     const sessionTwo = makeSession({ id: "session-2", title: "Session Two", latestMessagePreview: null });
     const createdSession = makeSession({ id: "session-3", title: "New Session", latestMessagePreview: null });
     apiMocks.getSessions.mockResolvedValueOnce([sessionOne, sessionTwo]);
     apiMocks.createSession.mockResolvedValueOnce(createdSession);
-    apiMocks.renameSession.mockResolvedValueOnce(
-      makeSession({ id: "session-3", title: "Renamed Session", latestMessagePreview: null })
-    );
     apiMocks.getSessionMessages.mockResolvedValue([]);
 
     render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
@@ -335,24 +541,8 @@ describe("RoomShell", () => {
     await waitFor(() => expect(apiMocks.createSession).toHaveBeenCalledTimes(1));
     expect(await screen.findByRole("button", { name: "New Session" })).toBeTruthy();
     expect(apiMocks.getSessionMessages).toHaveBeenCalledWith("session-3");
-
-    fireEvent.click(screen.getByRole("button", { name: "重命名 New Session" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "会话标题" }), {
-      target: { value: "Renamed Session" }
-    });
-    fireEvent.click(screen.getByRole("button", { name: "保存标题" }));
-
-    await waitFor(() =>
-      expect(apiMocks.renameSession).toHaveBeenCalledWith("session-3", "Renamed Session")
-    );
-    expect(await screen.findByRole("button", { name: "Renamed Session" })).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "删除 Renamed Session" }));
-
-    await waitFor(() => expect(apiMocks.deleteSession).toHaveBeenCalledWith("session-3"));
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Session One" }).getAttribute("aria-current")).toBe("true")
-    );
+    expect(screen.queryByRole("button", { name: "重命名 New Session" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "删除 New Session" })).toBeNull();
   });
 
   it("sends exact visible conversation history through the room API", async () => {
@@ -410,13 +600,7 @@ describe("RoomShell", () => {
     expect(apiMocks.postChat).toHaveBeenNthCalledWith(1, {
       message: "晚上好",
       roomState: DEFAULT_ROOM_STATE,
-      recentMessages: [
-        {
-          id: "idle-line",
-          role: "kumiko",
-          content: getIdleLine(DEFAULT_ROOM_STATE)
-        }
-      ],
+      recentMessages: [],
       personaStrength: "strong",
       memoryEnabled: false,
       sessionId: "session-default"
@@ -432,11 +616,6 @@ describe("RoomShell", () => {
       message: "想继续聊这首",
       roomState: DEFAULT_ROOM_STATE,
       recentMessages: [
-        {
-          id: "idle-line",
-          role: "kumiko",
-          content: getIdleLine(DEFAULT_ROOM_STATE)
-        },
         {
           id: expect.stringMatching(/^user-\d+$/),
           role: "user",

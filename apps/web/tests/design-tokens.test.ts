@@ -65,25 +65,28 @@ describe("Liz Bluebird room visual tokens", () => {
   it("keeps the room composer visible in the first viewport", () => {
     const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
 
-    expectRuleToContain(css, ".dialogue-card", [
-      "position: relative;",
-      "height: calc(100vh - 56px);",
+    expectRuleToContain(css, ".room-workspace", [
+      "height: min(724px, calc(100vh - 48px));",
       "overflow: hidden;",
     ]);
+    expectRuleToContain(css, ".chat", ["grid-template-rows: 60px minmax(0, 1fr) auto;"]);
     expectRuleToContain(css, ".chat-timeline", ["min-height: 0;"]);
-    expectRuleToContain(css, ".chat-composer", ["flex: 0 0 auto;"]);
+    expectRuleToContain(css, ".chat-composer", ["border-top: 1px solid #d8e2dd;"]);
   });
 
-  it("defines the two-column room and settings popover selectors", () => {
+  it("defines the v6 room shell and settings popover selectors", () => {
     const css = fs.readFileSync(cssPath, "utf8");
 
     [
-      ".room-workspace--sessions-collapsed",
+      ".room-stage",
+      ".room-workspace {",
       ".session-sidebar {",
       ".session-sidebar--collapsed",
-      ".session-sidebar__item[data-active=\"true\"]",
-      ".room-topbar {",
-      ".room-topbar__actions",
+      ".thread[data-active=\"true\"]",
+      ".chat {",
+      ".chat-head",
+      ".profile",
+      ".media-player",
       ".settings-trigger",
       ".settings-popover {",
       ".settings-popover__header",

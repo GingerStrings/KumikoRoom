@@ -1,8 +1,10 @@
 node_modules/
 .next/
 dist/
+*.log
 __pycache__/
 .pytest_cache/
+.pytest-runtime/
 .venv/
 .runtime/
 *.egg-info/
@@ -10,6 +12,8 @@ __pycache__/
 user-data/
 .env
 .env.local
+apps/web/tsconfig.tsbuildinfo
+docs/design-previews/
 .pytest-tmp/
 .superpowers/
 .worktrees/
