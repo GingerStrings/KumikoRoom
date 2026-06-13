@@ -89,11 +89,33 @@ describe("Liz Bluebird room visual tokens", () => {
       ".chat-head",
       ".profile",
       ".media-player",
+      ".track-actions",
+      ".source-badge",
       ".settings-trigger",
       ".settings-popover {",
       ".settings-popover__header",
       ".model-status-row",
       ".settings-section",
+    ].forEach((selector) => {
+      expect(css).toContain(selector);
+    });
+  });
+
+  it("defines the platform player and video mini-window selectors", () => {
+    const css = fs.readFileSync(cssPath, "utf8");
+
+    [
+      ".track-actions",
+      ".source-badge",
+      ".source-badge[data-source=\"bilibili\"]",
+      ".source-badge[data-source=\"netease\"]",
+      ".control.video",
+      ".video-mini-window",
+      ".video-mini-window--compact",
+      ".video-mini-window--large",
+      ".video-mini-window__frame",
+      ".video-mini-window__button",
+      ".video-mini-window__link",
     ].forEach((selector) => {
       expect(css).toContain(selector);
     });
