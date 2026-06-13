@@ -32,6 +32,27 @@ npm install
 npm start
 ```
 
+## DeepSeek Chat Setup
+
+KumikoRoom uses DeepSeek for the first real LLM provider. Keep credentials local.
+
+1. Copy `.env.example` to `.env.local` or set the same variables in your shell.
+2. Set `DEEPSEEK_API_KEY` locally.
+3. Keep `DEEPSEEK_MODEL=deepseek-v4-flash` unless you want to test `deepseek-v4-pro`.
+4. Start the API and web app.
+
+PowerShell API example:
+
+```powershell
+$env:KUMIKOROOM_LLM_PROVIDER="deepseek"
+$env:DEEPSEEK_API_KEY="<your-local-key>"
+$env:DEEPSEEK_MODEL="deepseek-v4-flash"
+cd apps\api
+uvicorn kumikoroom.main:app --reload --port 8000
+```
+
+The repository ignores `.env`, `.env.local`, `user-data/`, and `*.sqlite3`.
+
 ## Fan Project Boundary
 
 Do not commit character images, voice samples, trained voice models, or other fan-provided media. Local assets belong under `user-data/`, which is ignored by git.

@@ -1,0 +1,84 @@
+from pathlib import Path
+
+import pytest
+
+from kumikoroom.config import load_settings
+
+
+def test_defaults_to_mock_provider_without_deepseek_key(monkeypatch) -> None:
+    monkeypatch.delenv("KUMIKOROOM_MEMORY_DB_PATH", raising=False)
+
+    settings = load_settings()
+
+    assert settings.llm_provider == "mock"
+    assert settings.deepseek_api_key is None
+    assert settings.deepseek_model == "deepseek-v4-flash"
+    assert settings.deepseek_base_url == "https://api.deepseek.com"
+    assert settings.memory_db_path == Path("user-data/memory/kumikoroom-memory.sqlite3")
+
+
+def test_infers_deepseek_provider_when_key_is_present(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+
+    settings = load_settings()
+
+    assert settings.llm_provider == "deepseek"
+    assert settings.deepseek_api_key == "test-key"
+    assert settings.is_deepseek_configured is True
+
+
+def test_explicit_deepseek_provider_without_key_is_unconfigured(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("KUMIKOROOM_LLM_PROVIDER", "deepseek")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+
+    settings = load_settings()
+
+    assert settings.llm_provider == "deepseek"
+    assert settings.is_deepseek_configured is False
+
+
+def test_invalid_explicit_provider_raises_value_error(monkeypatch) -> None:
+    monkeypatch.setenv("KUMIKOROOM_LLM_PROVIDER", " OpenAI ")
+
+    with pytest.raises(ValueError, match="KUMIKOROOM_LLM_PROVIDER"):
+        load_settings()
+
+
+def test_blank_explicit_provider_raises_value_error(monkeypatch) -> None:
+    monkeypatch.setenv("KUMIKOROOM_LLM_PROVIDER", "   ")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+
+    with pytest.raises(ValueError, match="KUMIKOROOM_LLM_PROVIDER"):
+        load_settings()
+
+
+def test_explicit_mock_provider_overrides_deepseek_key(monkeypatch) -> None:
+    monkeypatch.setenv("KUMIKOROOM_LLM_PROVIDER", " MoCk ")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+
+    settings = load_settings()
+
+    assert settings.llm_provider == "mock"
+    assert settings.deepseek_api_key == "test-key"
+
+
+def test_deepseek_base_url_override_strips_trailing_slash(monkeypatch) -> None:
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/")
+
+    settings = load_settings()
+
+    assert settings.deepseek_base_url == "https://api.deepseek.com"
+
+
+def test_memory_db_path_can_be_overridden(monkeypatch, tmp_path: Path) -> None:
+    memory_path = tmp_path / "custom-memory.sqlite3"
+    monkeypatch.setenv("KUMIKOROOM_MEMORY_DB_PATH", str(memory_path))
+
+    settings = load_settings()
+
+    assert settings.memory_db_path == memory_path
+    assert isinstance(settings.memory_db_path, Path)

@@ -14,7 +14,7 @@ export function getConnectionStatus(apiUrl = process.env.KUMIKOROOM_API_URL ?? D
     return {
       mode: "unconfigured",
       label: "未配置 API",
-      detail: "聊天接口还没有可用地址",
+      detail: "聊天接口还没有可用地址。",
       tone: "warning"
     };
   }
@@ -27,8 +27,8 @@ export function getConnectionStatus(apiUrl = process.env.KUMIKOROOM_API_URL ?? D
   if (isLocal) {
     return {
       mode: "local-mock-api",
-      label: "本地 Mock API",
-      detail: `聊天请求会转发到 ${normalizedUrl}`,
+      label: "本地 API",
+      detail: "本地服务已连接。",
       tone: "muted"
     };
   }
@@ -36,7 +36,7 @@ export function getConnectionStatus(apiUrl = process.env.KUMIKOROOM_API_URL ?? D
   return {
     mode: "configured-api",
     label: "已配置 API",
-    detail: `聊天请求会转发到 ${normalizedUrl}`,
+    detail: "远程服务已配置。",
     tone: "ready"
   };
 }

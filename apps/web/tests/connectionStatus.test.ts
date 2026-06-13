@@ -5,8 +5,8 @@ describe("connection status", () => {
   it("labels the default local API as a mock connection", () => {
     expect(getConnectionStatus("http://127.0.0.1:8000")).toEqual({
       mode: "local-mock-api",
-      label: "本地 Mock API",
-      detail: "聊天请求会转发到 http://127.0.0.1:8000",
+      label: "本地 API",
+      detail: "本地服务已连接。",
       tone: "muted"
     });
   });
@@ -15,7 +15,7 @@ describe("connection status", () => {
     expect(getConnectionStatus("https://api.example.com")).toEqual({
       mode: "configured-api",
       label: "已配置 API",
-      detail: "聊天请求会转发到 https://api.example.com",
+      detail: "远程服务已配置。",
       tone: "ready"
     });
   });
@@ -24,7 +24,7 @@ describe("connection status", () => {
     expect(getConnectionStatus("")).toEqual({
       mode: "unconfigured",
       label: "未配置 API",
-      detail: "聊天接口还没有可用地址",
+      detail: "聊天接口还没有可用地址。",
       tone: "warning"
     });
   });

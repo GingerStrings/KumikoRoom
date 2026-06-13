@@ -3,20 +3,39 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const cssPath = path.resolve(__dirname, "../app/globals.css");
+const homeHeroAssetPath = path.resolve(__dirname, "../public/assets/home-rehearsal-v2.png");
+const chatAvatarAssetPath = path.resolve(__dirname, "../public/assets/kumiko-avatar-v1.png");
 
-describe("approved Palette C tokens", () => {
-  it("uses the warm rose fog palette tokens", () => {
+function expectRuleToContain(css: string, selector: string, declarations: string[]) {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = css.match(new RegExp(`${escapedSelector}\\s*\\{(?<body>[^}]*)\\}`));
+
+  expect(match, `Expected ${selector} rule to exist`).not.toBeNull();
+
+  const body = match?.groups?.body ?? "";
+
+  for (const declaration of declarations) {
+    expect(body).toContain(declaration);
+  }
+}
+
+describe("Liz Bluebird room visual tokens", () => {
+  it("uses the Liz and the Blue Bird inspired palette tokens", () => {
     const css = fs.readFileSync(cssPath, "utf8");
 
-    expect(css).toContain("--color-bg: #fafaf8");
-    expect(css).toContain("--color-text: #3f3a3d");
-    expect(css).toContain("--color-muted: #756f73");
-    expect(css).toContain("--color-rose: #a95568");
-    expect(css).toContain("--color-rose-soft: #f5e4e8");
-    expect(css).toContain("--color-fog-soft: #eef4f7");
+    expect(css).toContain("--color-bg: #fdfff8");
+    expect(css).toContain("--color-bg-mist: #d3f4f8");
+    expect(css).toContain("--color-bg-pink: #ffebf9");
+    expect(css).toContain("--color-bg-green: #dffbea");
+    expect(css).toContain("--color-accent-blue: #0b73d4");
+    expect(css).toContain("--color-accent-sky: #9ce9ff");
+    expect(css).toContain("--color-accent-reed: #95ad92");
+    expect(css).toContain("--color-accent-kumiko: #b87b68");
+    expect(css).toContain("--color-text: #263a40");
+    expect(css).toContain("--color-muted: #6b7d80");
   });
 
-  it("keeps legacy room variable aliases mapped to Palette C values", () => {
+  it("keeps legacy room variable aliases mapped to the Liz tokens", () => {
     const css = fs.readFileSync(cssPath, "utf8");
 
     expect(css).toContain("--paper: var(--color-surface-strong);");
@@ -24,10 +43,10 @@ describe("approved Palette C tokens", () => {
     expect(css).toContain("--ink: var(--color-text);");
     expect(css).toContain("--muted: var(--color-muted);");
     expect(css).toContain("--line: var(--color-line);");
-    expect(css).toContain("--green: #587080;");
-    expect(css).toContain("--red: var(--color-rose);");
-    expect(css).toContain("--gold: var(--color-rose-mid);");
-    expect(css).toContain("--blue: #587080;");
+    expect(css).toContain("--green: var(--color-accent-reed);");
+    expect(css).toContain("--red: var(--color-accent-kumiko);");
+    expect(css).toContain("--gold: var(--color-accent-kumiko);");
+    expect(css).toContain("--blue: var(--color-accent-blue);");
   });
 
   it("covers all dynamic connection tone selectors", () => {
@@ -37,18 +56,130 @@ describe("approved Palette C tokens", () => {
       "connection-chip--muted",
       "connection-chip--ready",
       "connection-chip--warning",
-      "connection-pill--muted",
-      "connection-pill--ready",
-      "connection-pill--warning",
+      "connection-strip--ready",
+      "connection-strip--warning",
     ].forEach((selector) => {
       expect(css).toContain(`.${selector}`);
     });
   });
 
-  it("removes the old green and brass room palette values", () => {
+  it("keeps the room composer visible in the first viewport", () => {
+    const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
+
+    expectRuleToContain(css, ".room-workspace", [
+      "height: min(724px, calc(100vh - 48px));",
+      "overflow: hidden;",
+    ]);
+    expectRuleToContain(css, ".chat", ["grid-template-rows: 60px minmax(0, 1fr) auto;"]);
+    expectRuleToContain(css, ".chat-timeline", ["min-height: 0;"]);
+    expectRuleToContain(css, ".chat-composer", ["border-top: 1px solid #d8e2dd;"]);
+  });
+
+  it("defines the v6 room shell and settings popover selectors", () => {
     const css = fs.readFileSync(cssPath, "utf8");
 
+    [
+      ".room-stage",
+      ".room-workspace {",
+      ".chat-nav-link",
+      ".session-sidebar {",
+      ".session-sidebar--collapsed",
+      ".thread[data-active=\"true\"]",
+      ".chat {",
+      ".chat-head",
+      ".profile",
+      ".media-player",
+      ".settings-trigger",
+      ".settings-popover {",
+      ".settings-popover__header",
+      ".model-status-row",
+      ".settings-section",
+    ].forEach((selector) => {
+      expect(css).toContain(selector);
+    });
+  });
+
+  it("uses the soft Kumiko chat avatar asset in message chrome", () => {
+    const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
+
+    expect(fs.existsSync(chatAvatarAssetPath)).toBe(true);
+    expectRuleToContain(css, ".avatar", ['url("/assets/kumiko-avatar-v1.png")']);
+  });
+
+  it("keeps non-chat pages aligned with the v6 window language", () => {
+    const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
+
+    expect(fs.existsSync(homeHeroAssetPath)).toBe(true);
+    expectRuleToContain(css, ".home-lobby", [
+      'url("/assets/home-rehearsal-v2.png")',
+      "place-items: stretch;",
+    ]);
+    expectRuleToContain(css, ".home-entry-window", [
+      "border: 0;",
+      "box-shadow: none;",
+    ]);
+    expectRuleToContain(css, ".studio-workbench", [
+      'url("/assets/home-rehearsal-v2.png")',
+      "place-items: stretch;",
+    ]);
+    expectRuleToContain(css, ".studio-window", [
+      "border: 0;",
+      "box-shadow: none;",
+    ]);
+  });
+
+  it("removes the old non-chat card-grid selectors", () => {
+    const css = fs.readFileSync(cssPath, "utf8");
+
+    [
+      ".home-shell",
+      ".home-panel",
+      ".home-panel--intro",
+      ".panel-heading",
+      ".soft-badge",
+      ".route-grid",
+      ".route-card",
+      ".route-card__mark",
+      ".studio-shell",
+      ".studio-header",
+      ".studio-grid",
+      ".studio-module",
+      ".text-link",
+    ].forEach((selector) => {
+      expect(css).not.toContain(selector);
+    });
+  });
+
+  it("removes stale right rail selectors", () => {
+    const css = fs.readFileSync(cssPath, "utf8");
+
+    [
+      ".room-workspace:has(.workspace-side)",
+      ".room-workspace--sessions-collapsed:has(.workspace-side)",
+      ".workspace-side",
+      ".summary-card",
+      ".utility-card",
+      ".ai-card",
+      ".summary-list",
+      ".summary-row",
+      ".utility-row",
+      ".utility-note",
+      ".memory-events",
+    ].forEach((selector) => {
+      expect(css).not.toContain(selector);
+    });
+  });
+
+  it("removes the old rose, fog, green, and brass room palette values", () => {
+    const css = fs.readFileSync(cssPath, "utf8");
+
+    expect(css).not.toContain("--color-rose");
+    expect(css).not.toContain("--color-fog");
     expect(css).not.toContain("--brass:");
+    expect(css).not.toContain("#fafaf8");
+    expect(css).not.toContain("#a95568");
+    expect(css).not.toContain("#c97f8e");
+    expect(css).not.toContain("#f5e4e8");
     expect(css).not.toContain("#385b68");
     expect(css).not.toContain("#e6ddcf");
     expect(css).not.toContain("#315c54");
