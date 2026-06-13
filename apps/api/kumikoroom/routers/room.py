@@ -11,7 +11,7 @@ def default_room_state() -> RoomStateOut:
         room_name="陪伴房间",
         character={
             "display_name": "黄前久美子",
-            "romanized_name": "Kumiko Oumae",
+            "romanized_name": "Oumae Kumiko",
             "expression": "listening",
             "status_text": "正在听你今天想说的音乐",
         },

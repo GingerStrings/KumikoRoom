@@ -2,7 +2,7 @@
 
 ## 1. Product Direction
 
-KumikoRoom is a local-first music companionship application centered on Kumiko Oumae.
+KumikoRoom is a local-first music companionship application centered on Oumae Kumiko.
 
 The main product experience is the companion room: chat, listening, diary, inspiration, voice, images, and music memories. The existing FL Studio project manager is only a built-in feature area inside KumikoRoom, named "创作资料室".
 
