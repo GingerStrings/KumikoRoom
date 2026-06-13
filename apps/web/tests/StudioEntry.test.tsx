@@ -8,15 +8,18 @@ describe("StudioEntry", () => {
     render(<StudioEntry />);
 
     expect(screen.getByRole("heading", { name: "资料室" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "回到房间" }).getAttribute("href")).toBe("/room");
+    expect(screen.getByRole("link", { name: "回到聊天" }).getAttribute("href")).toBe("/room");
     expect(screen.getByRole("link", { name: "回到入口" }).getAttribute("href")).toBe("/");
     expect(screen.getByRole("button", { name: "工程" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "素材" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "笔记" })).toBeTruthy();
-    expect(screen.getByText("本地资料为空。")).toBeTruthy();
+    expect(screen.getByText("还没有接入本地资料。")).toBeTruthy();
     expect(screen.getByText("未连接本地目录")).toBeTruthy();
+    expect(screen.queryByText("先回到房间")).toBeNull();
+    expect(screen.queryByText("回到房间")).toBeNull();
     expect(document.querySelector(".studio-workbench")).toBeTruthy();
     expect(document.querySelector(".studio-shelf")).toBeTruthy();
+    expect(document.querySelector(".studio-empty-paper")).toBeNull();
     expect(document.querySelector(".studio-module")).toBeNull();
   });
 

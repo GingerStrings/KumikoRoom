@@ -20,7 +20,7 @@ export function StudioEntry() {
 
           <div className="studio-links">
             <a className="studio-link" href="/room">
-              回到房间
+              回到聊天
             </a>
             <a className="studio-link" href="/">
               回到入口
@@ -39,20 +39,18 @@ export function StudioEntry() {
 
           <div className="studio-body">
             <div className="studio-empty">
-              <div className="studio-empty-paper">
-                <p className="eyebrow">Local</p>
-                <h2>本地资料为空。</h2>
-                <p>未连接本地目录</p>
-                <a className="studio-soft-action" href="/room">
-                  先回到房间
-                </a>
-              </div>
+              <p className="eyebrow">Local</p>
+              <h2>还没有接入本地资料。</h2>
+              <p>未连接本地目录</p>
+              <a className="studio-soft-action" href="/room">
+                继续聊天
+              </a>
             </div>
 
-            <aside className="studio-character" aria-label="角色侧栏">
+            <aside className="studio-character" aria-label="资料状态">
               <div className="studio-character__figure" aria-hidden="true" />
               <div className="studio-note">
-                <strong>本地目录</strong>
+                <strong>素材来源</strong>
                 <span>未连接</span>
               </div>
             </aside>

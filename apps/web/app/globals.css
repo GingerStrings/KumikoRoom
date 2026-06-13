@@ -1,7 +1,9 @@
 :root {
   color: var(--color-text);
   background: var(--color-bg);
-  font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
+  font-family: var(--font-body);
+  --font-body: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
+  --font-serif: "Yu Mincho", "Hiragino Mincho ProN", "Noto Serif CJK SC", "Songti SC", SimSun, Georgia, "Times New Roman", serif;
   --color-bg: #fdfff8;
   --color-bg-mist: #d3f4f8;
   --color-bg-pink: #ffebf9;
@@ -181,12 +183,12 @@ p {
   z-index: 0;
   min-height: 100vh;
   display: grid;
-  place-items: center;
-  padding: 24px;
+  place-items: stretch;
+  padding: clamp(18px, 3vw, 32px);
   isolation: isolate;
   background:
-    linear-gradient(90deg, rgba(244, 248, 241, 0.96) 0 20%, rgba(244, 248, 241, 0.84) 54%, rgba(244, 248, 241, 0.72)),
-    url("/assets/liz-keyvisual.jpg") center / cover fixed,
+    linear-gradient(90deg, rgba(244, 248, 241, 0.18) 0 42%, rgba(255, 253, 247, 0.62) 68%, rgba(255, 253, 247, 0.9)),
+    url("/assets/home-rehearsal-v2.png") center / cover fixed,
     #f4f8f1;
 }
 
@@ -197,69 +199,69 @@ p {
   z-index: -1;
   pointer-events: none;
   background:
-    linear-gradient(180deg, rgba(255, 253, 247, 0.58), rgba(255, 253, 247, 0.74)),
-    repeating-linear-gradient(0deg, rgba(47, 126, 186, 0.05) 0 1px, transparent 1px 42px);
+    linear-gradient(180deg, rgba(255, 253, 247, 0.08), rgba(255, 253, 247, 0.42)),
+    repeating-linear-gradient(0deg, rgba(47, 126, 186, 0.035) 0 1px, transparent 1px 42px);
 }
 
 .home-entry-window {
-  width: min(1030px, 100%);
-  min-height: min(586px, calc(100vh - 48px));
+  width: min(1240px, 100%);
+  min-height: min(704px, calc(100vh - 48px));
+  margin: auto;
   display: grid;
-  grid-template-columns: minmax(300px, 0.86fr) minmax(360px, 1fr);
-  overflow: hidden;
-  border: 1px solid rgba(190, 204, 199, 0.9);
-  border-radius: 18px;
-  background: #fffdf7;
-  box-shadow: 0 32px 80px rgba(40, 68, 70, 0.18);
+  grid-template-columns: minmax(340px, 1.06fr) minmax(330px, 0.72fr);
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .home-entry-visual {
   position: relative;
-  min-height: 480px;
-  overflow: hidden;
-  border-right: 1px solid #d8e2dd;
-  background:
-    linear-gradient(180deg, rgba(219, 239, 248, 0.62), rgba(255, 253, 247, 0.7) 74%),
-    #dbeff8;
+  min-height: 520px;
+  pointer-events: none;
 }
 
 .home-entry-visual::before {
-  content: "";
-  position: absolute;
-  inset: 28px 28px auto;
-  height: 176px;
-  border: 1px solid rgba(255, 255, 255, 0.64);
-  border-radius: 999px 999px 52px 52px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.52), transparent),
-    rgba(255, 253, 247, 0.18);
+  content: none;
 }
 
 .home-entry-visual::after {
-  content: "";
-  position: absolute;
-  inset: auto 24px 0;
-  height: 92%;
-  background:
-    linear-gradient(180deg, transparent 68%, rgba(255, 253, 247, 0.96)),
-    url("/assets/kumiko-standee-v1.png") center bottom / min(82%, 390px) auto no-repeat;
-  filter: drop-shadow(0 18px 26px rgba(40, 68, 70, 0.12));
+  content: none;
 }
 
 .home-entry-copy {
+  width: min(430px, 100%);
   display: grid;
   align-content: center;
-  gap: 18px;
-  padding: clamp(34px, 5.5vw, 66px);
+  justify-self: end;
+  gap: 17px;
+  padding: clamp(30px, 4.8vw, 58px) 0 clamp(30px, 4.8vw, 58px) clamp(26px, 4vw, 46px);
+  border-left: 1px solid rgba(47, 126, 186, 0.18);
+  background: linear-gradient(90deg, rgba(255, 253, 247, 0.1), rgba(255, 253, 247, 0.74));
+  backdrop-filter: blur(10px) saturate(1.02);
 }
 
 .home-title {
   margin: 0;
-  color: #27383a;
-  font-size: clamp(42px, 5.4vw, 72px);
-  font-weight: 900;
-  line-height: 0.96;
+  color: #263a40;
+  font-family: var(--font-serif);
+  font-size: clamp(44px, 5vw, 68px);
+  font-weight: 600;
+  line-height: 0.98;
   letter-spacing: 0;
+}
+
+.home-title span {
+  display: block;
+}
+
+.home-title span:last-child {
+  margin-top: 3px;
+  color: #2f6d86;
+  font-family: var(--font-body);
+  font-size: 0.62em;
+  font-weight: 800;
 }
 
 .home-lobby .home-lede {
@@ -324,22 +326,22 @@ p {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0 18px;
+  padding: 0 17px;
   border-radius: 999px;
   font-size: 14px;
   font-weight: 900;
 }
 
 .home-primary-link {
-  background: #2f7eba;
+  background: rgba(47, 126, 186, 0.9);
   color: white;
-  box-shadow: 0 12px 20px rgba(47, 126, 186, 0.22);
+  box-shadow: 0 10px 22px rgba(47, 126, 186, 0.18);
 }
 
 .home-secondary-link {
-  border: 1px solid #d8e2dd;
-  background: rgba(255, 255, 255, 0.68);
-  color: #27383a;
+  border: 1px solid rgba(47, 126, 186, 0.24);
+  background: rgba(255, 253, 247, 0.32);
+  color: #2f5864;
 }
 
 .home-primary-link:hover,
@@ -574,7 +576,7 @@ p {
   border-radius: 50%;
   background:
     linear-gradient(135deg, rgba(255, 253, 247, 0.1), rgba(219, 239, 248, 0.16)),
-    url("/assets/kumiko-popup.webp") center / cover,
+    url("/assets/kumiko-avatar-v1.png") center / cover,
     #fffdf7;
 }
 
@@ -793,6 +795,25 @@ p {
 .mobile-session-tools,
 .mobile-session-panel {
   display: none;
+}
+
+.chat-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.chat-nav-link {
+  width: auto;
+  min-width: 42px;
+  padding: 0 9px;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.chat-nav-link:hover {
+  color: #2f7eba;
 }
 
 .api {
@@ -1533,12 +1554,12 @@ p {
   z-index: 0;
   min-height: 100vh;
   display: grid;
-  place-items: center;
-  padding: 24px;
+  place-items: stretch;
+  padding: clamp(18px, 3vw, 32px);
   isolation: isolate;
   background:
-    linear-gradient(90deg, rgba(244, 248, 241, 0.96) 0 20%, rgba(244, 248, 241, 0.84) 54%, rgba(244, 248, 241, 0.72)),
-    url("/assets/liz-keyvisual.jpg") center / cover fixed,
+    linear-gradient(90deg, rgba(255, 253, 247, 0.86), rgba(255, 253, 247, 0.72) 44%, rgba(219, 239, 248, 0.58)),
+    url("/assets/home-rehearsal-v2.png") center / cover fixed,
     #f4f8f1;
 }
 
@@ -1549,21 +1570,23 @@ p {
   z-index: -1;
   pointer-events: none;
   background:
-    linear-gradient(180deg, rgba(255, 253, 247, 0.58), rgba(255, 253, 247, 0.74)),
-    repeating-linear-gradient(0deg, rgba(47, 126, 186, 0.05) 0 1px, transparent 1px 42px);
+    linear-gradient(180deg, rgba(255, 253, 247, 0.32), rgba(255, 253, 247, 0.68)),
+    repeating-linear-gradient(0deg, rgba(47, 126, 186, 0.035) 0 1px, transparent 1px 42px);
 }
 
 .studio-window {
-  width: min(1120px, 100%);
-  height: min(684px, calc(100vh - 48px));
-  min-height: 590px;
+  width: min(1180px, 100%);
+  height: min(704px, calc(100vh - 48px));
+  min-height: 600px;
+  margin: auto;
   display: grid;
-  grid-template-columns: 248px minmax(0, 1fr);
+  grid-template-columns: 232px minmax(0, 1fr);
   overflow: hidden;
-  border: 1px solid rgba(190, 204, 199, 0.9);
-  border-radius: 18px;
-  background: #fffdf7;
-  box-shadow: 0 32px 80px rgba(40, 68, 70, 0.18);
+  border: 0;
+  border-radius: 0;
+  background: rgba(255, 253, 247, 0.8);
+  box-shadow: none;
+  backdrop-filter: blur(18px) saturate(1.02);
 }
 
 .studio-shelf {
@@ -1572,8 +1595,8 @@ p {
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 22px;
   padding: 20px;
-  border-right: 1px solid #d8e2dd;
-  background: rgba(247, 251, 247, 0.96);
+  border-right: 1px solid rgba(47, 126, 186, 0.16);
+  background: rgba(247, 251, 247, 0.74);
 }
 
 .studio-brand {
@@ -1583,7 +1606,9 @@ p {
 
 .studio-brand h1 {
   margin: 0;
+  font-family: var(--font-serif);
   font-size: 28px;
+  font-weight: 600;
   line-height: 1.1;
   letter-spacing: 0;
 }
@@ -1664,8 +1689,8 @@ p {
   display: grid;
   grid-template-rows: 62px minmax(0, 1fr);
   background:
-    linear-gradient(180deg, rgba(255, 253, 247, 0.95), rgba(255, 253, 247, 0.88)),
-    #fffdf7;
+    linear-gradient(180deg, rgba(255, 253, 247, 0.72), rgba(255, 253, 247, 0.58)),
+    rgba(255, 253, 247, 0.7);
 }
 
 .studio-desk__header {
@@ -1713,34 +1738,28 @@ p {
 
 .studio-empty {
   display: grid;
-  place-items: center;
-  min-width: 0;
-  padding: 34px;
-}
-
-.studio-empty-paper {
-  width: min(420px, 100%);
-  min-height: 306px;
-  display: grid;
   align-content: center;
+  justify-items: start;
   gap: 18px;
-  padding: 34px;
-  border: 1px solid #d8e2dd;
-  border-radius: 16px;
+  min-width: 0;
+  padding: clamp(42px, 7vw, 78px);
   background:
-    linear-gradient(rgba(255, 253, 247, 0.8), rgba(255, 253, 247, 0.9)),
-    repeating-linear-gradient(0deg, transparent 0 35px, rgba(143, 172, 138, 0.14) 35px 36px);
-  box-shadow: 0 10px 24px rgba(40, 68, 70, 0.08);
+    linear-gradient(90deg, rgba(255, 253, 247, 0.46), rgba(255, 253, 247, 0.18)),
+    repeating-linear-gradient(0deg, transparent 0 35px, rgba(143, 172, 138, 0.12) 35px 36px);
 }
 
-.studio-empty-paper h2 {
+.studio-empty h2 {
+  max-width: 420px;
   margin: 0;
-  font-size: 24px;
+  font-family: var(--font-serif);
+  font-size: 28px;
+  font-weight: 600;
   line-height: 1.26;
   letter-spacing: 0;
 }
 
-.studio-empty-paper p {
+.studio-empty p {
+  max-width: 420px;
   margin: 0;
   color: #687a7b;
   font-size: 14px;
@@ -1751,10 +1770,10 @@ p {
 .studio-character {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
-  border-left: 1px solid #d8e2dd;
+  border-left: 1px solid rgba(47, 126, 186, 0.14);
   background:
-    linear-gradient(180deg, rgba(219, 239, 248, 0.54), rgba(255, 253, 247, 0.92) 62%),
-    rgba(250, 253, 247, 0.94);
+    linear-gradient(180deg, rgba(219, 239, 248, 0.36), rgba(255, 253, 247, 0.76) 62%),
+    rgba(250, 253, 247, 0.72);
 }
 
 .studio-character__figure {
@@ -1766,31 +1785,30 @@ p {
 .studio-character__figure::before {
   content: "";
   position: absolute;
-  inset: 26px 26px auto;
-  height: 122px;
-  border-radius: 999px 999px 40px 40px;
-  background: rgba(255, 255, 255, 0.36);
+  inset: 18px 16px 78px;
+  background:
+    linear-gradient(180deg, rgba(255, 253, 247, 0.04), rgba(255, 253, 247, 0.56)),
+    url("/assets/home-rehearsal-v2.png") 21% center / cover no-repeat;
+  filter: saturate(0.92);
 }
 
 .studio-character__figure::after {
   content: "";
   position: absolute;
-  inset: 14px 16px 0;
+  inset: 0;
   background:
-    linear-gradient(180deg, transparent 70%, rgba(255, 253, 247, 0.98)),
-    url("/assets/kumiko-standee-v1.png") center bottom / min(88%, 250px) auto no-repeat;
-  filter: drop-shadow(0 16px 22px rgba(40, 68, 70, 0.11));
+    linear-gradient(180deg, transparent 42%, rgba(255, 253, 247, 0.82)),
+    linear-gradient(90deg, rgba(255, 253, 247, 0.55), transparent 34%, rgba(255, 253, 247, 0.66));
 }
 
 .studio-note {
   position: relative;
   z-index: 1;
-  margin: 0 16px 16px;
-  padding: 14px;
-  border: 1px solid rgba(216, 226, 221, 0.88);
-  border-radius: 14px;
-  background: rgba(255, 253, 247, 0.84);
-  box-shadow: 0 10px 22px rgba(40, 68, 70, 0.08);
+  margin: 0 18px 22px;
+  padding: 12px 0 0;
+  border-top: 1px solid rgba(47, 126, 186, 0.2);
+  background: transparent;
+  box-shadow: none;
 }
 
 .studio-note strong {
@@ -1819,21 +1837,21 @@ p {
 @media (max-width: 980px) {
   .home-entry-window {
     grid-template-columns: 1fr;
+    align-content: end;
   }
 
   .home-entry-visual {
-    min-height: 282px;
-    border-right: 0;
-    border-bottom: 1px solid #d8e2dd;
-  }
-
-  .home-entry-visual::after {
-    background-size: auto 94%;
+    display: none;
   }
 
   .home-entry-copy {
     align-content: start;
+    justify-self: stretch;
+    width: min(480px, 100%);
+    margin-left: auto;
     padding: 28px 24px 36px;
+    border-left: 0;
+    border-top: 1px solid rgba(47, 126, 186, 0.18);
   }
 
   .studio-window {
@@ -1889,6 +1907,7 @@ p {
   .studio-window {
     width: 100%;
     min-height: 100vh;
+    height: auto;
     border: 0;
     border-radius: 0;
   }
@@ -1942,6 +1961,12 @@ p {
     display: flex;
     align-items: center;
     gap: 5px;
+  }
+
+  .chat-nav-link {
+    min-width: 34px;
+    padding: 0 7px;
+    font-size: 11px;
   }
 
   .mobile-session-panel {

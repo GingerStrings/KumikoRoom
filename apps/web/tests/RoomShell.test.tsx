@@ -68,9 +68,12 @@ describe("RoomShell", () => {
     expect(timeline.textContent).not.toContain(getIdleLine(DEFAULT_ROOM_STATE));
     expect(screen.getByRole("textbox", { name: "写一条消息" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "模型与偏好" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "首页" }).getAttribute("href")).toBe("/");
+    expect(screen.getByRole("link", { name: "资料室" }).getAttribute("href")).toBe("/studio");
     expect(screen.queryByRole("link", { name: "打开创作资料" })).toBeNull();
     expect(screen.queryByLabelText("久美子立绘占位")).toBeNull();
     expect(screen.queryByText("陪伴房间")).toBeNull();
+    expect(screen.queryByText("房间")).toBeNull();
     expect(screen.queryByLabelText("今日摘要")).toBeNull();
     expect(screen.queryByLabelText("本地音乐状态")).toBeNull();
     expect(screen.queryByLabelText("AI 设置")).toBeNull();

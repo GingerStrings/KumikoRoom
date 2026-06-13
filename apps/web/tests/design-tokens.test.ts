@@ -3,6 +3,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const cssPath = path.resolve(__dirname, "../app/globals.css");
+const homeHeroAssetPath = path.resolve(__dirname, "../public/assets/home-rehearsal-v2.png");
+const chatAvatarAssetPath = path.resolve(__dirname, "../public/assets/kumiko-avatar-v1.png");
 
 function expectRuleToContain(css: string, selector: string, declarations: string[]) {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -79,6 +81,7 @@ describe("Liz Bluebird room visual tokens", () => {
     [
       ".room-stage",
       ".room-workspace {",
+      ".chat-nav-link",
       ".session-sidebar {",
       ".session-sidebar--collapsed",
       ".thread[data-active=\"true\"]",
@@ -96,24 +99,32 @@ describe("Liz Bluebird room visual tokens", () => {
     });
   });
 
+  it("uses the soft Kumiko chat avatar asset in message chrome", () => {
+    const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
+
+    expect(fs.existsSync(chatAvatarAssetPath)).toBe(true);
+    expectRuleToContain(css, ".avatar", ['url("/assets/kumiko-avatar-v1.png")']);
+  });
+
   it("keeps non-chat pages aligned with the v6 window language", () => {
     const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
 
+    expect(fs.existsSync(homeHeroAssetPath)).toBe(true);
     expectRuleToContain(css, ".home-lobby", [
-      'url("/assets/liz-keyvisual.jpg")',
-      "place-items: center;",
+      'url("/assets/home-rehearsal-v2.png")',
+      "place-items: stretch;",
     ]);
     expectRuleToContain(css, ".home-entry-window", [
-      "border: 1px solid rgba(190, 204, 199, 0.9);",
-      "box-shadow: 0 32px 80px rgba(40, 68, 70, 0.18);",
+      "border: 0;",
+      "box-shadow: none;",
     ]);
     expectRuleToContain(css, ".studio-workbench", [
-      'url("/assets/liz-keyvisual.jpg")',
-      "place-items: center;",
+      'url("/assets/home-rehearsal-v2.png")',
+      "place-items: stretch;",
     ]);
     expectRuleToContain(css, ".studio-window", [
-      "border: 1px solid rgba(190, 204, 199, 0.9);",
-      "box-shadow: 0 32px 80px rgba(40, 68, 70, 0.18);",
+      "border: 0;",
+      "box-shadow: none;",
     ]);
   });
 

@@ -512,6 +512,14 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                   +
                 </button>
               </div>
+              <nav className="chat-nav" aria-label="页面导航">
+                <a className="tool chat-nav-link" href="/">
+                  首页
+                </a>
+                <a className="tool chat-nav-link" href="/studio">
+                  资料室
+                </a>
+              </nav>
               <span
                 className={`api api--${connectionStatus.tone}`}
                 role="status"
