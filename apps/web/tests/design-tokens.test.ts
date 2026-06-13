@@ -121,6 +121,16 @@ describe("Liz Bluebird room visual tokens", () => {
     });
   });
 
+  it("keeps platform player controls and mini-window viewport constraints aligned", () => {
+    const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
+
+    expectRuleToContain(css, ".player-controls", [
+      "grid-template-columns: 34px 42px 34px minmax(0, 1fr) 34px 34px;",
+    ]);
+    expect(css).toContain("@media (max-height: 520px)");
+    expect(css).toContain("max-height: calc(100vh - 24px);");
+  });
+
   it("uses the soft Kumiko chat avatar asset in message chrome", () => {
     const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
 

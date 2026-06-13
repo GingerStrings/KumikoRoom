@@ -1447,7 +1447,7 @@ p {
 
 .player-controls {
   display: grid;
-  grid-template-columns: 34px 42px 34px 34px minmax(0, 1fr) 34px;
+  grid-template-columns: 34px 42px 34px minmax(0, 1fr) 34px 34px;
   align-items: center;
   gap: 8px;
   margin-top: 13px;
@@ -1641,6 +1641,28 @@ p {
 
 .video-mini-window__link:hover {
   background: white;
+}
+
+@media (max-height: 520px) {
+  .video-mini-window {
+    top: 12px;
+    bottom: 12px;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    max-height: calc(100vh - 24px);
+  }
+
+  .video-mini-window--compact,
+  .video-mini-window--large {
+    width: min(520px, calc(100vw - 24px));
+    aspect-ratio: auto;
+  }
+
+  .video-mini-window__frame {
+    min-height: 0;
+    height: 100%;
+    aspect-ratio: auto;
+  }
 }
 
 @keyframes standee-idle {
