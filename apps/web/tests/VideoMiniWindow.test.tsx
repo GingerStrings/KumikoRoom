@@ -20,9 +20,15 @@ describe("VideoMiniWindow", () => {
     expect(screen.getByRole("dialog", { name: "B站视频小窗" })).toBeTruthy();
     expect(screen.getByText(bilibiliItem.title)).toBeTruthy();
     const frame = screen.getByTitle(`${bilibiliItem.title} 视频播放`);
+    expect(frame.classList.contains("video-mini-window__frame")).toBe(true);
     expect(frame.getAttribute("src")).toBe(bilibiliItem.embedUrl);
     expect(frame.getAttribute("allow")).toContain("autoplay");
-    expect(screen.getByRole("link", { name: "在 B站 打开" }).getAttribute("href")).toBe(bilibiliItem.pageUrl);
+    expect(frame.hasAttribute("allowfullscreen")).toBe(true);
+    const link = screen.getByRole("link", { name: "在 B站 打开" });
+    expect(link.classList.contains("video-mini-window__link")).toBe(true);
+    expect(link.getAttribute("href")).toBe(bilibiliItem.pageUrl);
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toContain("noreferrer");
   });
 
   it("exposes close and size controls", () => {
