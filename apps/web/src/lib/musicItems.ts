@@ -40,6 +40,14 @@ interface BilibiliMusicItemInput {
 }
 
 const BILIBILI_BVID_PATTERN = /BV[a-zA-Z0-9]{10}/;
+const BILIBILI_BVID_ONLY_PATTERN = /^BV[a-zA-Z0-9]{10}$/;
+const BILIBILI_HOSTS = new Set([
+  "bilibili.com",
+  "www.bilibili.com",
+  "m.bilibili.com",
+  "player.bilibili.com",
+  "b23.tv"
+]);
 
 function makeLocalMusicItem(input: {
   id: string;
@@ -68,7 +76,18 @@ export function buildBilibiliEmbedUrl(bvid: string): string {
 }
 
 export function parseBilibiliVideoUrl(input: string): ParsedBilibiliVideo | null {
-  const match = input.match(BILIBILI_BVID_PATTERN);
+  const trimmedInput = input.trim();
+  const isRawBvid = BILIBILI_BVID_ONLY_PATTERN.test(trimmedInput);
+
+  if (!isRawBvid) {
+    const parsedUrl = parseUrlWithOptionalProtocol(trimmedInput);
+
+    if (!parsedUrl || !BILIBILI_HOSTS.has(parsedUrl.hostname.toLowerCase())) {
+      return null;
+    }
+  }
+
+  const match = trimmedInput.match(BILIBILI_BVID_PATTERN);
 
   if (!match) {
     return null;
@@ -81,6 +100,18 @@ export function parseBilibiliVideoUrl(input: string): ParsedBilibiliVideo | null
     pageUrl: `https://www.bilibili.com/video/${bvid}`,
     embedUrl: buildBilibiliEmbedUrl(bvid)
   };
+}
+
+function parseUrlWithOptionalProtocol(input: string): URL | null {
+  try {
+    return new URL(input);
+  } catch {
+    try {
+      return new URL(`https://${input}`);
+    } catch {
+      return null;
+    }
+  }
 }
 
 export function makeBilibiliMusicItem(input: BilibiliMusicItemInput): MusicItem {
@@ -106,22 +137,22 @@ export function makeBilibiliMusicItem(input: BilibiliMusicItemInput): MusicItem 
 
 export const PLAYER_TRACKS: MusicItem[] = [
   makeLocalMusicItem({
-    id: "rainy-corridor",
+    id: "local-rain-corridor",
     title: "雨后的走廊",
     creator: "练习室 · 傍晚",
     tags: ["practice", "evening"]
   }),
   makeBilibiliMusicItem({
-    id: "ensemble-tuning",
+    id: "bilibili-blue-bird-rehearsal",
     title: "合奏前调音",
-    creator: "北宇治吹奏部",
+    creator: "部室 · 木管声部",
     url: "https://www.bilibili.com/video/BV1xx411c7mD",
     tags: ["ensemble", "tuning"]
   }),
   makeLocalMusicItem({
-    id: "blue-bird-interlude",
+    id: "local-bluebird-bridge",
     title: "青鸟的间奏",
-    creator: "久美子 · 独奏练习",
+    creator: "长笛 · 双簧管",
     tags: ["interlude", "euphonium"]
   })
 ];
@@ -133,6 +164,6 @@ export function buildListeningContext(item: MusicItem, isPlaying: boolean): List
     creator: item.creator,
     isPlaying,
     pageUrl: item.pageUrl ?? null,
-    tags: item.tags
+    tags: [...item.tags]
   };
 }

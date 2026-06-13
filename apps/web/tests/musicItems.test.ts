@@ -23,8 +23,20 @@ describe("music item platform helpers", () => {
     });
   });
 
+  it("parses a raw BV id", () => {
+    expect(parseBilibiliVideoUrl("BV1xx411c7mD")).toMatchObject({
+      bvid: "BV1xx411c7mD",
+      pageUrl: "https://www.bilibili.com/video/BV1xx411c7mD"
+    });
+  });
+
   it("returns null for text without a Bilibili BV id", () => {
     expect(parseBilibiliVideoUrl("https://music.163.com/song?id=123")).toBeNull();
+  });
+
+  it("rejects BV tokens embedded in non-Bilibili URLs or unrelated text", () => {
+    expect(parseBilibiliVideoUrl("https://example.com/BV1xx411c7mD")).toBeNull();
+    expect(parseBilibiliVideoUrl("play this BV1xx411c7mD later")).toBeNull();
   });
 
   it("encodes Bilibili embed bvid values", () => {
@@ -74,6 +86,32 @@ describe("music item platform helpers", () => {
     expect(PLAYER_TRACKS.some((track) => track.source === "bilibili" && track.canOpenVideo)).toBe(true);
   });
 
+  it("preserves default player item ids and visible labels", () => {
+    expect(PLAYER_TRACKS).toMatchObject([
+      {
+        id: "local-rain-corridor",
+        source: "local",
+        title: "雨后的走廊",
+        creator: "练习室 · 傍晚",
+        canOpenVideo: false
+      },
+      {
+        id: "bilibili-blue-bird-rehearsal",
+        source: "bilibili",
+        title: "合奏前调音",
+        creator: "部室 · 木管声部",
+        canOpenVideo: true
+      },
+      {
+        id: "local-bluebird-bridge",
+        source: "local",
+        title: "青鸟的间奏",
+        creator: "长笛 · 双簧管",
+        canOpenVideo: false
+      }
+    ]);
+  });
+
   it("builds compact listening context for chat requests", () => {
     expect(buildListeningContext(PLAYER_TRACKS[1], true)).toEqual({
       source: PLAYER_TRACKS[1].source,
@@ -83,5 +121,23 @@ describe("music item platform helpers", () => {
       pageUrl: PLAYER_TRACKS[1].pageUrl ?? null,
       tags: PLAYER_TRACKS[1].tags
     });
+  });
+
+  it("copies tags when building listening context", () => {
+    const item = makeBilibiliMusicItem({
+      id: "tag-copy",
+      title: "Tag Copy",
+      creator: "demo up",
+      url: "https://www.bilibili.com/video/BV1xx411c7mD",
+      tags: ["rehearsal"]
+    });
+
+    const context = buildListeningContext(item, true);
+
+    expect(context.tags).toEqual(["rehearsal"]);
+    expect(context.tags).not.toBe(item.tags);
+
+    context.tags.push("mutated");
+    expect(item.tags).toEqual(["rehearsal"]);
   });
 });
