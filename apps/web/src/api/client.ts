@@ -80,6 +80,7 @@ export function postChat(payload: ChatRequest): Promise<ChatResponse> {
     body: JSON.stringify({
       message: payload.message,
       room_state: mapRoomStateRequest(payload.roomState),
+      listening_context: mapListeningContextRequest(payload.listeningContext),
       recent_messages: payload.recentMessages ?? [],
       persona_strength: payload.personaStrength ?? "medium",
       memory_enabled: payload.memoryEnabled ?? true,
@@ -231,6 +232,19 @@ function mapRoomStateRequest(value: RoomState): RoomStateApi {
       route: value.studio.route,
       unfinished_count: value.studio.unfinishedCount
     }
+  };
+}
+
+function mapListeningContextRequest(value: ChatRequest["listeningContext"]) {
+  if (!value) return null;
+
+  return {
+    source: value.source,
+    title: value.title,
+    creator: value.creator,
+    is_playing: value.isPlaying,
+    page_url: value.pageUrl,
+    tags: value.tags
   };
 }
 

@@ -1,3 +1,5 @@
+import type { ListeningContext } from "../lib/musicItems";
+
 export interface CharacterState {
   displayName: string;
   romanizedName: string;
@@ -76,6 +78,7 @@ export interface ChatRequest {
   recentMessages?: ChatMessage[];
   personaStrength?: PersonaStrength;
   memoryEnabled?: boolean;
+  listeningContext?: ListeningContext;
 }
 
 export interface ChatResponse {

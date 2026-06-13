@@ -258,6 +258,7 @@ describe("room API client", () => {
     expect(requestBody(fetchMock)).toEqual({
       message: "Evening",
       room_state: roomStateApi(),
+      listening_context: null,
       recent_messages: [],
       persona_strength: "medium",
       memory_enabled: true,
@@ -319,10 +320,58 @@ describe("room API client", () => {
     expect(requestBody(fetchMock)).toEqual({
       message: "Continue",
       room_state: roomStateApi(),
+      listening_context: null,
       recent_messages: recentMessages,
       persona_strength: "strong",
       memory_enabled: false,
       session_id: "session-1"
+    });
+  });
+
+  it("posts chat messages with optional listening context", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({
+          reply: { id: "3", role: "kumiko", content: "This track feels focused." },
+          expression: "listening",
+          suggested_actions: [],
+          provider_status: {
+            provider: "mock",
+            model: null,
+            configured: true,
+            label: "Local Mock API"
+          },
+          memory_events: [],
+          session: null
+        })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await roomApi.postChat({
+      message: "这首适合写什么？",
+      roomState: DEFAULT_ROOM_STATE,
+      listeningContext: {
+        source: "bilibili",
+        title: "合奏前调音",
+        creator: "部室 · 木管声部",
+        isPlaying: true,
+        pageUrl: "https://www.bilibili.com/video/BV1xx411c7mD",
+        tags: ["bilibili", "rehearsal"]
+      }
+    });
+
+    expect(requestBody(fetchMock)).toMatchObject({
+      listening_context: {
+        source: "bilibili",
+        title: "合奏前调音",
+        creator: "部室 · 木管声部",
+        is_playing: true,
+        page_url: "https://www.bilibili.com/video/BV1xx411c7mD",
+        tags: ["bilibili", "rehearsal"]
+      }
     });
   });
 
