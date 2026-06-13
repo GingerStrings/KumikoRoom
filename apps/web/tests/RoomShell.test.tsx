@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatSession, StoredChatMessage } from "../src/api/types";
 import { RoomShell } from "../src/components/RoomShell";
 import { getConnectionStatus } from "../src/lib/connectionStatus";
+import { PLAYER_TRACKS, buildListeningContext } from "../src/lib/musicItems";
 import { DEFAULT_ROOM_STATE, getIdleLine } from "../src/lib/roomState";
 
 const apiMocks = vi.hoisted(() => ({
@@ -98,6 +99,60 @@ describe("RoomShell", () => {
     const createButton = screen.getByRole("button", { name: "新建会话" });
     expect(createButton.classList.contains("tool")).toBe(true);
     expect(createButton.textContent).toBe("+");
+  });
+
+  it("keeps the default player music-first before video is opened", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    expect(screen.getByLabelText("氛围播放器")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "青鸟的间奏" })).toBeTruthy();
+    const sourceBadge = document.querySelector<HTMLElement>(".source-badge");
+
+    expect(sourceBadge?.textContent).toBe("本地");
+    expect(sourceBadge?.getAttribute("data-source")).toBe("local");
+    expect(screen.queryByRole("dialog", { name: "B站视频小窗" })).toBeNull();
+    expect(screen.queryByTitle(/视频播放/)).toBeNull();
+  });
+
+  it("opens and closes the Bilibili mini-window from the music player", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "合奏前调音" }));
+    const sourceBadge = document.querySelector<HTMLElement>(".source-badge");
+
+    expect(sourceBadge?.textContent).toBe("B站");
+    expect(sourceBadge?.getAttribute("data-source")).toBe("bilibili");
+    fireEvent.click(screen.getByRole("button", { name: "打开视频小窗" }));
+
+    expect(screen.getByRole("dialog", { name: "B站视频小窗" })).toBeTruthy();
+    expect(screen.getByTitle("合奏前调音 视频播放")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭视频小窗" }));
+    expect(screen.queryByRole("dialog", { name: "B站视频小窗" })).toBeNull();
+  });
+
+  it("sends active listening context with chat messages", async () => {
+    const bilibiliTrack = PLAYER_TRACKS.find((track) => track.id === "bilibili-blue-bird-rehearsal");
+    if (!bilibiliTrack) {
+      throw new Error("Bilibili player track not found");
+    }
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: bilibiliTrack.title }));
+    fireEvent.change(getComposerInput(), {
+      target: { value: "这首现在是什么感觉？" }
+    });
+    fireEvent.click(getComposerSubmit());
+
+    await waitFor(() => expect(apiMocks.postChat).toHaveBeenCalledTimes(1));
+    expect(apiMocks.postChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        listeningContext: buildListeningContext(bilibiliTrack, true)
+      })
+    );
   });
 
   it("exposes compact session controls from the chat header", async () => {
@@ -603,6 +658,7 @@ describe("RoomShell", () => {
     expect(apiMocks.postChat).toHaveBeenNthCalledWith(1, {
       message: "晚上好",
       roomState: DEFAULT_ROOM_STATE,
+      listeningContext: buildListeningContext(PLAYER_TRACKS[0], true),
       recentMessages: [],
       personaStrength: "strong",
       memoryEnabled: false,
@@ -618,6 +674,7 @@ describe("RoomShell", () => {
     expect(apiMocks.postChat).toHaveBeenNthCalledWith(2, {
       message: "想继续聊这首",
       roomState: DEFAULT_ROOM_STATE,
+      listeningContext: buildListeningContext(PLAYER_TRACKS[0], true),
       recentMessages: [
         {
           id: expect.stringMatching(/^user-\d+$/),

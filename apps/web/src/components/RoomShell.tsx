@@ -18,14 +18,12 @@ import type {
   StoredChatMessage
 } from "../api/types";
 import type { ConnectionStatus } from "../lib/connectionStatus";
+import { PLAYER_TRACKS, buildListeningContext } from "../lib/musicItems";
+import type { MusicSourceKind } from "../lib/musicItems";
 import { SessionSidebar } from "./SessionSidebar";
+import { VideoMiniWindow } from "./VideoMiniWindow";
 
 const LAST_SESSION_STORAGE_KEY = "kumikoroom.lastSessionId";
-const PLAYER_TRACKS = [
-  { title: "雨后的走廊", subtitle: "练习室 · 傍晚" },
-  { title: "合奏前调音", subtitle: "部室 · 木管声部" },
-  { title: "青鸟的间奏", subtitle: "长笛 · 双簧管" }
-];
 
 interface FailedOutgoingMessage {
   id: string;
@@ -70,8 +68,11 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const [failedOutgoing, setFailedOutgoing] = useState<FailedOutgoingMessage | null>(null);
   const [playerTrackIndex, setPlayerTrackIndex] = useState(0);
   const [isPlayerPlaying, setIsPlayerPlaying] = useState(true);
+  const [videoWindowOpen, setVideoWindowOpen] = useState(false);
+  const [videoWindowSize, setVideoWindowSize] = useState<"compact" | "large">("compact");
   const connectionLabel = providerStatus?.label ?? connectionStatus.label;
   const activeTrack = PLAYER_TRACKS[playerTrackIndex] ?? PLAYER_TRACKS[0];
+  const activeListeningContext = buildListeningContext(activeTrack, isPlayerPlaying);
   const setActiveSessionId = useCallback((sessionId: string | null) => {
     activeSessionIdRef.current = sessionId;
     setActiveSessionIdState(sessionId);
@@ -189,6 +190,12 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   }, [activeSessionId]);
 
   useEffect(() => {
+    if (activeTrack.canOpenVideo) return;
+
+    setVideoWindowOpen(false);
+  }, [activeTrack.canOpenVideo]);
+
+  useEffect(() => {
     const timeline = timelineRef.current;
     if (!timeline) return;
 
@@ -239,7 +246,8 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
         sessionId: submittedSessionId ?? undefined,
         recentMessages,
         personaStrength,
-        memoryEnabled
+        memoryEnabled,
+        listeningContext: activeListeningContext
       });
       if (activeSessionIdRef.current !== submittedSessionId) {
         return;
@@ -879,12 +887,17 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
             <div className="track-head">
               <div className="track-title">
                 <strong>{activeTrack.title}</strong>
-                <span>{activeTrack.subtitle}</span>
+                <span>{activeTrack.creator}</span>
               </div>
-              <div className="equalizer" aria-hidden="true">
-                <i />
-                <i />
-                <i />
+              <div className="track-actions">
+                <span className="source-badge" data-source={activeTrack.source}>
+                  {getMusicSourceLabel(activeTrack.source)}
+                </span>
+                <div className="equalizer" aria-hidden="true">
+                  <i />
+                  <i />
+                  <i />
+                </div>
               </div>
             </div>
             <div className="progress" aria-label="播放进度">
@@ -915,6 +928,16 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
               <button className="control" type="button" aria-label="循环">
                 ↻
               </button>
+              {activeTrack.canOpenVideo ? (
+                <button
+                  className="control video"
+                  type="button"
+                  aria-label="打开视频小窗"
+                  onClick={() => setVideoWindowOpen(true)}
+                >
+                  ▣
+                </button>
+              ) : null}
             </div>
             <div className="playlist" aria-label="播放列表">
               {PLAYER_TRACKS.map((track, index) => (
@@ -924,15 +947,32 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                   key={track.title}
                   onClick={() => setPlayerTrackIndex(index)}
                 >
-                  {track.title.replace("的", "")}
+                  {track.title}
                 </button>
               ))}
             </div>
           </section>
         </aside>
       </section>
+      {videoWindowOpen && activeTrack.canOpenVideo ? (
+        <VideoMiniWindow
+          item={activeTrack}
+          size={videoWindowSize}
+          onClose={() => setVideoWindowOpen(false)}
+          onToggleSize={() =>
+            setVideoWindowSize((current) => (current === "compact" ? "large" : "compact"))
+          }
+        />
+      ) : null}
     </main>
   );
+}
+
+function getMusicSourceLabel(source: MusicSourceKind): string {
+  if (source === "bilibili") return "B站";
+  if (source === "netease") return "网易云";
+
+  return "本地";
 }
 
 function shouldUseSparseTimeline(messages: ChatMessage[]): boolean {
