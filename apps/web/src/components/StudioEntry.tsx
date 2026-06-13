@@ -1,42 +1,63 @@
-const studioSections = [
-  {
-    title: "工程概览",
-    body: "后续会汇总本地音乐工程、主 FLP、状态和标签。"
-  },
-  {
-    title: "工程档案",
-    body: "每个工程会展示文件、FLP 元数据、打开工程和打开文件夹入口。"
-  },
-  {
-    title: "创作笔记",
-    body: "歌词、想法、下一步待办会和工程关联。"
-  },
-  {
-    title: "Demo 音频",
-    body: "粗混、参考导出和相关音频会在这里播放。"
-  }
-];
+const studioTabs = ["工程", "素材", "笔记"];
 
 export function StudioEntry() {
   return (
-    <main className="studio-shell">
-      <header className="studio-header workspace-card">
-        <div>
-          <p className="eyebrow">KumikoRoom</p>
-          <h1>创作资料</h1>
-        </div>
-        <a className="text-link" href="/">
-          回到导航页
-        </a>
-      </header>
+    <main className="studio-workbench" aria-label="资料室">
+      <section className="studio-window">
+        <aside className="studio-shelf" aria-label="资料分类">
+          <div className="studio-brand">
+            <p className="eyebrow">KumikoRoom</p>
+            <h1>资料室</h1>
+          </div>
 
-      <section className="studio-grid" aria-label="创作资料模块">
-        {studioSections.map((section) => (
-          <article className="studio-module workspace-card" key={section.title}>
-            <h2>{section.title}</h2>
-            <p>{section.body}</p>
-          </article>
-        ))}
+          <nav className="studio-tabs" aria-label="资料分类">
+            {studioTabs.map((tab) => (
+              <button type="button" key={tab} data-active={tab === "工程" ? "true" : undefined}>
+                {tab}
+              </button>
+            ))}
+          </nav>
+
+          <div className="studio-links">
+            <a className="studio-link" href="/room">
+              回到房间
+            </a>
+            <a className="studio-link" href="/">
+              回到入口
+            </a>
+          </div>
+        </aside>
+
+        <section className="studio-desk" aria-label="资料内容">
+          <header className="studio-desk__header">
+            <div>
+              <span>工程</span>
+              <strong>本地资料</strong>
+            </div>
+            <input className="studio-search" type="search" placeholder="搜索资料" aria-label="搜索资料" />
+          </header>
+
+          <div className="studio-body">
+            <div className="studio-empty">
+              <div className="studio-empty-paper">
+                <p className="eyebrow">Empty</p>
+                <h2>还没有接入本地工程。</h2>
+                <p>之后这里可以放工程文件、音频素材和写作笔记。当前先保持清爽，不用假内容把页面填满。</p>
+                <a className="studio-soft-action" href="/room">
+                  先回到房间
+                </a>
+              </div>
+            </div>
+
+            <aside className="studio-character" aria-label="角色侧栏">
+              <div className="studio-character__figure" aria-hidden="true" />
+              <div className="studio-note">
+                <strong>当前空间</strong>
+                <span>这里更像一个轻资料柜，承担整理入口和状态提示。</span>
+              </div>
+            </aside>
+          </div>
+        </section>
       </section>
     </main>
   );

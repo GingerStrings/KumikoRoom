@@ -54,9 +54,8 @@ describe("Liz Bluebird room visual tokens", () => {
       "connection-chip--muted",
       "connection-chip--ready",
       "connection-chip--warning",
-      "connection-pill--muted",
-      "connection-pill--ready",
-      "connection-pill--warning",
+      "connection-strip--ready",
+      "connection-strip--warning",
     ].forEach((selector) => {
       expect(css).toContain(`.${selector}`);
     });
@@ -94,6 +93,49 @@ describe("Liz Bluebird room visual tokens", () => {
       ".settings-section",
     ].forEach((selector) => {
       expect(css).toContain(selector);
+    });
+  });
+
+  it("keeps non-chat pages aligned with the v6 window language", () => {
+    const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
+
+    expectRuleToContain(css, ".home-lobby", [
+      'url("/assets/liz-keyvisual.jpg")',
+      "place-items: center;",
+    ]);
+    expectRuleToContain(css, ".home-entry-window", [
+      "border: 1px solid rgba(190, 204, 199, 0.9);",
+      "box-shadow: 0 32px 80px rgba(40, 68, 70, 0.18);",
+    ]);
+    expectRuleToContain(css, ".studio-workbench", [
+      'url("/assets/liz-keyvisual.jpg")',
+      "place-items: center;",
+    ]);
+    expectRuleToContain(css, ".studio-window", [
+      "border: 1px solid rgba(190, 204, 199, 0.9);",
+      "box-shadow: 0 32px 80px rgba(40, 68, 70, 0.18);",
+    ]);
+  });
+
+  it("removes the old non-chat card-grid selectors", () => {
+    const css = fs.readFileSync(cssPath, "utf8");
+
+    [
+      ".home-shell",
+      ".home-panel",
+      ".home-panel--intro",
+      ".panel-heading",
+      ".soft-badge",
+      ".route-grid",
+      ".route-card",
+      ".route-card__mark",
+      ".studio-shell",
+      ".studio-header",
+      ".studio-grid",
+      ".studio-module",
+      ".text-link",
+    ].forEach((selector) => {
+      expect(css).not.toContain(selector);
     });
   });
 
