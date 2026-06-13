@@ -153,7 +153,7 @@ describe("music item platform helpers", () => {
 Run:
 
 ```bash
-npm run test --workspace apps/web -- apps/web/tests/musicItems.test.ts
+npm run test --workspace apps/web -- tests/musicItems.test.ts
 ```
 
 Expected: fail because `../src/lib/musicItems` does not exist.
@@ -289,7 +289,7 @@ export function buildListeningContext(item: MusicItem, isPlaying: boolean): List
 Run:
 
 ```bash
-npm run test --workspace apps/web -- apps/web/tests/musicItems.test.ts
+npm run test --workspace apps/web -- tests/musicItems.test.ts
 ```
 
 Expected: 6 tests pass.
@@ -421,7 +421,7 @@ describe("room agent runtime", () => {
 Run:
 
 ```bash
-npm run test --workspace apps/web -- apps/web/tests/roomAgent.test.ts
+npm run test --workspace apps/web -- tests/roomAgent.test.ts
 ```
 
 Expected: fail because `../src/lib/roomAgent` does not exist.
@@ -648,7 +648,7 @@ function recommendNext(state: RoomAgentState, action: RoomAgentAction, queue: Mu
 Run:
 
 ```bash
-npm run test --workspace apps/web -- apps/web/tests/roomAgent.test.ts
+npm run test --workspace apps/web -- tests/roomAgent.test.ts
 ```
 
 Expected: 5 tests pass.
@@ -742,7 +742,7 @@ describe("VideoMiniWindow", () => {
 Run:
 
 ```bash
-npm run test --workspace apps/web -- apps/web/tests/VideoMiniWindow.test.tsx
+npm run test --workspace apps/web -- tests/VideoMiniWindow.test.tsx
 ```
 
 Expected: fail because `VideoMiniWindow` does not exist.
@@ -804,7 +804,7 @@ export function VideoMiniWindow({ item, size, onClose, onToggleSize }: VideoMini
 Run:
 
 ```bash
-npm run test --workspace apps/web -- apps/web/tests/VideoMiniWindow.test.tsx
+npm run test --workspace apps/web -- tests/VideoMiniWindow.test.tsx
 ```
 
 Expected: 3 tests pass.
@@ -885,7 +885,7 @@ Add this test case inside `describe("room API client", () => { ... })` in `apps/
 Run:
 
 ```bash
-npm run test --workspace apps/web -- apps/web/tests/client.test.ts
+npm run test --workspace apps/web -- tests/client.test.ts
 ```
 
 Expected: fail because `ChatRequest` lacks `listeningContext` and the body lacks `listening_context`.
@@ -932,7 +932,7 @@ Update `postChat` request body:
 Run:
 
 ```bash
-npm run test --workspace apps/web -- apps/web/tests/client.test.ts
+npm run test --workspace apps/web -- tests/client.test.ts
 ```
 
 Expected: all client tests pass.
@@ -1015,7 +1015,7 @@ If the existing test file displays Chinese text correctly in the editor, use the
 Run:
 
 ```bash
-npm run test --workspace apps/web -- apps/web/tests/RoomShell.test.tsx
+npm run test --workspace apps/web -- tests/RoomShell.test.tsx
 ```
 
 Expected: fail because the imported player model, mini-window, and chat context integration are missing.
@@ -1119,7 +1119,7 @@ Add the mini-window just before `</main>` or as the last child in `<main classNa
 Run:
 
 ```bash
-npm run test --workspace apps/web -- apps/web/tests/RoomShell.test.tsx
+npm run test --workspace apps/web -- tests/RoomShell.test.tsx
 ```
 
 Expected: all RoomShell tests pass.
@@ -1179,7 +1179,7 @@ Add this assertion to the existing test named `defines the v6 room shell and set
 Run:
 
 ```bash
-npm run test --workspace apps/web -- apps/web/tests/design-tokens.test.ts
+npm run test --workspace apps/web -- tests/design-tokens.test.ts
 ```
 
 Expected: fail because the new CSS selectors do not exist.
@@ -1351,7 +1351,7 @@ If the new video button makes six children, change the template to:
 Run:
 
 ```bash
-npm run test --workspace apps/web -- apps/web/tests/design-tokens.test.ts
+npm run test --workspace apps/web -- tests/design-tokens.test.ts
 ```
 
 Expected: all design token tests pass.
