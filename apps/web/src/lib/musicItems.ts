@@ -5,10 +5,11 @@ export interface MusicItem {
   source: MusicSourceKind;
   title: string;
   creator: string;
+  durationMs: number;
   coverUrl?: string;
   pageUrl?: string;
   embedUrl?: string;
-  audioUrl?: string;
+  platformAudioUrl?: string;
   tags: string[];
   notes?: string;
   canOpenVideo: boolean;
@@ -29,10 +30,29 @@ export interface ParsedBilibiliVideo {
   embedUrl: string;
 }
 
+export interface ParsedNeteaseSong {
+  songId: string;
+  pageUrl: string;
+  embedUrl: string;
+  platformAudioUrl: string;
+}
+
 interface BilibiliMusicItemInput {
   id: string;
   title: string;
   creator: string;
+  durationMs?: number;
+  url: string;
+  coverUrl?: string;
+  tags?: string[];
+  notes?: string;
+}
+
+interface NeteaseMusicItemInput {
+  id: string;
+  title: string;
+  creator: string;
+  durationMs: number;
   url: string;
   coverUrl?: string;
   tags?: string[];
@@ -49,27 +69,8 @@ const BILIBILI_HOSTS = new Set([
   "b23.tv"
 ]);
 
-function makeLocalMusicItem(input: {
-  id: string;
-  title: string;
-  creator: string;
-  coverUrl?: string;
-  audioUrl?: string;
-  tags?: string[];
-  notes?: string;
-}): MusicItem {
-  return {
-    id: input.id,
-    source: "local",
-    title: input.title,
-    creator: input.creator,
-    coverUrl: input.coverUrl,
-    audioUrl: input.audioUrl,
-    tags: input.tags ?? [],
-    notes: input.notes,
-    canOpenVideo: false
-  };
-}
+const NETEASE_SONG_ID_ONLY_PATTERN = /^\d+$/;
+const NETEASE_HOSTS = new Set(["music.163.com", "www.music.163.com"]);
 
 export function buildBilibiliEmbedUrl(bvid: string): string {
   return `https://player.bilibili.com/player.html?bvid=${encodeURIComponent(bvid)}&page=1&high_quality=1&autoplay=0`;
@@ -102,6 +103,44 @@ export function parseBilibiliVideoUrl(input: string): ParsedBilibiliVideo | null
   };
 }
 
+export function parseNeteaseSongUrl(input: string): ParsedNeteaseSong | null {
+  const trimmedInput = input.trim();
+  let songId: string | null = null;
+
+  if (NETEASE_SONG_ID_ONLY_PATTERN.test(trimmedInput)) {
+    songId = trimmedInput;
+  } else {
+    const parsedUrl = parseUrlWithOptionalProtocol(trimmedInput);
+
+    if (!parsedUrl || !NETEASE_HOSTS.has(parsedUrl.hostname.toLowerCase())) {
+      return null;
+    }
+
+    songId = parsedUrl.searchParams.get("id") ?? parseNeteaseHashSongId(parsedUrl.hash);
+  }
+
+  if (!songId || !NETEASE_SONG_ID_ONLY_PATTERN.test(songId)) {
+    return null;
+  }
+
+  return {
+    songId,
+    pageUrl: `https://music.163.com/#/song?id=${songId}`,
+    embedUrl: `https://music.163.com/outchain/player?type=2&id=${songId}&auto=0&height=66`,
+    platformAudioUrl: `https://music.163.com/song/media/outer/url?id=${songId}.mp3`
+  };
+}
+
+function parseNeteaseHashSongId(hash: string): string | null {
+  const queryStart = hash.indexOf("?");
+
+  if (queryStart === -1) {
+    return null;
+  }
+
+  return new URLSearchParams(hash.slice(queryStart + 1)).get("id");
+}
+
 function parseUrlWithOptionalProtocol(input: string): URL | null {
   try {
     return new URL(input);
@@ -126,6 +165,7 @@ export function makeBilibiliMusicItem(input: BilibiliMusicItemInput): MusicItem 
     source: "bilibili",
     title: input.title,
     creator: input.creator,
+    durationMs: input.durationMs ?? 0,
     coverUrl: input.coverUrl,
     pageUrl: parsedVideo.pageUrl,
     embedUrl: parsedVideo.embedUrl,
@@ -135,25 +175,46 @@ export function makeBilibiliMusicItem(input: BilibiliMusicItemInput): MusicItem 
   };
 }
 
+export function makeNeteaseMusicItem(input: NeteaseMusicItemInput): MusicItem {
+  const parsedSong = parseNeteaseSongUrl(input.url);
+
+  if (!parsedSong) {
+    throw new Error("Invalid Netease song URL");
+  }
+
+  return {
+    id: input.id,
+    source: "netease",
+    title: input.title,
+    creator: input.creator,
+    durationMs: input.durationMs,
+    coverUrl: input.coverUrl,
+    pageUrl: parsedSong.pageUrl,
+    embedUrl: parsedSong.embedUrl,
+    platformAudioUrl: parsedSong.platformAudioUrl,
+    tags: input.tags ?? ["netease"],
+    notes: input.notes,
+    canOpenVideo: false
+  };
+}
+
 export const PLAYER_TRACKS: MusicItem[] = [
-  makeLocalMusicItem({
-    id: "local-rain-corridor",
-    title: "雨后的走廊",
-    creator: "练习室 · 傍晚",
-    tags: ["practice", "evening"]
+  makeNeteaseMusicItem({
+    id: "netease-red-horse-instrumental",
+    title: "红马 (伴奏)",
+    creator: "闫杰晨",
+    durationMs: 215866,
+    url: "https://music.163.com/song?id=1822942870",
+    coverUrl: "https://p2.music.126.net/ScAVTeetyrGEwgCMtuGuGg==/109951165758549216.jpg",
+    tags: ["netease", "instrumental"]
   }),
   makeBilibiliMusicItem({
     id: "bilibili-blue-bird-rehearsal",
-    title: "合奏前调音",
-    creator: "部室 · 木管声部",
+    title: "字幕君交流场所",
+    creator: "碧诗",
+    durationMs: 2055000,
     url: "https://www.bilibili.com/video/BV1xx411c7mD",
-    tags: ["ensemble", "tuning"]
-  }),
-  makeLocalMusicItem({
-    id: "local-bluebird-bridge",
-    title: "青鸟的间奏",
-    creator: "长笛 · 双簧管",
-    tags: ["interlude", "euphonium"]
+    tags: ["bilibili"]
   })
 ];
 

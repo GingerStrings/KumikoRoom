@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import * as musicItems from "../src/lib/musicItems";
 import {
   PLAYER_TRACKS,
   buildBilibiliEmbedUrl,
@@ -76,40 +77,57 @@ describe("music item platform helpers", () => {
     ).toThrow("Invalid Bilibili video URL");
   });
 
-  it("keeps the default queue source-aware while preserving the current first track label", () => {
-    expect(PLAYER_TRACKS[0]).toMatchObject({
-      source: "local",
-      title: "雨后的走廊",
-      creator: "练习室 · 傍晚",
-      canOpenVideo: false
-    });
-    expect(PLAYER_TRACKS.some((track) => track.source === "bilibili" && track.canOpenVideo)).toBe(true);
+  it("parses Netease song links and raw ids into page, player, and remote stream URLs", () => {
+    expect(typeof musicItems.parseNeteaseSongUrl).toBe("function");
+
+    const expected = {
+      songId: "1822942870",
+      pageUrl: "https://music.163.com/#/song?id=1822942870",
+      embedUrl: "https://music.163.com/outchain/player?type=2&id=1822942870&auto=0&height=66",
+      platformAudioUrl: "https://music.163.com/song/media/outer/url?id=1822942870.mp3"
+    };
+
+    expect(musicItems.parseNeteaseSongUrl("https://music.163.com/song?id=1822942870")).toEqual(expected);
+    expect(musicItems.parseNeteaseSongUrl("https://music.163.com/#/song?id=1822942870")).toEqual(expected);
+    expect(musicItems.parseNeteaseSongUrl("1822942870")).toEqual(expected);
   });
 
-  it("preserves default player item ids and visible labels", () => {
+  it("keeps the default queue on platform sources with verified metadata", () => {
     expect(PLAYER_TRACKS).toMatchObject([
       {
-        id: "local-rain-corridor",
-        source: "local",
-        title: "雨后的走廊",
-        creator: "练习室 · 傍晚",
+        id: "netease-red-horse-instrumental",
+        source: "netease",
+        title: "\u7ea2\u9a6c (\u4f34\u594f)",
+        creator: "\u95eb\u6770\u6668",
+        durationMs: 215866,
+        coverUrl: "https://p2.music.126.net/ScAVTeetyrGEwgCMtuGuGg==/109951165758549216.jpg",
+        pageUrl: "https://music.163.com/#/song?id=1822942870",
+        embedUrl: "https://music.163.com/outchain/player?type=2&id=1822942870&auto=0&height=66",
+        platformAudioUrl: "https://music.163.com/song/media/outer/url?id=1822942870.mp3",
         canOpenVideo: false
       },
       {
         id: "bilibili-blue-bird-rehearsal",
         source: "bilibili",
-        title: "合奏前调音",
-        creator: "部室 · 木管声部",
+        title: "\u5b57\u5e55\u541b\u4ea4\u6d41\u573a\u6240",
+        creator: "\u78a7\u8bd7",
+        durationMs: 2055000,
+        pageUrl: "https://www.bilibili.com/video/BV1xx411c7mD",
         canOpenVideo: true
-      },
-      {
-        id: "local-bluebird-bridge",
-        source: "local",
-        title: "青鸟的间奏",
-        creator: "长笛 · 双簧管",
-        canOpenVideo: false
       }
     ]);
+  });
+
+  it("does not ship local default tracks or local playback URLs", () => {
+    expect(PLAYER_TRACKS).not.toHaveLength(0);
+    expect(PLAYER_TRACKS.every((track) => track.source !== "local")).toBe(true);
+
+    for (const track of PLAYER_TRACKS) {
+      const playbackUrl = track.platformAudioUrl ?? track.embedUrl ?? track.pageUrl;
+
+      expect(playbackUrl).toBeTruthy();
+      expect(playbackUrl).not.toMatch(/^\/|^\.\/|^\.\.\/|\/assets\//);
+    }
   });
 
   it("builds compact listening context for chat requests", () => {
