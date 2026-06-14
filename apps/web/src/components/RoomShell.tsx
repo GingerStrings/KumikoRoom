@@ -24,6 +24,7 @@ import type { ListeningContext, MusicItem, MusicSourceKind } from "../lib/musicI
 import {
   applyClientMusicActionToQueue,
   createInitialMusicQueue,
+  DEFAULT_RECENT_LIMIT,
   getCurrentQueueEntry,
   getPlaybackQueueEntries,
   getQueuePreview,
@@ -45,6 +46,7 @@ import { SessionSidebar } from "./SessionSidebar";
 import { VideoMiniWindow } from "./VideoMiniWindow";
 
 const LAST_SESSION_STORAGE_KEY = "kumikoroom.lastSessionId";
+const MUSIC_QUEUE_STORAGE_KEY = "kumikoroom.musicQueue";
 
 interface FailedOutgoingMessage {
   id: string;
@@ -89,6 +91,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const [pendingOutgoingMessageId, setPendingOutgoingMessageId] = useState<string | null>(null);
   const [failedOutgoing, setFailedOutgoing] = useState<FailedOutgoingMessage | null>(null);
   const [musicQueue, setMusicQueue] = useState<MusicQueueState>(() => createInitialMusicQueue(PLAYER_TRACKS));
+  const [musicQueueHydrated, setMusicQueueHydrated] = useState(false);
   const [queuePanelOpen, setQueuePanelOpen] = useState(false);
   const [queuePanelTab, setQueuePanelTab] = useState<"queue" | "recent" | "saved">("queue");
   const [isPlayerPlaying, setIsPlayerPlaying] = useState(true);
@@ -235,6 +238,22 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
 
     window.localStorage.setItem(LAST_SESSION_STORAGE_KEY, activeSessionId);
   }, [activeSessionId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const storedQueue = readStoredMusicQueue(window.localStorage);
+    if (storedQueue) {
+      setMusicQueue(storedQueue);
+    }
+    setMusicQueueHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!musicQueueHydrated || typeof window === "undefined") return;
+
+    window.localStorage.setItem(MUSIC_QUEUE_STORAGE_KEY, JSON.stringify(musicQueue));
+  }, [musicQueue, musicQueueHydrated]);
 
   useEffect(() => {
     if (activeTrack.canOpenVideo) return;
@@ -1322,6 +1341,74 @@ function isMusicItem(value: unknown): value is MusicItem {
 
 function isClientMusicItem(value: unknown): value is RoomClientAction["item"] {
   return isMusicItem(value);
+}
+
+function readStoredMusicQueue(storage: Storage): MusicQueueState | null {
+  const rawQueue = storage.getItem(MUSIC_QUEUE_STORAGE_KEY);
+  if (!rawQueue) return null;
+
+  try {
+    const parsed = JSON.parse(rawQueue);
+    if (!isRecord(parsed) || !Array.isArray(parsed.entries)) {
+      return null;
+    }
+
+    const entries = parsed.entries.filter(isMusicQueueEntry);
+    const currentId = typeof parsed.currentId === "string" ? parsed.currentId : null;
+    const validCurrentId = currentId && entries.some((entry) => entry.id === currentId) ? currentId : null;
+    const recentLimit = typeof parsed.recentLimit === "number" && parsed.recentLimit > 0
+      ? parsed.recentLimit
+      : DEFAULT_RECENT_LIMIT;
+
+    return {
+      entries,
+      currentId: validCurrentId,
+      recentLimit,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isMusicQueueEntry(value: unknown): value is MusicQueueEntry {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.id === "string" &&
+    isMusicItem(value.item) &&
+    (value.status === "current" || value.status === "queued" || value.status === "played") &&
+    (value.addedBy === "agent" || value.addedBy === "user" || value.addedBy === "default") &&
+    typeof value.addedAt === "string" &&
+    typeof value.playCount === "number" &&
+    isOptionalString(value.lastPlayedAt) &&
+    isOptionalString(value.sourceQuery) &&
+    isOptionalString(value.selectedReason) &&
+    isOptionalStringArray(value.selectionEvidence) &&
+    isOptionalNumber(value.selectionScore) &&
+    isOptionalBoolean(value.saved)
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === "string";
+}
+
+function isOptionalNumber(value: unknown): boolean {
+  return value === undefined || typeof value === "number";
+}
+
+function isOptionalBoolean(value: unknown): boolean {
+  return value === undefined || typeof value === "boolean";
+}
+
+function isOptionalStringArray(value: unknown): boolean {
+  return value === undefined || (Array.isArray(value) && value.every((entry) => typeof entry === "string"));
 }
 
 function getVisibleQueuePanelEntries(

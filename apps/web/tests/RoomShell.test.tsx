@@ -311,6 +311,34 @@ describe("RoomShell", () => {
     expect(within(panel).getByText(PLAYER_TRACKS[0].title)).toBeTruthy();
   });
 
+  it("keeps removed queue entries removed after the room reloads", async () => {
+    const removedTrack = PLAYER_TRACKS[1];
+    const firstRender = render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(getQueueManageButton());
+    let panel = getMusicQueuePanel();
+    const rowToRemove = within(panel).getByText(removedTrack.title).closest(".music-queue-row");
+    if (!rowToRemove) {
+      throw new Error("Queue row to remove not found");
+    }
+    const removeButton = Array.from(rowToRemove.querySelectorAll("button")).at(-1);
+    if (!removeButton) {
+      throw new Error("Queue remove button not found");
+    }
+    fireEvent.click(removeButton);
+
+    expect(within(panel).queryByText(removedTrack.title)).toBeNull();
+    firstRender.unmount();
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(getQueueManageButton());
+    panel = getMusicQueuePanel();
+    expect(within(panel).queryByText(removedTrack.title)).toBeNull();
+  });
+
   it("opens the video mini-window from a backend client action after chat", async () => {
     const command = "打开这个 B站 视频小窗";
     apiMocks.postChat.mockResolvedValueOnce(
@@ -1183,6 +1211,24 @@ function getQueuePreviewMain(): HTMLButtonElement {
   }
 
   return button;
+}
+
+function getQueueManageButton(): HTMLButtonElement {
+  const button = document.querySelector<HTMLButtonElement>(".queue-manage");
+  if (!button) {
+    throw new Error("Queue manage button not found");
+  }
+
+  return button;
+}
+
+function getMusicQueuePanel(): HTMLElement {
+  const panel = document.querySelector<HTMLElement>(".music-queue-panel");
+  if (!panel) {
+    throw new Error("Music queue panel not found");
+  }
+
+  return panel;
 }
 
 function getPlatformAudio(): HTMLAudioElement {
