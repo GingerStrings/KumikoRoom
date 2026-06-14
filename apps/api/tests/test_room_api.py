@@ -20,6 +20,19 @@ def test_room_state_uses_kumikoroom_identity(client: TestClient):
     assert body["studio"]["route"] == "/studio"
 
 
+def test_api_allows_web_dev_server_on_3001(client: TestClient):
+    response = client.options(
+        "/api/room/sessions",
+        headers={
+            "Origin": "http://127.0.0.1:3001",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://127.0.0.1:3001"
+
+
 def test_mock_chat_returns_kumiko_reply(client: TestClient):
     response = client.post(
         "/api/room/chat",
