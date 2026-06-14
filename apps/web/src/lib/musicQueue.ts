@@ -303,8 +303,15 @@ export function removeQueueEntry(state: MusicQueueState, itemId: string, now = c
     if (entry.id !== itemId) {
       return [entry];
     }
+    if (entry.status === "queued" && entry.playCount > 0) {
+      return [{ ...entry, status: "played" as const }];
+    }
     if (entry.saved) {
-      return [{ ...entry, status: "played" as const, lastPlayedAt: now }];
+      return [{
+        ...entry,
+        status: "played" as const,
+        lastPlayedAt: entry.status === "current" ? now : entry.lastPlayedAt,
+      }];
     }
     return [];
   });

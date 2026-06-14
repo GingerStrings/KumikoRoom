@@ -203,6 +203,39 @@ describe("musicQueue", () => {
     expect(getSavedQueueEntries(removed)[0].status).toBe("played");
   });
 
+  it("keeps an unsaved played item in recent when removing it from upcoming", () => {
+    const initial = createInitialMusicQueue(
+      [makeItem("a", "Alpha"), makeItem("b", "Beta")],
+      "2026-06-14T00:00:00.000Z"
+    );
+    const playedB = playQueueItem(initial, "b", "2026-06-14T00:01:00.000Z");
+    const requeuedA = addQueueItem(playedB, makeClientItem("a", "Alpha"), "2026-06-14T00:02:00.000Z");
+    const state = removeQueueEntry(requeuedA, "a", "2026-06-14T00:03:00.000Z");
+
+    expect(getUpcomingQueueEntries(state)).toEqual([]);
+    expect(getRecentQueueEntries(state).map((entry) => entry.id)).toEqual(["a"]);
+    expect(state.entries.find((entry) => entry.id === "a")?.status).toBe("played");
+    expect(state.entries.find((entry) => entry.id === "a")?.lastPlayedAt).toBe("2026-06-14T00:01:00.000Z");
+  });
+
+  it("preserves saved playback time and recent limit when removing a played upcoming item", () => {
+    const initial = createInitialMusicQueue(
+      [makeItem("a", "Alpha"), makeItem("b", "Beta"), makeItem("c", "Gamma")],
+      "2026-06-14T00:00:00.000Z",
+      1
+    );
+    const playedB = playQueueItem(initial, "b", "2026-06-14T00:01:00.000Z");
+    const savedA = toggleQueueEntrySaved(playedB, "a");
+    const requeuedA = addQueueItem(savedA, makeClientItem("a", "Alpha"), "2026-06-14T00:01:30.000Z");
+    const playedC = playQueueItem(requeuedA, "c", "2026-06-14T00:02:00.000Z");
+    const state = removeQueueEntry(playedC, "a", "2026-06-14T00:03:00.000Z");
+
+    expect(getSavedQueueEntries(state).map((entry) => entry.id)).toEqual(["a"]);
+    expect(state.entries.find((entry) => entry.id === "a")?.status).toBe("played");
+    expect(state.entries.find((entry) => entry.id === "a")?.lastPlayedAt).toBe("2026-06-14T00:01:00.000Z");
+    expect(getRecentQueueEntries(state).map((entry) => entry.id)).toEqual(["b"]);
+  });
+
   it("moves to the next item when removing the current item", () => {
     const initial = createInitialMusicQueue([makeItem("a", "Alpha"), makeItem("b", "Beta")], "2026-06-14T00:00:00.000Z");
     const state = removeQueueEntry(initial, "a", "2026-06-14T00:04:00.000Z");
