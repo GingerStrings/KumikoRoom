@@ -76,6 +76,8 @@ The backend does not pretend that a client action has already changed browser st
 
 The frontend uses one typed reducer-like entry point for all agent music actions. It validates each action, applies it to `MusicQueueState`, updates transport state when needed, and persists the queue.
 
+When one response contains multiple actions, the executor folds them over one local queue-state value in response order, then commits the final state once. This prevents later actions from overwriting earlier actions through stale React closures.
+
 ## Music State Contract
 
 Add a request field named `music_state`.
@@ -88,6 +90,8 @@ interface MusicAgentTrack {
   creator: string;
   durationMs: number;
   pageUrl: string | null;
+  platformAudioUrl: string | null;
+  tags: string[];
   canOpenVideo: boolean;
   saved: boolean;
 }
@@ -113,6 +117,7 @@ Rules:
 - `recent` is newest-first and capped by the existing queue record limit.
 - `saved` contains saved entries regardless of queue status.
 - `currentTimeMs` and `durationMs` describe only `current`.
+- `platformAudioUrl` and `tags` are preserved so a known recent or saved NetEase item can be played again without another search.
 - Empty collections are sent as empty arrays, and missing tracks are `null`.
 
 The existing `listening_context` remains temporarily for compatibility and persona prompting. `music_state` becomes the authoritative music tool context.
@@ -237,4 +242,3 @@ Browser:
 - Recent records reflect real playback transitions only.
 - The first queue panel tab clearly separates the active track from upcoming tracks.
 - No frontend keyword detector controls music behavior.
-

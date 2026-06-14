@@ -90,7 +90,7 @@ export function unsaveQueueItem(state: MusicQueueState, itemId: string): MusicQu
 export function clearUpcomingQueue(state: MusicQueueState): MusicQueueState;
 ```
 
-Create `buildMusicAgentState` using queue selectors. Map entries into a compact `MusicAgentTrack`, with `previous` from the first recent entry and `next` from the first upcoming entry.
+Create `buildMusicAgentState` using queue selectors. Map entries into a compact `MusicAgentTrack`, preserving `platformAudioUrl` and cloned `tags`, with `previous` from the first recent entry and `next` from the first upcoming entry.
 
 - [ ] **Step 4: Run focused tests**
 
@@ -299,7 +299,7 @@ Pass `musicState` in `ChatRequest`.
 
 - [ ] **Step 4: Replace the action adapter with a typed executor**
 
-Handle every discriminated action directly:
+Handle every discriminated action directly. Fold all response actions over one local `nextQueueState` in response order, then call `setMusicQueue` once so later actions cannot overwrite earlier actions through stale closures:
 
 ```ts
 switch (action.type) {
@@ -388,4 +388,3 @@ Review the complete diff against the design spec, with special attention to:
 git add <fixed-files>
 git commit -m "fix: stabilize music agent management"
 ```
-
