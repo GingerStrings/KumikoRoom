@@ -139,6 +139,33 @@ describe("musicQueue", () => {
     });
   });
 
+  it.each([
+    ["play", (state: ReturnType<typeof createInitialMusicQueue>, item: ClientMusicItem) =>
+      applyClientMusicActionToQueue(state, item, "2026-06-14T00:02:00.000Z")],
+    ["add", (state: ReturnType<typeof createInitialMusicQueue>, item: ClientMusicItem) =>
+      addQueueItem(state, item, "2026-06-14T00:02:00.000Z")],
+    ["save", (state: ReturnType<typeof createInitialMusicQueue>, item: ClientMusicItem) =>
+      saveQueueItem(state, item, "2026-06-14T00:02:00.000Z")],
+  ])("clears stale playback URLs when %s receives explicit null fields", (_, updateItem) => {
+    const initial = createInitialMusicQueue(
+      [makeItem("current", "Current"), makeExtendedItem("known", "Known")],
+      "2026-06-14T00:00:00.000Z"
+    );
+    const state = updateItem(initial, {
+      ...makeClientItem("known", "Updated"),
+      pageUrl: null,
+      platformAudioUrl: null,
+      tags: ["netease", "updated"],
+    });
+    const updated = state.entries.find((entry) => entry.id === "known")?.item;
+
+    expect(updated?.pageUrl).toBeUndefined();
+    expect(updated?.platformAudioUrl).toBeUndefined();
+    expect(updated?.embedUrl).toBeUndefined();
+    expect(updated?.coverUrl).toBe("https://example.test/known.jpg");
+    expect(updated?.notes).toBe("Known notes");
+  });
+
   it("builds a compact preview from the next queued item", () => {
     const state = createInitialMusicQueue(
       [makeItem("a", "Alpha"), makeItem("b", "Beta"), makeItem("c", "Gamma")],
@@ -359,6 +386,22 @@ describe("musicQueue", () => {
     expect(getSavedQueueEntries(state)).toEqual([]);
     expect(unsaveQueueItem(state, "saved")).toBe(state);
     expect(unsaveQueueItem(state, "missing")).toBe(state);
+  });
+
+  it("caps recent records after unsaving an old played item", () => {
+    const initial = createInitialMusicQueue(
+      [makeItem("a", "Alpha"), makeItem("b", "Beta"), makeItem("c", "Gamma")],
+      "2026-06-14T00:00:00.000Z",
+      1
+    );
+    const playedB = playQueueItem(initial, "b", "2026-06-14T00:01:00.000Z");
+    const savedA = toggleQueueEntrySaved(playedB, "a");
+    const playedC = playQueueItem(savedA, "c", "2026-06-14T00:02:00.000Z");
+    const state = unsaveQueueItem(playedC, "a");
+
+    expect(getSavedQueueEntries(state)).toEqual([]);
+    expect(getRecentQueueEntries(state).map((entry) => entry.id)).toEqual(["b"]);
+    expect(state.entries.some((entry) => entry.id === "a")).toBe(false);
   });
 
   it("clears only upcoming entries while preserving current, recent, and saved records", () => {

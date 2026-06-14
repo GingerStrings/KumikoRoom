@@ -27,6 +27,12 @@ type ClientMusicQueueItem = ClientMusicItem & {
   selectionScore?: number | null;
 };
 
+type MusicItemUpdate = Omit<MusicItem, "pageUrl" | "embedUrl" | "platformAudioUrl"> & {
+  pageUrl?: string | null;
+  embedUrl?: string | null;
+  platformAudioUrl?: string | null;
+};
+
 export interface MusicQueueState {
   entries: MusicQueueEntry[];
   currentId: string | null;
@@ -111,7 +117,7 @@ export function applyClientMusicActionToQueue(
   item: ClientMusicQueueItem,
   now = currentIsoTime()
 ): MusicQueueState {
-  const musicItem = makeMusicItemFromClientActionItem(item);
+  const musicItem = makeMusicItemUpdateFromClientActionItem(item);
   const upserted = upsertQueueItem(
     state,
     musicItem,
@@ -131,7 +137,7 @@ export function addQueueItem(
     return state;
   }
 
-  const musicItem = makeMusicItemFromClientActionItem(item);
+  const musicItem = makeMusicItemUpdateFromClientActionItem(item);
   const upserted = upsertQueueItem(state, musicItem, getClientItemQueueMetadata(item), now);
   const entry = upserted.entries.find((candidate) => candidate.id === musicItem.id);
 
@@ -158,7 +164,7 @@ export function saveQueueItem(
   now = currentIsoTime()
 ): MusicQueueState {
   const isKnownItem = state.entries.some((entry) => entry.id === item.id);
-  const musicItem = makeMusicItemFromClientActionItem(item);
+  const musicItem = makeMusicItemUpdateFromClientActionItem(item);
   const upserted = upsertQueueItem(state, musicItem, getClientItemQueueMetadata(item), now);
 
   return {
@@ -181,7 +187,7 @@ export function unsaveQueueItem(state: MusicQueueState, itemId: string): MusicQu
     return state;
   }
 
-  return {
+  return capRecentRecords({
     ...state,
     entries: state.entries.flatMap((candidate) => {
       if (candidate.id !== itemId) {
@@ -192,7 +198,7 @@ export function unsaveQueueItem(state: MusicQueueState, itemId: string): MusicQu
       }
       return [{ ...candidate, saved: false }];
     }),
-  };
+  });
 }
 
 export function clearUpcomingQueue(state: MusicQueueState): MusicQueueState {
@@ -216,7 +222,7 @@ export function clearUpcomingQueue(state: MusicQueueState): MusicQueueState {
 
 export function upsertQueueItem(
   state: MusicQueueState,
-  item: MusicItem,
+  item: MusicItemUpdate,
   metadata: Partial<Pick<
     MusicQueueEntry,
     "addedBy" | "sourceQuery" | "selectedReason" | "selectionEvidence" | "selectionScore"
@@ -250,7 +256,7 @@ export function upsertQueueItem(
       ...state.entries,
       {
         id: item.id,
-        item,
+        item: materializeMusicItemUpdate(item),
         status: "queued",
         addedBy: metadata.addedBy ?? "user",
         addedAt: now,
@@ -360,15 +366,47 @@ function cloneSelectionEvidence(selectionEvidence: string[] | undefined): string
   return selectionEvidence ? [...selectionEvidence] : selectionEvidence;
 }
 
-function mergeKnownMusicItem(existing: MusicItem, incoming: MusicItem): MusicItem {
-  const definedIncoming = Object.fromEntries(
-    Object.entries(incoming).filter(([, value]) => value !== undefined)
-  ) as Partial<MusicItem>;
+function makeMusicItemUpdateFromClientActionItem(item: ClientMusicItem): MusicItemUpdate {
+  const musicItem = makeMusicItemFromClientActionItem(item) as MusicItemUpdate;
+
+  if (item.pageUrl === null) {
+    musicItem.pageUrl = null;
+    musicItem.embedUrl = null;
+  }
+  if (item.platformAudioUrl === null) {
+    musicItem.platformAudioUrl = null;
+  }
+
+  return musicItem;
+}
+
+function mergeKnownMusicItem(existing: MusicItem, incoming: MusicItemUpdate): MusicItem {
+  const merged: Partial<MusicItem> = { ...existing };
+
+  for (const [key, value] of Object.entries(incoming) as Array<[keyof MusicItemUpdate, unknown]>) {
+    if (value === undefined) continue;
+    if (value === null) {
+      delete (merged as Record<string, unknown>)[key as string];
+      continue;
+    }
+    if (key === "tags") {
+      merged.tags = [...(value as string[])];
+      continue;
+    }
+    (merged as Record<string, unknown>)[key as string] = value;
+  }
+
+  return merged as MusicItem;
+}
+
+function materializeMusicItemUpdate(item: MusicItemUpdate): MusicItem {
+  const materialized = Object.fromEntries(
+    Object.entries(item).filter(([, value]) => value !== undefined && value !== null)
+  ) as unknown as MusicItem;
 
   return {
-    ...existing,
-    ...definedIncoming,
-    tags: [...incoming.tags],
+    ...materialized,
+    tags: [...item.tags],
   };
 }
 
