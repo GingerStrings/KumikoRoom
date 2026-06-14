@@ -243,3 +243,68 @@ def test_manager_includes_existing_memories_in_system_prompt(
     system_text = provider.messages[0]["content"]
     assert "参考记忆" in system_text
     assert "用户喜欢安静的钢琴。" in system_text
+
+
+def test_manager_includes_listening_context_in_system_prompt(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("KUMIKOROOM_MEMORY_DB_PATH", str(tmp_path / "memory.sqlite3"))
+    provider = FakeProvider()
+    manager = ConversationManager(settings=load_settings(), provider=provider)
+
+    manager.chat(
+        ChatIn(
+            message="这首适合写什么？",
+            memory_enabled=False,
+            listening_context={
+                "source": "bilibili",
+                "title": "合奏前调音",
+                "creator": "部室 · 木管声部",
+                "is_playing": True,
+                "page_url": "https://www.bilibili.com/video/BV1xx411c7mD",
+                "tags": ["bilibili", "rehearsal"],
+            },
+        )
+    )
+
+    system_text = provider.messages[0]["content"]
+    assert "Listening context" in system_text
+    assert "bilibili" in system_text
+    assert "合奏前调音" in system_text
+    assert "部室 · 木管声部" in system_text
+    assert "Playing: yes" in system_text
+    assert "https://www.bilibili.com/video/BV1xx411c7mD" in system_text
+    assert "Tags: bilibili, rehearsal" in system_text
+    assert provider.messages[-1] == {"role": "user", "content": "这首适合写什么？"}
+
+
+def test_manager_omits_empty_listening_context_fields_from_system_prompt(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("KUMIKOROOM_MEMORY_DB_PATH", str(tmp_path / "memory.sqlite3"))
+    provider = FakeProvider()
+
+    ConversationManager(settings=load_settings(), provider=provider).chat(
+        ChatIn(
+            message="这首先停一下。",
+            memory_enabled=False,
+            listening_context={
+                "source": "local",
+                "title": "练习片段",
+                "creator": "Kumiko",
+                "is_playing": False,
+                "page_url": None,
+                "tags": [],
+            },
+        )
+    )
+
+    system_text = provider.messages[0]["content"]
+    assert "Listening context" in system_text
+    assert "Source: local" in system_text
+    assert "Track: 练习片段 - Kumiko" in system_text
+    assert "Playing: no" in system_text
+    assert "Page:" not in system_text
+    assert "Tags:" not in system_text

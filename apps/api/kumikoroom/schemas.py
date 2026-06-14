@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 PersonaStrength = Literal["medium", "strong"]
 MemoryCategory = Literal["preference", "diary", "creative_note", "profile_fact"]
+MusicSourceKind = Literal["local", "bilibili", "netease"]
 
 
 class CharacterStateOut(BaseModel):
@@ -42,10 +43,20 @@ class ChatMessageOut(BaseModel):
     content: str
 
 
+class ListeningContextIn(BaseModel):
+    source: MusicSourceKind
+    title: str
+    creator: str
+    is_playing: bool
+    page_url: str | None = None
+    tags: list[str] = Field(default_factory=list)
+
+
 class ChatIn(BaseModel):
     message: str
     session_id: str | None = None
     room_state: RoomStateOut | None = None
+    listening_context: ListeningContextIn | None = None
     recent_messages: list[ChatMessageOut] = Field(default_factory=list)
     persona_strength: PersonaStrength = "medium"
     memory_enabled: bool = True

@@ -106,6 +106,10 @@ class ConversationManager:
         if room_state_context:
             system_parts.append(room_state_context)
 
+        listening_context = _listening_context(payload)
+        if listening_context:
+            system_parts.append(listening_context)
+
         messages: list[dict[str, str]] = [
             {"role": "system", "content": "\n\n".join(system_parts)}
         ]
@@ -209,6 +213,24 @@ def _room_state_context(payload: ChatIn) -> str:
 
     lines.append(f"创作资料室未完成数量：{room_state.studio.unfinished_count}")
     return "房间状态参考：\n" + "\n".join(lines)
+
+
+def _listening_context(payload: ChatIn) -> str:
+    if payload.listening_context is None:
+        return ""
+
+    context = payload.listening_context
+    lines = [
+        "Listening context:",
+        f"- Source: {context.source}",
+        f"- Track: {_current_track(context.title, context.creator)}",
+        f"- Playing: {'yes' if context.is_playing else 'no'}",
+    ]
+    if context.page_url:
+        lines.append(f"- Page: {context.page_url}")
+    if context.tags:
+        lines.append(f"- Tags: {', '.join(context.tags)}")
+    return "\n".join(lines)
 
 
 def _current_track(title: str | None, artist: str | None) -> str:

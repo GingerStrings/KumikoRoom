@@ -52,6 +52,29 @@ def test_mock_chat_accepts_minimal_payload(client: TestClient):
     assert body["memory_events"] == []
 
 
+def test_mock_chat_accepts_listening_context(client: TestClient):
+    response = client.post(
+        "/api/room/chat",
+        json={
+            "message": "这首适合写什么？",
+            "memory_enabled": False,
+            "listening_context": {
+                "source": "bilibili",
+                "title": "合奏前调音",
+                "creator": "部室 · 木管声部",
+                "is_playing": True,
+                "page_url": "https://www.bilibili.com/video/BV1xx411c7mD",
+                "tags": ["bilibili", "rehearsal"],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["reply"]["role"] == "kumiko"
+    assert body["provider_status"]["provider"] == "mock"
+
+
 def test_memory_endpoints_list_delete_and_clear(client: TestClient):
     chat_response = client.post(
         "/api/room/chat",
