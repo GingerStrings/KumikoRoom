@@ -107,10 +107,13 @@ describe("RoomShell", () => {
     expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
     expect(screen.getByLabelText("氛围播放器")).toBeTruthy();
     expect(screen.getByRole("button", { name: "青鸟的间奏" })).toBeTruthy();
+    const playerControls = getPlayerControls();
     const sourceBadge = document.querySelector<HTMLElement>(".source-badge");
 
+    expect(playerControls.getAttribute("data-has-video")).not.toBe("true");
     expect(sourceBadge?.textContent).toBe("本地");
     expect(sourceBadge?.getAttribute("data-source")).toBe("local");
+    expect(screen.queryByRole("button", { name: "打开视频小窗" })).toBeNull();
     expect(screen.queryByRole("dialog", { name: "B站视频小窗" })).toBeNull();
     expect(screen.queryByTitle(/视频播放/)).toBeNull();
   });
@@ -124,6 +127,8 @@ describe("RoomShell", () => {
 
     expect(sourceBadge?.textContent).toBe("B站");
     expect(sourceBadge?.getAttribute("data-source")).toBe("bilibili");
+    expect(getPlayerControls().getAttribute("data-has-video")).toBe("true");
+    expect(screen.getByRole("button", { name: "打开视频小窗" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "打开视频小窗" }));
 
     expect(screen.getByRole("dialog", { name: "B站视频小窗" })).toBeTruthy();
@@ -904,6 +909,15 @@ function getTimeline(): HTMLElement {
   }
 
   return timeline;
+}
+
+function getPlayerControls(): HTMLElement {
+  const controls = document.querySelector<HTMLElement>(".player-controls");
+  if (!controls) {
+    throw new Error("Player controls not found");
+  }
+
+  return controls;
 }
 
 function queryDeleteButtonFor(title: string): HTMLButtonElement | null {

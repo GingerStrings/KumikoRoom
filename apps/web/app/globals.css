@@ -1447,10 +1447,14 @@ p {
 
 .player-controls {
   display: grid;
-  grid-template-columns: 34px 42px 34px minmax(0, 1fr) 34px 34px;
+  grid-template-columns: 34px 42px 34px minmax(0, 1fr) 34px;
   align-items: center;
   gap: 8px;
   margin-top: 13px;
+}
+
+.player-controls[data-has-video="true"] {
+  grid-template-columns: 34px 42px 34px minmax(0, 1fr) 34px 34px;
 }
 
 .control {

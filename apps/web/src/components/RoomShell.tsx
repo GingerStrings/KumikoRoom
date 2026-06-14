@@ -907,7 +907,10 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
               </div>
               <span>02:18</span>
             </div>
-            <div className="player-controls">
+            <div
+              className="player-controls"
+              data-has-video={activeTrack.canOpenVideo ? "true" : undefined}
+            >
               <button className="control" type="button" aria-label="上一首">
                 ‹
               </button>

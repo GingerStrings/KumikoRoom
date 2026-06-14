@@ -125,6 +125,9 @@ describe("Liz Bluebird room visual tokens", () => {
     const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
 
     expectRuleToContain(css, ".player-controls", [
+      "grid-template-columns: 34px 42px 34px minmax(0, 1fr) 34px;",
+    ]);
+    expectRuleToContain(css, ".player-controls[data-has-video=\"true\"]", [
       "grid-template-columns: 34px 42px 34px minmax(0, 1fr) 34px 34px;",
     ]);
     expect(css).toContain("@media (max-height: 520px)");
