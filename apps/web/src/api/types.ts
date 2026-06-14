@@ -115,6 +115,31 @@ export interface ClientMusicItem {
   selectionScore?: number | null;
 }
 
+export interface MusicAgentTrack {
+  id: string;
+  source: "bilibili" | "netease";
+  title: string;
+  creator: string;
+  durationMs: number;
+  pageUrl: string | null;
+  platformAudioUrl: string | null;
+  tags: string[];
+  canOpenVideo: boolean;
+  saved: boolean;
+}
+
+export interface MusicAgentState {
+  isPlaying: boolean;
+  currentTimeMs: number;
+  durationMs: number;
+  current: MusicAgentTrack | null;
+  previous: MusicAgentTrack | null;
+  next: MusicAgentTrack | null;
+  upcoming: MusicAgentTrack[];
+  recent: MusicAgentTrack[];
+  saved: MusicAgentTrack[];
+}
+
 export type RoomClientAction =
   | {
       type: "play_music_item";

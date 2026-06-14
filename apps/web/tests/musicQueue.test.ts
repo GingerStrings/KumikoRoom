@@ -1,15 +1,21 @@
 import type { MusicItem } from "../src/lib/musicItems";
+import type { ClientMusicItem } from "../src/api/types";
 import {
+  addQueueItem,
   applyClientMusicActionToQueue,
+  clearUpcomingQueue,
   createInitialMusicQueue,
   getCurrentQueueEntry,
   getPlaybackQueueEntries,
   getQueuePreview,
   getRecentQueueEntries,
   getSavedQueueEntries,
+  getUpcomingQueueEntries,
   playQueueItem,
   removeQueueEntry,
+  saveQueueItem,
   toggleQueueEntrySaved,
+  unsaveQueueItem,
 } from "../src/lib/musicQueue";
 
 function makeItem(id: string, title: string, source: MusicItem["source"] = "netease"): MusicItem {
@@ -22,6 +28,20 @@ function makeItem(id: string, title: string, source: MusicItem["source"] = "nete
     pageUrl: `https://example.test/${id}`,
     platformAudioUrl: source === "netease" ? `https://example.test/${id}.mp3` : undefined,
     tags: [source],
+    canOpenVideo: source === "bilibili",
+  };
+}
+
+function makeClientItem(id: string, title: string, source: ClientMusicItem["source"] = "netease"): ClientMusicItem {
+  return {
+    id,
+    source,
+    title,
+    creator: `${title} creator`,
+    durationMs: 180000,
+    pageUrl: `https://example.test/${id}`,
+    platformAudioUrl: source === "netease" ? `https://example.test/${id}.mp3` : null,
+    tags: [source, "agent-selected"],
     canOpenVideo: source === "bilibili",
   };
 }
@@ -199,5 +219,53 @@ describe("musicQueue", () => {
     selectionEvidence.push("mutated after queue write");
 
     expect(getCurrentQueueEntry(state)?.selectionEvidence).toEqual(["title exact match", "comment_count=10"]);
+  });
+
+  it("adds an item to upcoming without changing the current item", () => {
+    const initial = createInitialMusicQueue([makeItem("current", "Current")], "2026-06-14T00:00:00.000Z");
+    const state = addQueueItem(initial, makeClientItem("next", "Next"), "2026-06-14T00:01:00.000Z");
+
+    expect(getCurrentQueueEntry(state)?.id).toBe("current");
+    expect(getUpcomingQueueEntries(state).map((entry) => entry.id)).toEqual(["next"]);
+    expect(getUpcomingQueueEntries(state)[0].addedBy).toBe("agent");
+  });
+
+  it("inserts and explicitly saves an item", () => {
+    const initial = createInitialMusicQueue([makeItem("current", "Current")], "2026-06-14T00:00:00.000Z");
+    const state = saveQueueItem(initial, makeClientItem("saved", "Saved"), "2026-06-14T00:01:00.000Z");
+
+    expect(getCurrentQueueEntry(state)?.id).toBe("current");
+    expect(getSavedQueueEntries(state).map((entry) => entry.id)).toEqual(["saved"]);
+    expect(getUpcomingQueueEntries(state)).toEqual([]);
+    expect(getRecentQueueEntries(state)).toEqual([]);
+  });
+
+  it("explicitly unsaves an item without toggling other records", () => {
+    const initial = createInitialMusicQueue([makeItem("current", "Current")], "2026-06-14T00:00:00.000Z");
+    const saved = saveQueueItem(initial, makeClientItem("saved", "Saved"), "2026-06-14T00:01:00.000Z");
+    const state = unsaveQueueItem(saved, "saved");
+
+    expect(getSavedQueueEntries(state)).toEqual([]);
+    expect(unsaveQueueItem(state, "saved")).toBe(state);
+    expect(unsaveQueueItem(state, "missing")).toBe(state);
+  });
+
+  it("clears only upcoming entries while preserving current, recent, and saved records", () => {
+    const initial = createInitialMusicQueue(
+      [makeItem("recent", "Recent"), makeItem("current", "Current"), makeItem("saved", "Saved")],
+      "2026-06-14T00:00:00.000Z"
+    );
+    const playingCurrent = playQueueItem(initial, "current", "2026-06-14T00:01:00.000Z");
+    const withSavedUpcoming = saveQueueItem(
+      playingCurrent,
+      makeClientItem("saved", "Saved"),
+      "2026-06-14T00:02:00.000Z"
+    );
+    const state = clearUpcomingQueue(withSavedUpcoming);
+
+    expect(getCurrentQueueEntry(state)?.id).toBe("current");
+    expect(getUpcomingQueueEntries(state)).toEqual([]);
+    expect(getRecentQueueEntries(state).map((entry) => entry.id)).toEqual(["recent"]);
+    expect(getSavedQueueEntries(state).map((entry) => entry.id)).toEqual(["saved"]);
   });
 });

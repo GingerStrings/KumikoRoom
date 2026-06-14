@@ -71,14 +71,18 @@ export function getCurrentQueueEntry(state: MusicQueueState): MusicQueueEntry | 
 
 export function getPlaybackQueueEntries(state: MusicQueueState): MusicQueueEntry[] {
   const currentEntry = getCurrentQueueEntry(state);
-  const queuedEntries = state.entries.filter((entry) => entry.status === "queued");
+  const queuedEntries = getUpcomingQueueEntries(state);
 
   return currentEntry ? [currentEntry, ...queuedEntries] : queuedEntries;
 }
 
+export function getUpcomingQueueEntries(state: MusicQueueState): MusicQueueEntry[] {
+  return state.entries.filter((entry) => entry.status === "queued");
+}
+
 export function getRecentQueueEntries(state: MusicQueueState): MusicQueueEntry[] {
   return state.entries
-    .filter((entry) => entry.status === "played")
+    .filter((entry) => entry.status === "played" && entry.playCount > 0)
     .sort((left, right) => (right.lastPlayedAt ?? "").localeCompare(left.lastPlayedAt ?? ""));
 }
 
@@ -110,17 +114,99 @@ export function applyClientMusicActionToQueue(
   const upserted = upsertQueueItem(
     state,
     musicItem,
-    {
-      addedBy: item.tags.includes("agent-selected") ? "agent" : "user",
-      sourceQuery: item.sourceQuery ?? undefined,
-      selectedReason: item.selectedReason ?? undefined,
-      selectionEvidence: item.selectionEvidence ?? undefined,
-      selectionScore: item.selectionScore ?? undefined,
-    },
+    getClientItemQueueMetadata(item),
     now
   );
 
   return playQueueItem(upserted, musicItem.id, now);
+}
+
+export function addQueueItem(
+  state: MusicQueueState,
+  item: ClientMusicItem,
+  now = currentIsoTime()
+): MusicQueueState {
+  const musicItem = makeMusicItemFromClientActionItem(item);
+  const upserted = upsertQueueItem(state, musicItem, getClientItemQueueMetadata(item), now);
+  const entry = upserted.entries.find((candidate) => candidate.id === musicItem.id);
+
+  if (!entry || entry.status === "current") {
+    return upserted;
+  }
+
+  return {
+    ...upserted,
+    entries: [
+      ...upserted.entries.filter((candidate) => candidate.id !== musicItem.id),
+      {
+        ...entry,
+        status: "queued",
+        addedAt: now,
+      },
+    ],
+  };
+}
+
+export function saveQueueItem(
+  state: MusicQueueState,
+  item: ClientMusicItem,
+  now = currentIsoTime()
+): MusicQueueState {
+  const isKnownItem = state.entries.some((entry) => entry.id === item.id);
+  const musicItem = makeMusicItemFromClientActionItem(item);
+  const upserted = upsertQueueItem(state, musicItem, getClientItemQueueMetadata(item), now);
+
+  return {
+    ...upserted,
+    entries: upserted.entries.map((entry) =>
+      entry.id === musicItem.id
+        ? {
+            ...entry,
+            status: isKnownItem ? entry.status : "played",
+            saved: true,
+          }
+        : entry
+    ),
+  };
+}
+
+export function unsaveQueueItem(state: MusicQueueState, itemId: string): MusicQueueState {
+  const entry = state.entries.find((candidate) => candidate.id === itemId);
+  if (!entry?.saved) {
+    return state;
+  }
+
+  return {
+    ...state,
+    entries: state.entries.flatMap((candidate) => {
+      if (candidate.id !== itemId) {
+        return [candidate];
+      }
+      if (candidate.status === "played" && candidate.playCount === 0) {
+        return [];
+      }
+      return [{ ...candidate, saved: false }];
+    }),
+  };
+}
+
+export function clearUpcomingQueue(state: MusicQueueState): MusicQueueState {
+  if (!state.entries.some((entry) => entry.status === "queued")) {
+    return state;
+  }
+
+  return {
+    ...state,
+    entries: state.entries.flatMap((entry) => {
+      if (entry.status !== "queued") {
+        return [entry];
+      }
+      if (entry.saved) {
+        return [{ ...entry, status: "played" as const }];
+      }
+      return [];
+    }),
+  };
 }
 
 export function upsertQueueItem(
@@ -260,6 +346,21 @@ export function toggleQueueEntrySaved(state: MusicQueueState, itemId: string): M
 
 function cloneSelectionEvidence(selectionEvidence: string[] | undefined): string[] | undefined {
   return selectionEvidence ? [...selectionEvidence] : selectionEvidence;
+}
+
+function getClientItemQueueMetadata(
+  item: ClientMusicQueueItem
+): Partial<Pick<
+  MusicQueueEntry,
+  "addedBy" | "sourceQuery" | "selectedReason" | "selectionEvidence" | "selectionScore"
+>> {
+  return {
+    addedBy: item.tags.includes("agent-selected") ? "agent" : "user",
+    sourceQuery: item.sourceQuery ?? undefined,
+    selectedReason: item.selectedReason ?? undefined,
+    selectionEvidence: item.selectionEvidence ?? undefined,
+    selectionScore: item.selectionScore ?? undefined,
+  };
 }
 
 function capRecentRecords(state: MusicQueueState): MusicQueueState {
