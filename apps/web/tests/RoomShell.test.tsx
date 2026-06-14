@@ -205,9 +205,230 @@ describe("RoomShell", () => {
     await waitFor(() => expect(apiMocks.postChat).toHaveBeenCalledTimes(1));
     expect(apiMocks.postChat).toHaveBeenCalledWith(
       expect.objectContaining({
-        listeningContext: buildListeningContext(bilibiliTrack, true)
+        listeningContext: buildListeningContext(bilibiliTrack, true),
+        musicState: expect.objectContaining({
+          isPlaying: true,
+          current: expect.objectContaining({
+            id: bilibiliTrack.id,
+            title: bilibiliTrack.title,
+            creator: bilibiliTrack.creator,
+            saved: false
+          }),
+          previous: expect.objectContaining({
+            id: PLAYER_TRACKS[0].id
+          }),
+          next: expect.any(Object),
+          upcoming: expect.any(Array),
+          recent: expect.arrayContaining([
+            expect.objectContaining({
+              id: PLAYER_TRACKS[0].id
+            })
+          ]),
+          saved: []
+        })
       })
     );
+  });
+
+  it("adds an agent-selected track to upcoming without interrupting the current track", async () => {
+    apiMocks.postChat.mockResolvedValueOnce(
+      makeChatResponse({
+        reply: { id: "reply-add", role: "kumiko", content: "我先放进接下来。" },
+        clientActions: [
+          {
+            type: "add_music_to_queue",
+            item: {
+              id: "netease-agent-upcoming",
+              source: "netease",
+              title: "接下来测试曲",
+              creator: "Agent Queue",
+              durationMs: 188000,
+              pageUrl: "https://music.163.com/#/song?id=188",
+              platformAudioUrl: "https://music.163.com/song/media/outer/url?id=188.mp3",
+              tags: ["netease", "agent-selected"],
+              canOpenVideo: false,
+              sourceQuery: "加到队列",
+              selectedReason: "综合热度和评论更稳"
+            }
+          }
+        ]
+      })
+    );
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), { target: { value: "先把这首放后面" } });
+    fireEvent.click(getComposerSubmit());
+
+    expect(await within(getTimeline()).findByText("我先放进接下来。")).toBeTruthy();
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe(PLAYER_TRACKS[0].title);
+    fireEvent.click(getQueueManageButton());
+
+    const panel = getMusicQueuePanel();
+    expect(within(panel).getByRole("tab", { name: "接下来" }).getAttribute("aria-selected")).toBe("true");
+    expect(within(panel).getByText("正在播放")).toBeTruthy();
+    expect(within(panel).getByText(PLAYER_TRACKS[0].title)).toBeTruthy();
+    expect(within(panel).getByText("接下来测试曲")).toBeTruthy();
+    expect(within(panel).getByText("来自: 加到队列")).toBeTruthy();
+    expect(within(panel).getByText("综合热度和评论更稳")).toBeTruthy();
+  });
+
+  it("folds agent queue management actions into one persisted queue state", async () => {
+    apiMocks.postChat.mockResolvedValueOnce(
+      makeChatResponse({
+        reply: { id: "reply-manage", role: "kumiko", content: "我整理好了。" },
+        clientActions: [
+          {
+            type: "add_music_to_queue",
+            item: {
+              id: "netease-agent-saved",
+              source: "netease",
+              title: "收藏测试曲",
+              creator: "Agent Save",
+              durationMs: 199000,
+              pageUrl: "https://music.163.com/#/song?id=199",
+              platformAudioUrl: "https://music.163.com/song/media/outer/url?id=199.mp3",
+              tags: ["netease", "agent-selected"],
+              canOpenVideo: false
+            }
+          },
+          {
+            type: "save_music_item",
+            item: {
+              id: "netease-agent-saved",
+              source: "netease",
+              title: "收藏测试曲",
+              creator: "Agent Save",
+              durationMs: 199000,
+              pageUrl: "https://music.163.com/#/song?id=199",
+              platformAudioUrl: "https://music.163.com/song/media/outer/url?id=199.mp3",
+              tags: ["netease", "agent-selected"],
+              canOpenVideo: false
+            }
+          },
+          {
+            type: "remove_music_from_queue",
+            itemId: PLAYER_TRACKS[1].id
+          }
+        ]
+      })
+    );
+    const firstRender = render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), { target: { value: "整理一下队列" } });
+    fireEvent.click(getComposerSubmit());
+
+    expect(await within(getTimeline()).findByText("我整理好了。")).toBeTruthy();
+    fireEvent.click(getQueueManageButton());
+    let panel = getMusicQueuePanel();
+    expect(within(panel).queryByText(PLAYER_TRACKS[1].title)).toBeNull();
+    expect(within(panel).getByText("收藏测试曲")).toBeTruthy();
+    fireEvent.click(within(panel).getByRole("tab", { name: "收藏" }));
+    expect(within(panel).getByText("收藏测试曲")).toBeTruthy();
+
+    firstRender.unmount();
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(getQueueManageButton());
+    panel = getMusicQueuePanel();
+    expect(within(panel).queryByText(PLAYER_TRACKS[1].title)).toBeNull();
+    fireEvent.click(within(panel).getByRole("tab", { name: "收藏" }));
+    expect(within(panel).getByText("收藏测试曲")).toBeTruthy();
+  });
+
+  it("lets agent unsave an item and clear only upcoming queue entries", async () => {
+    apiMocks.postChat.mockResolvedValueOnce(
+      makeChatResponse({
+        reply: { id: "reply-save", role: "kumiko", content: "先收藏。" },
+        clientActions: [
+          {
+            type: "save_music_item",
+            item: {
+              id: "netease-agent-cleared",
+              source: "netease",
+              title: "待清空测试曲",
+              creator: "Agent Clear",
+              durationMs: 177000,
+              pageUrl: "https://music.163.com/#/song?id=177",
+              platformAudioUrl: "https://music.163.com/song/media/outer/url?id=177.mp3",
+              tags: ["netease", "agent-selected"],
+              canOpenVideo: false
+            }
+          }
+        ]
+      })
+    );
+    apiMocks.postChat.mockResolvedValueOnce(
+      makeChatResponse({
+        reply: { id: "reply-clear", role: "kumiko", content: "接下来清空了。" },
+        clientActions: [
+          { type: "unsave_music_item", itemId: "netease-agent-cleared" },
+          { type: "clear_music_queue" }
+        ]
+      })
+    );
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), { target: { value: "收藏这首" } });
+    fireEvent.click(getComposerSubmit());
+    expect(await within(getTimeline()).findByText("先收藏。")).toBeTruthy();
+
+    fireEvent.change(getComposerInput(), { target: { value: "取消收藏并清空接下来" } });
+    fireEvent.click(getComposerSubmit());
+    expect(await within(getTimeline()).findByText("接下来清空了。")).toBeTruthy();
+
+    fireEvent.click(getQueueManageButton());
+    const panel = getMusicQueuePanel();
+    expect(within(panel).getByText("接下来还没有歌曲")).toBeTruthy();
+    expect(within(panel).getByText(PLAYER_TRACKS[0].title)).toBeTruthy();
+    fireEvent.click(within(panel).getByRole("tab", { name: "收藏" }));
+    expect(within(panel).queryByText("待清空测试曲")).toBeNull();
+  });
+
+  it("applies delayed agent queue actions on top of the latest local player state", async () => {
+    const pendingChat = deferred<Awaited<ReturnType<typeof apiMocks.postChat>>>();
+    apiMocks.postChat.mockReturnValueOnce(pendingChat.promise);
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), { target: { value: "先帮我找一首放后面" } });
+    fireEvent.click(getComposerSubmit());
+
+    await waitFor(() => expect(apiMocks.postChat).toHaveBeenCalledTimes(1));
+    fireEvent.click(getQueuePreviewMain());
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe(PLAYER_TRACKS[1].title);
+
+    pendingChat.resolve(
+      makeChatResponse({
+        reply: { id: "reply-late-add", role: "kumiko", content: "我把它排到后面了。" },
+        clientActions: [
+          {
+            type: "add_music_to_queue",
+            item: {
+              id: "netease-agent-late",
+              source: "netease",
+              title: "延迟加入测试曲",
+              creator: "Agent Late",
+              durationMs: 190000,
+              pageUrl: "https://music.163.com/#/song?id=190",
+              platformAudioUrl: "https://music.163.com/song/media/outer/url?id=190.mp3",
+              tags: ["netease", "agent-selected"],
+              canOpenVideo: false
+            }
+          }
+        ]
+      })
+    );
+
+    expect(await within(getTimeline()).findByText("我把它排到后面了。")).toBeTruthy();
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe(PLAYER_TRACKS[1].title);
+    fireEvent.click(getQueueManageButton());
+
+    const panel = getMusicQueuePanel();
+    expect(within(panel).getByText("延迟加入测试曲")).toBeTruthy();
   });
 
   it("sends named play requests through chat and applies the returned music action", async () => {
@@ -253,6 +474,8 @@ describe("RoomShell", () => {
     expect(getPlatformAudio().getAttribute("src")).toBe("https://music.163.com/song/media/outer/url?id=186016.mp3");
     expect(document.querySelector(".queue-preview")).toBeTruthy();
     expect(screen.getByRole("button", { name: /管理播放队列/ })).toBeTruthy();
+    fireEvent.click(getQueueManageButton());
+    expect(within(getMusicQueuePanel()).getByText(PLAYER_TRACKS[1].title)).toBeTruthy();
     expect(within(getTimeline()).getByText(command)).toBeTruthy();
     expect(await within(getTimeline()).findByText("我找了一下，选了证据最稳的《晴天》。")).toBeTruthy();
     expect(within(getTimeline()).queryByText("已切到《晴天》。")).toBeNull();
@@ -946,6 +1169,26 @@ describe("RoomShell", () => {
       message: "晚上好",
       roomState: currentRoomState,
       listeningContext: buildListeningContext(PLAYER_TRACKS[0], true),
+      musicState: expect.objectContaining({
+        isPlaying: true,
+        currentTimeMs: 0,
+        durationMs: PLAYER_TRACKS[0].durationMs,
+        current: expect.objectContaining({
+          id: PLAYER_TRACKS[0].id,
+          title: PLAYER_TRACKS[0].title,
+          saved: false
+        }),
+        next: expect.objectContaining({
+          id: PLAYER_TRACKS[1].id
+        }),
+        upcoming: [
+          expect.objectContaining({
+            id: PLAYER_TRACKS[1].id
+          })
+        ],
+        recent: [],
+        saved: []
+      }),
       recentMessages: [],
       personaStrength: "strong",
       memoryEnabled: false,
@@ -962,6 +1205,20 @@ describe("RoomShell", () => {
       message: "想继续聊这首",
       roomState: currentRoomState,
       listeningContext: buildListeningContext(PLAYER_TRACKS[0], true),
+      musicState: expect.objectContaining({
+        isPlaying: true,
+        current: expect.objectContaining({
+          id: PLAYER_TRACKS[0].id
+        }),
+        next: expect.objectContaining({
+          id: PLAYER_TRACKS[1].id
+        }),
+        upcoming: [
+          expect.objectContaining({
+            id: PLAYER_TRACKS[1].id
+          })
+        ]
+      }),
       recentMessages: [
         {
           id: expect.stringMatching(/^user-\d+$/),

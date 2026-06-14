@@ -1691,6 +1691,19 @@ p {
   padding: 0 14px 14px;
 }
 
+.music-queue-now {
+  display: grid;
+  gap: 4px;
+}
+
+.music-queue-section-label {
+  display: block;
+  margin: 8px 0 2px;
+  color: #8ea09f;
+  font-size: 11px;
+  font-weight: 900;
+}
+
 .music-queue-row {
   display: grid;
   gap: 10px;

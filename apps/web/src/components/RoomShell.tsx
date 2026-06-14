@@ -12,7 +12,6 @@ import {
 import type {
   ChatMessage,
   ChatSession,
-  ClientMusicItem,
   PersonaStrength,
   ProviderStatus,
   RoomClientAction,
@@ -20,10 +19,13 @@ import type {
   StoredChatMessage
 } from "../api/types";
 import type { ConnectionStatus } from "../lib/connectionStatus";
-import { PLAYER_TRACKS, buildListeningContext, makeMusicItemFromClientActionItem } from "../lib/musicItems";
+import { PLAYER_TRACKS, buildListeningContext } from "../lib/musicItems";
 import type { ListeningContext, MusicItem, MusicSourceKind } from "../lib/musicItems";
+import { buildMusicAgentState } from "../lib/musicAgentState";
 import {
+  addQueueItem,
   applyClientMusicActionToQueue,
+  clearUpcomingQueue,
   createInitialMusicQueue,
   DEFAULT_RECENT_LIMIT,
   getCurrentQueueEntry,
@@ -31,18 +33,15 @@ import {
   getQueuePreview,
   getRecentQueueEntries,
   getSavedQueueEntries,
+  getUpcomingQueueEntries,
   playQueueItem,
   removeQueueEntry,
+  saveQueueItem,
   toggleQueueEntrySaved,
-  upsertQueueItem,
+  unsaveQueueItem,
   type MusicQueueEntry,
   type MusicQueueState
 } from "../lib/musicQueue";
-import {
-  createRoomAgentRuntime,
-  dispatchRoomAgentAction,
-  type RoomAgentAction
-} from "../lib/roomAgent";
 import { SessionSidebar } from "./SessionSidebar";
 import { VideoMiniWindow } from "./VideoMiniWindow";
 
@@ -94,24 +93,29 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const [musicQueue, setMusicQueue] = useState<MusicQueueState>(() => createInitialMusicQueue(PLAYER_TRACKS));
   const [musicQueueHydrated, setMusicQueueHydrated] = useState(false);
   const [queuePanelOpen, setQueuePanelOpen] = useState(false);
-  const [queuePanelTab, setQueuePanelTab] = useState<"queue" | "recent" | "saved">("queue");
+  const [queuePanelTab, setQueuePanelTab] = useState<"upcoming" | "recent" | "saved">("upcoming");
   const [isPlayerPlaying, setIsPlayerPlaying] = useState(true);
   const [playerCurrentTime, setPlayerCurrentTime] = useState(0);
   const [playerDuration, setPlayerDuration] = useState((PLAYER_TRACKS[0]?.durationMs ?? 0) / 1000);
   const [videoWindowOpen, setVideoWindowOpen] = useState(false);
   const [videoWindowSize, setVideoWindowSize] = useState<"compact" | "large">("compact");
+  const musicQueueRef = useRef(musicQueue);
+  const videoWindowOpenRef = useRef(videoWindowOpen);
   const connectionLabel = providerStatus?.label ?? connectionStatus.label;
+  musicQueueRef.current = musicQueue;
+  videoWindowOpenRef.current = videoWindowOpen;
   const playerQueueEntries = getPlaybackQueueEntries(musicQueue);
   const playerQueue = playerQueueEntries.map((entry) => entry.item);
   const activeQueueEntry = getCurrentQueueEntry(musicQueue) ?? playerQueueEntries[0] ?? null;
   const activeTrack = activeQueueEntry?.item ?? PLAYER_TRACKS[0];
   const playerTrackIndex = Math.max(0, playerQueue.findIndex((track) => track.id === activeTrack.id));
   const queuePreview = getQueuePreview(musicQueue);
+  const upcomingQueueEntries = getUpcomingQueueEntries(musicQueue);
   const recentQueueEntries = getRecentQueueEntries(musicQueue);
   const savedQueueEntries = getSavedQueueEntries(musicQueue);
   const visibleQueuePanelEntries = getVisibleQueuePanelEntries(
     queuePanelTab,
-    playerQueueEntries,
+    upcomingQueueEntries,
     recentQueueEntries,
     savedQueueEntries
   );
@@ -245,7 +249,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
 
     const storedQueue = readStoredMusicQueue(window.localStorage);
     if (storedQueue) {
-      setMusicQueue(storedQueue);
+      commitMusicQueue(storedQueue);
     }
     setMusicQueueHydrated(true);
   }, []);
@@ -259,7 +263,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   useEffect(() => {
     if (activeTrack.canOpenVideo) return;
 
-    setVideoWindowOpen(false);
+    commitVideoWindowOpen(false);
   }, [activeTrack.canOpenVideo]);
 
   useEffect(() => {
@@ -306,6 +310,11 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     setSendingState(true);
 
     const listeningContext = activeListeningContext;
+    const musicState = buildMusicAgentState(musicQueue, {
+      isPlaying: isPlayerPlaying,
+      currentTimeMs: Math.round(playerCurrentTime * 1000),
+      durationMs: Math.round(playerDurationSeconds * 1000)
+    });
 
     const recentMessages = retryMessage?.recentMessages ?? messages.slice(-8);
     const userMessage: ChatMessage = {
@@ -327,7 +336,8 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
         recentMessages,
         personaStrength,
         memoryEnabled,
-        listeningContext
+        listeningContext,
+        musicState
       });
       if (activeSessionIdRef.current !== submittedSessionId) {
         return;
@@ -498,52 +508,55 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   }
 
   function applyRoomClientActions(actions: RoomClientAction[]) {
-    for (const clientAction of actions) {
-      if (!("item" in clientAction)) {
-        continue;
-      }
-      const item = makeMusicItemFromClientActionItem(clientAction.item);
-      const toolName = clientAction.type === "open_video_window" ? "open_video_window" : "play_item";
-
-      executeRoomAgentAction({
-        id: `client-action-${clientAction.type}-${item.id}`,
-        toolName,
-        input: { itemId: item.id, item, clientItem: clientAction.item }
-      });
-    }
-  }
-
-  function executeRoomAgentAction(action: RoomAgentAction) {
-    const previousActiveTrackId = activeTrack.id;
-    const actionItem = getActionMusicItem(action);
-    const clientItem = getActionClientMusicItem(action);
-    const queueBeforeDispatch = clientItem
-      ? applyClientMusicActionToQueue(musicQueue, clientItem)
-      : actionItem
-        ? upsertQueueItem(musicQueue, actionItem, { addedBy: "user" })
-        : musicQueue;
-    const nextQueueItems = getPlaybackQueueEntries(queueBeforeDispatch).map((entry) => entry.item);
-
-    const runtime = createRoomAgentRuntime({
-      activeItemId: activeTrack.id,
-      videoWindowOpen
-    });
-    const result = dispatchRoomAgentAction(runtime, action, nextQueueItems);
-
-    if (!result.ok) {
+    if (actions.length === 0) {
       return;
     }
 
-    let nextQueueState = queueBeforeDispatch;
-    if (result.state.activeItemId && result.state.activeItemId !== getCurrentQueueEntry(queueBeforeDispatch)?.id) {
-      nextQueueState = playQueueItem(nextQueueState, result.state.activeItemId);
+    const queueBeforeActions = musicQueueRef.current;
+    const activeEntryBeforeActions = getCurrentQueueEntry(queueBeforeActions);
+    const activeTrackBeforeActions = activeEntryBeforeActions?.item ?? activeTrack;
+    const previousActiveTrackId = activeTrackBeforeActions.id;
+    let nextQueueState = queueBeforeActions;
+    let nextVideoWindowOpen = videoWindowOpenRef.current;
+    let shouldPlay = false;
+
+    for (const clientAction of actions) {
+      switch (clientAction.type) {
+        case "play_music_item":
+          nextQueueState = applyClientMusicActionToQueue(nextQueueState, clientAction.item);
+          nextVideoWindowOpen = clientAction.item.canOpenVideo ? nextVideoWindowOpen : false;
+          shouldPlay = true;
+          break;
+        case "add_music_to_queue":
+          nextQueueState = addQueueItem(nextQueueState, clientAction.item);
+          break;
+        case "remove_music_from_queue":
+          if (getUpcomingQueueEntries(nextQueueState).some((entry) => entry.id === clientAction.itemId)) {
+            nextQueueState = removeQueueEntry(nextQueueState, clientAction.itemId);
+          }
+          break;
+        case "save_music_item":
+          nextQueueState = saveQueueItem(nextQueueState, clientAction.item);
+          break;
+        case "unsave_music_item":
+          nextQueueState = unsaveQueueItem(nextQueueState, clientAction.itemId);
+          break;
+        case "clear_music_queue":
+          nextQueueState = clearUpcomingQueue(nextQueueState);
+          break;
+        case "open_video_window":
+          nextQueueState = applyClientMusicActionToQueue(nextQueueState, clientAction.item);
+          nextVideoWindowOpen = clientAction.item.canOpenVideo;
+          shouldPlay = true;
+          break;
+      }
     }
 
     const nextActiveEntry = getCurrentQueueEntry(nextQueueState);
-    const nextTrack = nextActiveEntry?.item ?? activeTrack;
-    const shouldPlay = action.toolName === "play_item" || action.toolName === "recommend_next" || action.toolName === "open_video_window";
+    const nextTrack = nextActiveEntry?.item ?? activeTrackBeforeActions;
 
     if (nextTrack.id !== previousActiveTrackId) {
+      platformAudioRef.current?.pause();
       setPlayerCurrentTime(0);
       setPlayerDuration(nextTrack.durationMs / 1000);
     }
@@ -552,8 +565,9 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
       setIsPlayerPlaying(true);
     }
 
-    setMusicQueue(nextQueueState);
-    setVideoWindowOpen(result.state.videoWindowOpen);
+    const resolvedVideoWindowOpen = nextTrack.canOpenVideo ? nextVideoWindowOpen : false;
+    commitMusicQueue(nextQueueState);
+    commitVideoWindowOpen(resolvedVideoWindowOpen);
   }
 
   function handlePreviousTrack() {
@@ -568,11 +582,11 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     const nextTrack = playerQueue[nextIndex] ?? playerQueue[0] ?? PLAYER_TRACKS[0];
 
     platformAudioRef.current?.pause();
-    setMusicQueue((currentQueue) => playQueueItem(currentQueue, nextTrack.id));
+    updateMusicQueue((currentQueue) => playQueueItem(currentQueue, nextTrack.id));
     setPlayerCurrentTime(0);
     setPlayerDuration(nextTrack.durationMs / 1000);
     if (!nextTrack.canOpenVideo) {
-      setVideoWindowOpen(false);
+      commitVideoWindowOpen(false);
     }
   }
 
@@ -581,35 +595,35 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     if (!entry) return;
 
     platformAudioRef.current?.pause();
-    setMusicQueue((currentQueue) => playQueueItem(currentQueue, entryId));
+    updateMusicQueue((currentQueue) => playQueueItem(currentQueue, entryId));
     setPlayerCurrentTime(0);
     setPlayerDuration(entry.item.durationMs / 1000);
     setIsPlayerPlaying(true);
     if (!entry.item.canOpenVideo) {
-      setVideoWindowOpen(false);
+      commitVideoWindowOpen(false);
     }
   }
 
   function handleQueueEntryRemove(entryId: string) {
-    setMusicQueue((currentQueue) => removeQueueEntry(currentQueue, entryId));
+    updateMusicQueue((currentQueue) => removeQueueEntry(currentQueue, entryId));
   }
 
   function handleQueueEntrySave(entryId: string) {
-    setMusicQueue((currentQueue) => toggleQueueEntrySaved(currentQueue, entryId));
+    updateMusicQueue((currentQueue) => toggleQueueEntrySaved(currentQueue, entryId));
   }
 
   function handleQueueEntryVideo(entry: MusicQueueEntry) {
-    setMusicQueue((currentQueue) => playQueueItem(currentQueue, entry.id));
+    updateMusicQueue((currentQueue) => playQueueItem(currentQueue, entry.id));
     setPlayerCurrentTime(0);
     setPlayerDuration(entry.item.durationMs / 1000);
     setIsPlayerPlaying(true);
-    setVideoWindowOpen(true);
+    commitVideoWindowOpen(true);
   }
 
   function handlePlayPause() {
     if (!hasPlatformAudio) {
       if (activeTrack.canOpenVideo) {
-        setVideoWindowOpen(true);
+        commitVideoWindowOpen(true);
         setIsPlayerPlaying(true);
       }
       return;
@@ -623,6 +637,20 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
 
     setIsPlayerPlaying(true);
     void playPlatformAudio();
+  }
+
+  function commitMusicQueue(nextQueueState: MusicQueueState) {
+    musicQueueRef.current = nextQueueState;
+    setMusicQueue(nextQueueState);
+  }
+
+  function updateMusicQueue(updater: (currentQueue: MusicQueueState) => MusicQueueState) {
+    commitMusicQueue(updater(musicQueueRef.current));
+  }
+
+  function commitVideoWindowOpen(open: boolean) {
+    videoWindowOpenRef.current = open;
+    setVideoWindowOpen(open);
   }
 
   async function playPlatformAudio() {
@@ -1189,7 +1217,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                   className="control video"
                   type="button"
                   aria-label="打开视频小窗"
-                  onClick={() => setVideoWindowOpen(true)}
+                  onClick={() => commitVideoWindowOpen(true)}
                 >
                   ▣
                 </button>
@@ -1236,14 +1264,14 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
             <div className="music-queue-panel-head">
               <div>
                 <strong>音乐记录</strong>
-                <span>队列、最近播放和收藏</span>
+                <span>正在播放、接下来和收藏</span>
               </div>
               <button type="button" aria-label="关闭音乐记录" onClick={() => setQueuePanelOpen(false)}>
                 ×
               </button>
             </div>
             <div className="music-queue-tabs" role="tablist" aria-label="音乐记录分类">
-              {(["queue", "recent", "saved"] as const).map((tab) => (
+              {(["upcoming", "recent", "saved"] as const).map((tab) => (
                 <button
                   key={tab}
                   type="button"
@@ -1251,15 +1279,52 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                   aria-selected={queuePanelTab === tab}
                   onClick={() => setQueuePanelTab(tab)}
                 >
-                  {tab === "queue" ? "队列" : tab === "recent" ? "最近" : "收藏"}
+                  {tab === "upcoming" ? "接下来" : tab === "recent" ? "最近" : "收藏"}
                 </button>
               ))}
             </div>
             <div className="music-queue-list">
+              {queuePanelTab === "upcoming" && activeQueueEntry ? (
+                <div className="music-queue-now">
+                  <span className="music-queue-section-label">正在播放</span>
+                  <article className="music-queue-row" data-active="true">
+                    <div className="music-queue-row-copy">
+                      <span className="source-badge" data-source={activeQueueEntry.item.source}>
+                        {getMusicSourceLabel(activeQueueEntry.item.source)}
+                      </span>
+                      <div>
+                        <strong>{activeQueueEntry.item.title}</strong>
+                        <span>{activeQueueEntry.item.creator}</span>
+                        {activeQueueEntry.sourceQuery ? <em>来自: {activeQueueEntry.sourceQuery}</em> : null}
+                        {activeQueueEntry.selectedReason ? <em>{activeQueueEntry.selectedReason}</em> : null}
+                      </div>
+                    </div>
+                    <div className="music-queue-row-actions">
+                      <button type="button" onClick={() => handleQueueEntryPlay(activeQueueEntry.id)}>
+                        播放
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`${activeQueueEntry.saved ? "取消收藏" : "收藏"} ${activeQueueEntry.item.title}`}
+                        onClick={() => handleQueueEntrySave(activeQueueEntry.id)}
+                      >
+                        {activeQueueEntry.saved ? "取消收藏" : "收藏"}
+                      </button>
+                      {activeQueueEntry.item.canOpenVideo ? (
+                        <button type="button" onClick={() => handleQueueEntryVideo(activeQueueEntry)}>
+                          小窗
+                        </button>
+                      ) : null}
+                    </div>
+                  </article>
+                </div>
+              ) : null}
+              {queuePanelTab === "upcoming" && visibleQueuePanelEntries.length > 0 ? (
+                <span className="music-queue-section-label">接下来</span>
+              ) : null}
               {visibleQueuePanelEntries.map((entry) => (
                 <article
                   className="music-queue-row"
-                  data-active={entry.id === activeTrack.id ? "true" : undefined}
                   key={`${queuePanelTab}-${entry.id}`}
                 >
                   <div className="music-queue-row-copy">
@@ -1296,7 +1361,9 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                 </article>
               ))}
               {visibleQueuePanelEntries.length === 0 ? (
-                <p className="music-queue-empty">这里还没有记录</p>
+                <p className="music-queue-empty">
+                  {getQueuePanelEmptyLabel(queuePanelTab)}
+                </p>
               ) : null}
             </div>
           </section>
@@ -1306,7 +1373,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
         <VideoMiniWindow
           item={activeTrack}
           size={videoWindowSize}
-          onClose={() => setVideoWindowOpen(false)}
+          onClose={() => commitVideoWindowOpen(false)}
           onToggleSize={() =>
             setVideoWindowSize((current) => (current === "compact" ? "large" : "compact"))
           }
@@ -1314,16 +1381,6 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
       ) : null}
     </main>
   );
-}
-
-function getActionMusicItem(action: RoomAgentAction): MusicItem | null {
-  const value = action.input.item;
-  return isMusicItem(value) ? value : null;
-}
-
-function getActionClientMusicItem(action: RoomAgentAction): ClientMusicItem | null {
-  const value = action.input.clientItem;
-  return isClientMusicItem(value) ? value : null;
 }
 
 function isMusicItem(value: unknown): value is MusicItem {
@@ -1341,10 +1398,6 @@ function isMusicItem(value: unknown): value is MusicItem {
     Array.isArray(candidate.tags) &&
     typeof candidate.canOpenVideo === "boolean"
   );
-}
-
-function isClientMusicItem(value: unknown): value is ClientMusicItem {
-  return isMusicItem(value);
 }
 
 function readStoredMusicQueue(storage: Storage): MusicQueueState | null {
@@ -1416,14 +1469,21 @@ function isOptionalStringArray(value: unknown): boolean {
 }
 
 function getVisibleQueuePanelEntries(
-  tab: "queue" | "recent" | "saved",
-  queueEntries: MusicQueueEntry[],
+  tab: "upcoming" | "recent" | "saved",
+  upcomingEntries: MusicQueueEntry[],
   recentEntries: MusicQueueEntry[],
   savedEntries: MusicQueueEntry[]
 ): MusicQueueEntry[] {
   if (tab === "recent") return recentEntries;
   if (tab === "saved") return savedEntries;
-  return queueEntries;
+  return upcomingEntries;
+}
+
+function getQueuePanelEmptyLabel(tab: "upcoming" | "recent" | "saved"): string {
+  if (tab === "upcoming") return "接下来还没有歌曲";
+  if (tab === "saved") return "还没有收藏";
+
+  return "还没有最近播放";
 }
 
 function getMusicSourceLabel(source: MusicSourceKind): string {
