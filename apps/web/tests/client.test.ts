@@ -37,6 +37,76 @@ function requestBody(fetchMock: ReturnType<typeof vi.fn>) {
   return JSON.parse(String(init.body));
 }
 
+function musicAgentTrack(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "current",
+    source: "netease",
+    title: "Current Song",
+    creator: "Current Artist",
+    durationMs: 180000,
+    pageUrl: "https://music.example/current",
+    platformAudioUrl: "https://audio.example/current.mp3",
+    tags: ["current", "liked"],
+    canOpenVideo: false,
+    saved: true,
+    ...overrides
+  };
+}
+
+function musicAgentTrackApi(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "current",
+    source: "netease",
+    title: "Current Song",
+    creator: "Current Artist",
+    duration_ms: 180000,
+    page_url: "https://music.example/current",
+    platform_audio_url: "https://audio.example/current.mp3",
+    tags: ["current", "liked"],
+    can_open_video: false,
+    saved: true,
+    ...overrides
+  };
+}
+
+function clientMusicItem(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "client-item",
+    source: "netease",
+    title: "Client Song",
+    creator: "Client Artist",
+    durationMs: 210000,
+    pageUrl: "https://music.example/client-item",
+    platformAudioUrl: "https://audio.example/client-item.mp3",
+    tags: ["agent-selected"],
+    canOpenVideo: false,
+    sourceQuery: null,
+    selectedReason: null,
+    selectionEvidence: [],
+    selectionScore: null,
+    ...overrides
+  };
+}
+
+function clientMusicItemApi(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "client-item",
+    source: "netease",
+    title: "Client Song",
+    creator: "Client Artist",
+    duration_ms: 210000,
+    page_url: "https://music.example/client-item",
+    platform_audio_url: "https://audio.example/client-item.mp3",
+    tags: ["agent-selected"],
+    can_open_video: false,
+    source_query: null,
+    selected_reason: null,
+    selection_evidence: [],
+    selection_score: null,
+    ...overrides
+  };
+}
+
 describe("room API client", () => {
   it("loads room state", async () => {
     vi.stubGlobal(
@@ -330,6 +400,101 @@ describe("room API client", () => {
     });
   });
 
+  it("posts chat messages with music state snapshot fields", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({
+          reply: { id: "music-state", role: "kumiko", content: "I can see the queue." },
+          expression: "listening",
+          suggested_actions: [],
+          provider_status: {
+            provider: "mock",
+            model: null,
+            configured: true,
+            label: "Local Mock API"
+          },
+          memory_events: [],
+          session: null
+        })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await roomApi.postChat({
+      message: "What is next?",
+      roomState: DEFAULT_ROOM_STATE,
+      musicState: {
+        isPlaying: false,
+        currentTimeMs: 42000,
+        durationMs: 180000,
+        current: musicAgentTrack(),
+        previous: musicAgentTrack({
+          id: "previous",
+          title: "Previous Song",
+          platformAudioUrl: null,
+          tags: ["recent"],
+          saved: false
+        }),
+        next: musicAgentTrack({
+          id: "next",
+          title: "Next Song",
+          tags: ["upcoming"],
+          saved: false
+        }),
+        upcoming: [
+          musicAgentTrack({ id: "next", title: "Next Song", tags: ["upcoming"], saved: false }),
+          musicAgentTrack({
+            id: "later",
+            title: "Later Song",
+            source: "bilibili",
+            platformAudioUrl: null,
+            canOpenVideo: true,
+            tags: ["video"],
+            saved: false
+          })
+        ],
+        recent: [musicAgentTrack({ id: "recent", title: "Recent Song", saved: false })],
+        saved: [musicAgentTrack({ id: "saved", title: "Saved Song", saved: true })]
+      }
+    });
+
+    expect(requestBody(fetchMock).music_state).toEqual({
+      is_playing: false,
+      current_time_ms: 42000,
+      duration_ms: 180000,
+      current: musicAgentTrackApi(),
+      previous: musicAgentTrackApi({
+        id: "previous",
+        title: "Previous Song",
+        platform_audio_url: null,
+        tags: ["recent"],
+        saved: false
+      }),
+      next: musicAgentTrackApi({
+        id: "next",
+        title: "Next Song",
+        tags: ["upcoming"],
+        saved: false
+      }),
+      upcoming: [
+        musicAgentTrackApi({ id: "next", title: "Next Song", tags: ["upcoming"], saved: false }),
+        musicAgentTrackApi({
+          id: "later",
+          title: "Later Song",
+          source: "bilibili",
+          platform_audio_url: null,
+          can_open_video: true,
+          tags: ["video"],
+          saved: false
+        })
+      ],
+      recent: [musicAgentTrackApi({ id: "recent", title: "Recent Song", saved: false })],
+      saved: [musicAgentTrackApi({ id: "saved", title: "Saved Song", saved: true })]
+    });
+  });
+
   it("maps chat client actions and agent trace fields", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -401,6 +566,92 @@ describe("room API client", () => {
       agentTrace: {
         toolCalls: [{ id: "call-play", name: "play_music_item", ok: true }]
       }
+    });
+  });
+
+  it("maps typed music client actions and ignores malformed actions", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({
+          reply: { id: "actions", role: "kumiko", content: "Updated the music state." },
+          expression: "listening",
+          suggested_actions: [],
+          provider_status: {
+            provider: "deepseek",
+            model: "deepseek-v4-flash",
+            configured: true,
+            label: "DeepSeek"
+          },
+          memory_events: [],
+          session: null,
+          client_actions: [
+            {
+              type: "play_music_item",
+              item: clientMusicItemApi({ id: "play", title: "Play Song" })
+            },
+            {
+              type: "add_music_to_queue",
+              item: clientMusicItemApi({ id: "add", title: "Add Song" })
+            },
+            {
+              type: "save_music_item",
+              item: clientMusicItemApi({ id: "save", title: "Save Song" })
+            },
+            {
+              type: "open_video_window",
+              item: clientMusicItemApi({
+                id: "video",
+                source: "bilibili",
+                title: "Video Song",
+                platform_audio_url: null,
+                can_open_video: true
+              })
+            },
+            { type: "remove_music_from_queue", item_id: "next" },
+            { type: "unsave_music_item", item_id: "saved" },
+            { type: "clear_music_queue" },
+            { type: "play_music_item" },
+            { type: "remove_music_from_queue", item_id: "" },
+            { type: "clear_music_queue", item: clientMusicItemApi({ id: "extra" }) },
+            { type: "unknown_action", item: clientMusicItemApi({ id: "unknown" }) }
+          ]
+        })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      roomApi.postChat({ message: "Update queue", roomState: DEFAULT_ROOM_STATE })
+    ).resolves.toMatchObject({
+      clientActions: [
+        {
+          type: "play_music_item",
+          item: clientMusicItem({ id: "play", title: "Play Song" })
+        },
+        {
+          type: "add_music_to_queue",
+          item: clientMusicItem({ id: "add", title: "Add Song" })
+        },
+        {
+          type: "save_music_item",
+          item: clientMusicItem({ id: "save", title: "Save Song" })
+        },
+        {
+          type: "open_video_window",
+          item: clientMusicItem({
+            id: "video",
+            source: "bilibili",
+            title: "Video Song",
+            platformAudioUrl: null,
+            canOpenVideo: true
+          })
+        },
+        { type: "remove_music_from_queue", itemId: "next" },
+        { type: "unsave_music_item", itemId: "saved" },
+        { type: "clear_music_queue" }
+      ]
     });
   });
 

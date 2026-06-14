@@ -12,6 +12,7 @@ import {
 import type {
   ChatMessage,
   ChatSession,
+  ClientMusicItem,
   PersonaStrength,
   ProviderStatus,
   RoomClientAction,
@@ -498,6 +499,9 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
 
   function applyRoomClientActions(actions: RoomClientAction[]) {
     for (const clientAction of actions) {
+      if (!("item" in clientAction)) {
+        continue;
+      }
       const item = makeMusicItemFromClientActionItem(clientAction.item);
       const toolName = clientAction.type === "open_video_window" ? "open_video_window" : "play_item";
 
@@ -1317,7 +1321,7 @@ function getActionMusicItem(action: RoomAgentAction): MusicItem | null {
   return isMusicItem(value) ? value : null;
 }
 
-function getActionClientMusicItem(action: RoomAgentAction): RoomClientAction["item"] | null {
+function getActionClientMusicItem(action: RoomAgentAction): ClientMusicItem | null {
   const value = action.input.clientItem;
   return isClientMusicItem(value) ? value : null;
 }
@@ -1339,7 +1343,7 @@ function isMusicItem(value: unknown): value is MusicItem {
   );
 }
 
-function isClientMusicItem(value: unknown): value is RoomClientAction["item"] {
+function isClientMusicItem(value: unknown): value is ClientMusicItem {
   return isMusicItem(value);
 }
 

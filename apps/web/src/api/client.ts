@@ -3,6 +3,7 @@ import type {
   ChatResponse,
   ChatSession,
   ClientMusicItem,
+  MusicAgentState,
   MemoryEvent,
   MusicSearchResult,
   RoomClientAction,
@@ -84,6 +85,9 @@ export function postChat(payload: ChatRequest): Promise<ChatResponse> {
       message: payload.message,
       room_state: mapRoomStateRequest(payload.roomState),
       listening_context: mapListeningContextRequest(payload.listeningContext),
+      ...(payload.musicState
+        ? { music_state: mapMusicAgentStateRequest(payload.musicState) }
+        : {}),
       recent_messages: payload.recentMessages ?? [],
       persona_strength: payload.personaStrength ?? "medium",
       memory_enabled: payload.memoryEnabled ?? true,
@@ -236,8 +240,9 @@ interface ClientMusicItemApi {
 }
 
 interface RoomClientActionApi {
-  type: RoomClientAction["type"];
-  item: ClientMusicItemApi;
+  type: string;
+  item?: ClientMusicItemApi | null;
+  item_id?: string | null;
 }
 
 interface AgentTraceApi {
@@ -311,6 +316,37 @@ function mapListeningContextRequest(value: ChatRequest["listeningContext"]) {
   };
 }
 
+function mapMusicAgentStateRequest(value: MusicAgentState) {
+  return {
+    is_playing: value.isPlaying,
+    current_time_ms: value.currentTimeMs,
+    duration_ms: value.durationMs,
+    current: mapMusicAgentTrackRequest(value.current),
+    previous: mapMusicAgentTrackRequest(value.previous),
+    next: mapMusicAgentTrackRequest(value.next),
+    upcoming: value.upcoming.map(mapMusicAgentTrackRequest),
+    recent: value.recent.map(mapMusicAgentTrackRequest),
+    saved: value.saved.map(mapMusicAgentTrackRequest)
+  };
+}
+
+function mapMusicAgentTrackRequest(value: MusicAgentState["current"]) {
+  if (value === null) return null;
+
+  return {
+    id: value.id,
+    source: value.source,
+    title: value.title,
+    creator: value.creator,
+    duration_ms: value.durationMs,
+    page_url: value.pageUrl,
+    platform_audio_url: value.platformAudioUrl,
+    tags: value.tags,
+    can_open_video: value.canOpenVideo,
+    saved: value.saved
+  };
+}
+
 function mapChatResponse(value: ChatResponseApi): ChatResponse {
   return {
     reply: value.reply,
@@ -319,7 +355,7 @@ function mapChatResponse(value: ChatResponseApi): ChatResponse {
     providerStatus: value.provider_status,
     memoryEvents: value.memory_events.map(mapMemoryEvent),
     session: value.session === null ? null : mapChatSession(value.session),
-    clientActions: (value.client_actions ?? []).map(mapRoomClientAction),
+    clientActions: (value.client_actions ?? []).map(mapRoomClientAction).filter(isRoomClientAction),
     agentTrace: {
       toolCalls: value.agent_trace?.tool_calls ?? []
     }
@@ -380,11 +416,37 @@ function mapMusicSearchResult(value: MusicSearchResultApi): MusicSearchResult {
   };
 }
 
-function mapRoomClientAction(value: RoomClientActionApi): RoomClientAction {
-  return {
-    type: value.type,
-    item: mapClientMusicItem(value.item)
-  };
+function mapRoomClientAction(value: RoomClientActionApi): RoomClientAction | null {
+  if (!isRecord(value)) return null;
+
+  if (
+    value.type === "play_music_item" ||
+    value.type === "add_music_to_queue" ||
+    value.type === "save_music_item" ||
+    value.type === "open_video_window"
+  ) {
+    if (!isClientMusicItemApi(value.item)) return null;
+    return {
+      type: value.type,
+      item: mapClientMusicItem(value.item)
+    };
+  }
+
+  if (value.type === "remove_music_from_queue" || value.type === "unsave_music_item") {
+    const itemId = typeof value.item_id === "string" ? value.item_id.trim() : "";
+    if (!itemId) return null;
+    return {
+      type: value.type,
+      itemId
+    };
+  }
+
+  if (value.type === "clear_music_queue") {
+    if ("item" in value || "item_id" in value) return null;
+    return { type: "clear_music_queue" };
+  }
+
+  return null;
 }
 
 function mapClientMusicItem(value: ClientMusicItemApi): ClientMusicItem {
@@ -403,4 +465,29 @@ function mapClientMusicItem(value: ClientMusicItemApi): ClientMusicItem {
     selectionEvidence: value.selection_evidence ?? [],
     selectionScore: value.selection_score ?? null
   };
+}
+
+function isRoomClientAction(value: RoomClientAction | null): value is RoomClientAction {
+  return value !== null;
+}
+
+function isClientMusicItemApi(value: unknown): value is ClientMusicItemApi {
+  if (!isRecord(value)) return false;
+
+  return (
+    typeof value.id === "string" &&
+    (value.source === "bilibili" || value.source === "netease") &&
+    typeof value.title === "string" &&
+    typeof value.creator === "string" &&
+    typeof value.duration_ms === "number" &&
+    (value.page_url === null || typeof value.page_url === "string") &&
+    (value.platform_audio_url === null || typeof value.platform_audio_url === "string") &&
+    Array.isArray(value.tags) &&
+    value.tags.every((tag) => typeof tag === "string") &&
+    typeof value.can_open_video === "boolean"
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
 }

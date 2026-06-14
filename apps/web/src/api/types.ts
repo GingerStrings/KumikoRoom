@@ -79,6 +79,7 @@ export interface ChatRequest {
   personaStrength?: PersonaStrength;
   memoryEnabled?: boolean;
   listeningContext?: ListeningContext;
+  musicState?: MusicAgentState;
 }
 
 export interface MusicSearchResult {
@@ -144,6 +145,25 @@ export type RoomClientAction =
   | {
       type: "play_music_item";
       item: ClientMusicItem;
+    }
+  | {
+      type: "add_music_to_queue";
+      item: ClientMusicItem;
+    }
+  | {
+      type: "remove_music_from_queue";
+      itemId: string;
+    }
+  | {
+      type: "save_music_item";
+      item: ClientMusicItem;
+    }
+  | {
+      type: "unsave_music_item";
+      itemId: string;
+    }
+  | {
+      type: "clear_music_queue";
     }
   | {
       type: "open_video_window";
