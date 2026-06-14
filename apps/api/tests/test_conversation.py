@@ -1,3 +1,5 @@
+import json
+
 from kumikoroom.config import load_settings
 from kumikoroom.conversation import ConversationManager
 from kumikoroom.llm import (
@@ -122,6 +124,226 @@ class FakeSessionStore:
         )
         self.saved.append(message)
         return message
+
+
+def music_track_fixture(
+    item_id: str,
+    title: str,
+    *,
+    saved: bool = False,
+) -> dict:
+    return {
+        "id": item_id,
+        "source": "netease",
+        "title": title,
+        "creator": "Fixture Artist",
+        "duration_ms": 180000,
+        "page_url": f"https://music.example/{item_id}",
+        "platform_audio_url": f"https://audio.example/{item_id}.mp3",
+        "tags": ["fixture"],
+        "can_open_video": False,
+        "saved": saved,
+    }
+
+
+def music_state_fixture() -> dict:
+    return {
+        "is_playing": True,
+        "current_time_ms": 42000,
+        "duration_ms": 180000,
+        "current": music_track_fixture("current", "Current Song", saved=True),
+        "previous": music_track_fixture("previous", "Previous Song"),
+        "next": music_track_fixture("next", "Next Song"),
+        "upcoming": [
+            music_track_fixture("next", "Next Song"),
+            music_track_fixture("later", "Later Song"),
+        ],
+        "recent": [music_track_fixture("recent", "Recent Song")],
+        "saved": [
+            music_track_fixture("current", "Current Song", saved=True),
+            music_track_fixture("saved", "Saved Song", saved=True),
+        ],
+    }
+
+
+def test_music_state_schema_preserves_snapshot_and_prompt(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("KUMIKOROOM_MEMORY_DB_PATH", str(tmp_path / "memory.sqlite3"))
+    provider = FakeProvider()
+
+    payload = ChatIn(
+        message="what is playing",
+        music_state=music_state_fixture(),
+        memory_enabled=False,
+    )
+
+    assert payload.music_state is not None
+    assert payload.music_state.next is not None
+    assert payload.music_state.next.title == "Next Song"
+    assert payload.music_state.upcoming[1].id == "later"
+
+    ConversationManager(settings=load_settings(), provider=provider).chat(payload)
+
+    system_text = provider.messages[0]["content"]
+    assert "Music state:" in system_text
+    assert "Playing: yes" in system_text
+    assert "Current: Current Song - Fixture Artist (current)" in system_text
+    assert "Next: Next Song - Fixture Artist (next)" in system_text
+    assert (
+        "Upcoming: Next Song - Fixture Artist (next); "
+        "Later Song - Fixture Artist (later)"
+    ) in system_text
+    assert "Recent: Recent Song - Fixture Artist (recent)" in system_text
+    assert (
+        "Saved: Current Song - Fixture Artist (current); "
+        "Saved Song - Fixture Artist (saved)"
+    ) in system_text
+
+
+def test_get_music_state_and_state_mutation_tools_emit_client_actions() -> None:
+    payload = ChatIn(message="state", music_state=music_state_fixture())
+    context = RoomAgentToolContext(music_state=payload.music_state)
+
+    specs = {spec["function"]["name"] for spec in room_agent_tool_specs()}
+    assert {
+        "get_music_state",
+        "add_music_to_queue",
+        "remove_music_from_queue",
+        "save_music_item",
+        "unsave_music_item",
+        "clear_music_queue",
+    }.issubset(specs)
+
+    state_result = dispatch_room_agent_tool(
+        LLMToolCall(id="state", name="get_music_state", arguments={}),
+        context,
+    )
+    assert state_result.ok is True
+    state_payload = json.loads(state_result.content)
+    assert state_payload["music_state"]["next"]["title"] == "Next Song"
+    assert state_payload["music_state"]["recent"][0]["id"] == "recent"
+
+    save_result = dispatch_room_agent_tool(
+        LLMToolCall(
+            id="save",
+            name="save_music_item",
+            arguments={"item_id": "current"},
+        ),
+        context,
+    )
+    assert save_result.ok is True
+    assert context.client_actions[-1].type == "save_music_item"
+    assert context.client_actions[-1].item.id == "current"
+
+    remove_result = dispatch_room_agent_tool(
+        LLMToolCall(
+            id="remove",
+            name="remove_music_from_queue",
+            arguments={"item_id": "next"},
+        ),
+        context,
+    )
+    assert remove_result.ok is True
+    assert context.client_actions[-1].type == "remove_music_from_queue"
+    assert context.client_actions[-1].item_id == "next"
+
+    unsave_result = dispatch_room_agent_tool(
+        LLMToolCall(
+            id="unsave",
+            name="unsave_music_item",
+            arguments={"item_id": "saved"},
+        ),
+        context,
+    )
+    assert unsave_result.ok is True
+    assert context.client_actions[-1].type == "unsave_music_item"
+    assert context.client_actions[-1].item_id == "saved"
+
+    clear_result = dispatch_room_agent_tool(
+        LLMToolCall(id="clear", name="clear_music_queue", arguments={}),
+        context,
+    )
+    assert clear_result.ok is True
+    assert context.client_actions[-1].type == "clear_music_queue"
+    assert context.client_actions[-1].item is None
+    assert context.client_actions[-1].item_id is None
+
+
+def test_add_music_to_queue_supports_search_candidates() -> None:
+    context = RoomAgentToolContext(
+        candidates={
+            "netease-song-candidate": NeteaseSongSearchResult(
+                id="netease-song-candidate",
+                song_id="candidate",
+                title="Candidate Song",
+                creator="Fixture Artist",
+                duration_ms=210000,
+                playable=True,
+                popularity=55.0,
+                comment_count=100,
+                hot_comment_liked_count=25,
+                score=77.0,
+                evidence=["candidate evidence"],
+            )
+        },
+        candidate_queries={"netease-song-candidate": "candidate query"},
+    )
+
+    result = dispatch_room_agent_tool(
+        LLMToolCall(
+            id="add",
+            name="add_music_to_queue",
+            arguments={"item_id": "netease-song-candidate"},
+        ),
+        context,
+    )
+
+    assert result.ok is True
+    assert context.client_actions[-1].type == "add_music_to_queue"
+    assert context.client_actions[-1].item.id == "netease-song-candidate"
+    assert context.client_actions[-1].item.source_query == "candidate query"
+    assert "candidate evidence" in context.client_actions[-1].item.selection_evidence
+
+
+def test_play_music_item_supports_known_music_state_item() -> None:
+    payload = ChatIn(message="play saved", music_state=music_state_fixture())
+    context = RoomAgentToolContext(music_state=payload.music_state)
+
+    result = dispatch_room_agent_tool(
+        LLMToolCall(
+            id="play",
+            name="play_music_item",
+            arguments={"item_id": "saved"},
+        ),
+        context,
+    )
+
+    assert result.ok is True
+    assert context.client_actions[-1].type == "play_music_item"
+    assert context.client_actions[-1].item.id == "saved"
+    assert context.client_actions[-1].item.title == "Saved Song"
+    assert (
+        context.client_actions[-1].item.platform_audio_url
+        == "https://audio.example/saved.mp3"
+    )
+
+
+def test_remove_music_from_queue_rejects_recent_items() -> None:
+    payload = ChatIn(message="remove recent", music_state=music_state_fixture())
+    context = RoomAgentToolContext(music_state=payload.music_state)
+
+    result = dispatch_room_agent_tool(
+        LLMToolCall(
+            id="remove",
+            name="remove_music_from_queue",
+            arguments={"item_id": "recent"},
+        ),
+        context,
+    )
+
+    assert result.ok is False
+    payload = json.loads(result.content)
+    assert "upcoming" in payload["error"]
+    assert context.client_actions == []
 
 
 def test_manager_persists_user_and_reply_messages(monkeypatch, tmp_path) -> None:

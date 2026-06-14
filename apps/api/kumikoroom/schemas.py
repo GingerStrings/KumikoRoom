@@ -52,6 +52,31 @@ class ListeningContextIn(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class MusicAgentTrack(BaseModel):
+    id: str
+    source: MusicSourceKind
+    title: str
+    creator: str
+    duration_ms: int
+    page_url: str | None = None
+    platform_audio_url: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    can_open_video: bool = False
+    saved: bool = False
+
+
+class MusicAgentState(BaseModel):
+    is_playing: bool = False
+    current_time_ms: int = 0
+    duration_ms: int = 0
+    current: MusicAgentTrack | None = None
+    previous: MusicAgentTrack | None = None
+    next: MusicAgentTrack | None = None
+    upcoming: list[MusicAgentTrack] = Field(default_factory=list)
+    recent: list[MusicAgentTrack] = Field(default_factory=list)
+    saved: list[MusicAgentTrack] = Field(default_factory=list)
+
+
 class MusicSearchResultOut(BaseModel):
     source: Literal["netease"]
     id: str
@@ -87,8 +112,17 @@ class ClientMusicItemOut(BaseModel):
 
 
 class RoomClientActionOut(BaseModel):
-    type: Literal["play_music_item", "open_video_window"]
-    item: ClientMusicItemOut
+    type: Literal[
+        "play_music_item",
+        "add_music_to_queue",
+        "remove_music_from_queue",
+        "save_music_item",
+        "unsave_music_item",
+        "clear_music_queue",
+        "open_video_window",
+    ]
+    item: ClientMusicItemOut | None = None
+    item_id: str | None = None
 
 
 class AgentTraceOut(BaseModel):
@@ -100,6 +134,7 @@ class ChatIn(BaseModel):
     session_id: str | None = None
     room_state: RoomStateOut | None = None
     listening_context: ListeningContextIn | None = None
+    music_state: MusicAgentState | None = None
     recent_messages: list[ChatMessageOut] = Field(default_factory=list)
     persona_strength: PersonaStrength = "medium"
     memory_enabled: bool = True

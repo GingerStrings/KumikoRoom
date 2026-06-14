@@ -27,6 +27,8 @@ from kumikoroom.schemas import (
     ChatSessionOut,
     AgentTraceOut,
     MemoryEventOut,
+    MusicAgentState,
+    MusicAgentTrack,
     ProviderStatusOut,
     RoomClientActionOut,
 )
@@ -68,7 +70,7 @@ class ConversationManager:
         messages = self._build_messages(payload, saved_user_message.content)
 
         try:
-            result = self._run_agent_turn(messages)
+            result = self._run_agent_turn(messages, payload.music_state)
         except ProviderUnavailable:
             return self._provider_unavailable_response(session)
 
@@ -135,6 +137,10 @@ class ConversationManager:
         if listening_context:
             system_parts.append(listening_context)
 
+        music_state_context = _music_state_context(payload)
+        if music_state_context:
+            system_parts.append(music_state_context)
+
         messages: list[LLMMessage] = [
             {"role": "system", "content": "\n\n".join(system_parts)}
         ]
@@ -142,8 +148,12 @@ class ConversationManager:
         messages.append({"role": "user", "content": message})
         return messages
 
-    def _run_agent_turn(self, messages: list[LLMMessage]) -> AgentTurnResult:
-        tool_context = RoomAgentToolContext()
+    def _run_agent_turn(
+        self,
+        messages: list[LLMMessage],
+        music_state: MusicAgentState | None,
+    ) -> AgentTurnResult:
+        tool_context = RoomAgentToolContext(music_state=music_state)
         trace: list[dict[str, str | bool]] = []
         working_messages = list(messages)
         tools = room_agent_tool_specs()
@@ -354,6 +364,43 @@ def _listening_context(payload: ChatIn) -> str:
     if context.tags:
         lines.append(f"- Tags: {', '.join(context.tags)}")
     return "\n".join(lines)
+
+
+def _music_state_context(payload: ChatIn) -> str:
+    state = payload.music_state
+    if state is None:
+        return ""
+
+    lines = [
+        "Music state:",
+        f"- Playing: {'yes' if state.is_playing else 'no'}",
+        f"- Progress: {state.current_time_ms}/{state.duration_ms} ms",
+    ]
+    if state.current is not None:
+        lines.append(f"- Current: {_music_track_label(state.current)}")
+    if state.previous is not None:
+        lines.append(f"- Previous: {_music_track_label(state.previous)}")
+    if state.next is not None:
+        lines.append(f"- Next: {_music_track_label(state.next)}")
+    if state.upcoming:
+        lines.append(f"- Upcoming: {_music_track_list(state.upcoming)}")
+    if state.recent:
+        lines.append(f"- Recent: {_music_track_list(state.recent)}")
+    if state.saved:
+        lines.append(f"- Saved: {_music_track_list(state.saved)}")
+    return "\n".join(lines)
+
+
+def _music_track_list(tracks: list[MusicAgentTrack], limit: int = 5) -> str:
+    visible = tracks[:limit]
+    labels = [_music_track_label(track) for track in visible]
+    if len(tracks) > limit:
+        labels.append(f"+{len(tracks) - limit} more")
+    return "; ".join(labels)
+
+
+def _music_track_label(track: MusicAgentTrack) -> str:
+    return f"{_current_track(track.title, track.creator)} ({track.id})"
 
 
 def _current_track(title: str | None, artist: str | None) -> str:
