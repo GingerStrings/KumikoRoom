@@ -350,16 +350,19 @@ export function removeQueueEntry(state: MusicQueueState, itemId: string, now = c
 }
 
 export function toggleQueueEntrySaved(state: MusicQueueState, itemId: string): MusicQueueState {
-  if (!state.entries.some((entry) => entry.id === itemId)) {
+  const target = state.entries.find((entry) => entry.id === itemId);
+  if (!target) {
     return state;
   }
 
-  return {
+  const toggled = {
     ...state,
     entries: state.entries.map((entry) =>
       entry.id === itemId ? { ...entry, saved: !entry.saved } : entry
     ),
   };
+
+  return target.saved ? capRecentRecords(toggled) : toggled;
 }
 
 function cloneSelectionEvidence(selectionEvidence: string[] | undefined): string[] | undefined {

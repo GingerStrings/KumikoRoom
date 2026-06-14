@@ -404,6 +404,22 @@ describe("musicQueue", () => {
     expect(state.entries.some((entry) => entry.id === "a")).toBe(false);
   });
 
+  it("caps recent records after toggling off a saved old played item", () => {
+    const initial = createInitialMusicQueue(
+      [makeItem("a", "Alpha"), makeItem("b", "Beta"), makeItem("c", "Gamma")],
+      "2026-06-14T00:00:00.000Z",
+      1
+    );
+    const playedB = playQueueItem(initial, "b", "2026-06-14T00:01:00.000Z");
+    const savedA = toggleQueueEntrySaved(playedB, "a");
+    const playedC = playQueueItem(savedA, "c", "2026-06-14T00:02:00.000Z");
+    const state = toggleQueueEntrySaved(playedC, "a");
+
+    expect(getSavedQueueEntries(state)).toEqual([]);
+    expect(getRecentQueueEntries(state).map((entry) => entry.id)).toEqual(["b"]);
+    expect(state.entries.some((entry) => entry.id === "a")).toBe(false);
+  });
+
   it("clears only upcoming entries while preserving current, recent, and saved records", () => {
     const initial = createInitialMusicQueue(
       [makeItem("recent", "Recent"), makeItem("current", "Current"), makeItem("saved", "Saved")],
