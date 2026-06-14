@@ -90,6 +90,62 @@ describe("musicQueue", () => {
     });
   });
 
+  it("keeps playback order and preview aligned after playing an out-of-order item", () => {
+    const initial = createInitialMusicQueue(
+      [makeItem("a", "Alpha"), makeItem("b", "Beta"), makeItem("c", "Gamma")],
+      "2026-06-14T00:00:00.000Z"
+    );
+    const state = playQueueItem(initial, "c", "2026-06-14T00:01:00.000Z");
+
+    expect(getPlaybackQueueEntries(state).map((entry) => entry.id)).toEqual(["c", "b"]);
+    expect(getPlaybackQueueEntries(state).map((entry) => entry.status)).toEqual(["current", "queued"]);
+    expect(getQueuePreview(state)).toEqual({
+      nextEntryId: "b",
+      nextTitle: "Beta",
+      nextCreator: "Beta creator",
+      nextSource: "netease",
+      remainingCount: 1,
+    });
+  });
+
+  it("caps recent records at the configured limit", () => {
+    const initial = createInitialMusicQueue(
+      [makeItem("a", "Alpha"), makeItem("b", "Beta"), makeItem("c", "Gamma"), makeItem("d", "Delta")],
+      "2026-06-14T00:00:00.000Z",
+      2
+    );
+    const playedB = playQueueItem(initial, "b", "2026-06-14T00:01:00.000Z");
+    const playedC = playQueueItem(playedB, "c", "2026-06-14T00:02:00.000Z");
+    const state = playQueueItem(playedC, "d", "2026-06-14T00:03:00.000Z");
+
+    expect(getRecentQueueEntries(state).map((entry) => entry.id)).toEqual(["c", "b"]);
+    expect(state.entries.some((entry) => entry.id === "a")).toBe(false);
+  });
+
+  it("returns the same state for unknown play, remove, and save requests", () => {
+    const state = createInitialMusicQueue([makeItem("a", "Alpha")], "2026-06-14T00:00:00.000Z");
+
+    expect(playQueueItem(state, "missing", "2026-06-14T00:01:00.000Z")).toBe(state);
+    expect(removeQueueEntry(state, "missing", "2026-06-14T00:01:00.000Z")).toBe(state);
+    expect(toggleQueueEntrySaved(state, "missing")).toBe(state);
+  });
+
+  it("creates an empty initial queue", () => {
+    const state = createInitialMusicQueue([], "2026-06-14T00:00:00.000Z");
+
+    expect(getCurrentQueueEntry(state)).toBeNull();
+    expect(getPlaybackQueueEntries(state)).toEqual([]);
+    expect(getRecentQueueEntries(state)).toEqual([]);
+    expect(getSavedQueueEntries(state)).toEqual([]);
+    expect(getQueuePreview(state)).toEqual({
+      nextEntryId: null,
+      nextTitle: null,
+      nextCreator: null,
+      nextSource: null,
+      remainingCount: 0,
+    });
+  });
+
   it("keeps saved records visible after queue removal", () => {
     const initial = createInitialMusicQueue([makeItem("a", "Alpha"), makeItem("b", "Beta")], "2026-06-14T00:00:00.000Z");
     const saved = toggleQueueEntrySaved(initial, "b");
@@ -106,5 +162,42 @@ describe("musicQueue", () => {
 
     expect(getCurrentQueueEntry(state)?.id).toBe("b");
     expect(getPlaybackQueueEntries(state).map((entry) => entry.id)).toEqual(["b"]);
+  });
+
+  it("keeps a saved current item as played when removing it", () => {
+    const initial = createInitialMusicQueue([makeItem("a", "Alpha"), makeItem("b", "Beta")], "2026-06-14T00:00:00.000Z");
+    const saved = toggleQueueEntrySaved(initial, "a");
+    const state = removeQueueEntry(saved, "a", "2026-06-14T00:04:00.000Z");
+
+    expect(getCurrentQueueEntry(state)?.id).toBe("b");
+    expect(getPlaybackQueueEntries(state).map((entry) => entry.id)).toEqual(["b"]);
+    expect(getSavedQueueEntries(state).map((entry) => entry.id)).toEqual(["a"]);
+    expect(getSavedQueueEntries(state)[0].status).toBe("played");
+    expect(getSavedQueueEntries(state)[0].lastPlayedAt).toBe("2026-06-14T00:04:00.000Z");
+  });
+
+  it("isolates selection evidence from caller mutations", () => {
+    const selectionEvidence = ["title exact match", "comment_count=10"];
+    const initial = createInitialMusicQueue([makeItem("a", "Alpha")], "2026-06-14T00:00:00.000Z");
+    const state = applyClientMusicActionToQueue(
+      initial,
+      {
+        id: "netease-song-2",
+        source: "netease",
+        title: "Sunny",
+        creator: "Composer",
+        durationMs: 200000,
+        pageUrl: "https://music.163.com/#/song?id=2",
+        platformAudioUrl: "https://music.163.com/song/media/outer/url?id=2.mp3",
+        tags: ["netease", "agent-selected"],
+        canOpenVideo: false,
+        selectionEvidence,
+      },
+      "2026-06-14T00:02:00.000Z"
+    );
+
+    selectionEvidence.push("mutated after queue write");
+
+    expect(getCurrentQueueEntry(state)?.selectionEvidence).toEqual(["title exact match", "comment_count=10"]);
   });
 });

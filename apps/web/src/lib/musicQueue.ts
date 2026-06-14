@@ -20,6 +20,9 @@ export interface MusicQueueEntry {
   saved?: boolean;
 }
 
+type ClientMusicQueueItem = ClientMusicItem &
+  Partial<Pick<MusicQueueEntry, "sourceQuery" | "selectedReason" | "selectionEvidence" | "selectionScore">>;
+
 export interface MusicQueueState {
   entries: MusicQueueEntry[];
   currentId: string | null;
@@ -63,7 +66,10 @@ export function getCurrentQueueEntry(state: MusicQueueState): MusicQueueEntry | 
 }
 
 export function getPlaybackQueueEntries(state: MusicQueueState): MusicQueueEntry[] {
-  return state.entries.filter((entry) => entry.status === "current" || entry.status === "queued");
+  const currentEntry = getCurrentQueueEntry(state);
+  const queuedEntries = state.entries.filter((entry) => entry.status === "queued");
+
+  return currentEntry ? [currentEntry, ...queuedEntries] : queuedEntries;
 }
 
 export function getRecentQueueEntries(state: MusicQueueState): MusicQueueEntry[] {
@@ -77,21 +83,23 @@ export function getSavedQueueEntries(state: MusicQueueState): MusicQueueEntry[] 
 }
 
 export function getQueuePreview(state: MusicQueueState): QueuePreview {
-  const queuedEntries = state.entries.filter((entry) => entry.status === "queued");
-  const nextEntry = queuedEntries[0] ?? null;
+  const playbackEntries = getPlaybackQueueEntries(state);
+  const currentIndex = playbackEntries.findIndex((entry) => entry.status === "current");
+  const remainingEntries = currentIndex >= 0 ? playbackEntries.slice(currentIndex + 1) : playbackEntries;
+  const nextEntry = remainingEntries[0] ?? null;
 
   return {
     nextEntryId: nextEntry?.id ?? null,
     nextTitle: nextEntry?.item.title ?? null,
     nextCreator: nextEntry?.item.creator ?? null,
     nextSource: nextEntry?.item.source ?? null,
-    remainingCount: queuedEntries.length,
+    remainingCount: remainingEntries.length,
   };
 }
 
 export function applyClientMusicActionToQueue(
   state: MusicQueueState,
-  item: ClientMusicItem,
+  item: ClientMusicQueueItem,
   now = currentIsoTime()
 ): MusicQueueState {
   const musicItem = makeMusicItemFromClientActionItem(item);
@@ -130,7 +138,10 @@ export function upsertQueueItem(
             addedBy: metadata.addedBy ?? entry.addedBy,
             sourceQuery: metadata.sourceQuery ?? entry.sourceQuery,
             selectedReason: metadata.selectedReason ?? entry.selectedReason,
-            selectionEvidence: metadata.selectionEvidence ?? entry.selectionEvidence,
+            selectionEvidence:
+              metadata.selectionEvidence === undefined
+                ? entry.selectionEvidence
+                : cloneSelectionEvidence(metadata.selectionEvidence),
             selectionScore: metadata.selectionScore ?? entry.selectionScore,
           }
         : entry
@@ -151,7 +162,7 @@ export function upsertQueueItem(
         playCount: 0,
         sourceQuery: metadata.sourceQuery,
         selectedReason: metadata.selectedReason,
-        selectionEvidence: metadata.selectionEvidence,
+        selectionEvidence: cloneSelectionEvidence(metadata.selectionEvidence),
         selectionScore: metadata.selectionScore,
       },
     ],
@@ -231,12 +242,20 @@ export function removeQueueEntry(state: MusicQueueState, itemId: string, now = c
 }
 
 export function toggleQueueEntrySaved(state: MusicQueueState, itemId: string): MusicQueueState {
+  if (!state.entries.some((entry) => entry.id === itemId)) {
+    return state;
+  }
+
   return {
     ...state,
     entries: state.entries.map((entry) =>
       entry.id === itemId ? { ...entry, saved: !entry.saved } : entry
     ),
   };
+}
+
+function cloneSelectionEvidence(selectionEvidence: string[] | undefined): string[] | undefined {
+  return selectionEvidence ? [...selectionEvidence] : selectionEvidence;
 }
 
 function capRecentRecords(state: MusicQueueState): MusicQueueState {
