@@ -142,6 +142,33 @@ describe("musicQueue", () => {
     expect(state.entries.some((entry) => entry.id === "a")).toBe(false);
   });
 
+  it("keeps a played item in recent after adding it back to upcoming", () => {
+    const initial = createInitialMusicQueue(
+      [makeItem("a", "Alpha"), makeItem("b", "Beta")],
+      "2026-06-14T00:00:00.000Z"
+    );
+    const playedB = playQueueItem(initial, "b", "2026-06-14T00:01:00.000Z");
+    const state = addQueueItem(playedB, makeClientItem("a", "Alpha"), "2026-06-14T00:02:00.000Z");
+
+    expect(getUpcomingQueueEntries(state).map((entry) => entry.id)).toEqual(["a"]);
+    expect(getRecentQueueEntries(state).map((entry) => entry.id)).toEqual(["a"]);
+  });
+
+  it("does not let saved played records make recent exceed its limit", () => {
+    const initial = createInitialMusicQueue(
+      [makeItem("a", "Alpha"), makeItem("b", "Beta"), makeItem("c", "Gamma"), makeItem("d", "Delta")],
+      "2026-06-14T00:00:00.000Z",
+      2
+    );
+    const playedB = playQueueItem(initial, "b", "2026-06-14T00:01:00.000Z");
+    const savedA = toggleQueueEntrySaved(playedB, "a");
+    const playedC = playQueueItem(savedA, "c", "2026-06-14T00:02:00.000Z");
+    const state = playQueueItem(playedC, "d", "2026-06-14T00:03:00.000Z");
+
+    expect(getSavedQueueEntries(state).map((entry) => entry.id)).toEqual(["a"]);
+    expect(getRecentQueueEntries(state).map((entry) => entry.id)).toEqual(["c", "b"]);
+  });
+
   it("returns the same state for unknown play, remove, and save requests", () => {
     const state = createInitialMusicQueue([makeItem("a", "Alpha")], "2026-06-14T00:00:00.000Z");
 
@@ -230,6 +257,13 @@ describe("musicQueue", () => {
     expect(getUpcomingQueueEntries(state)[0].addedBy).toBe("agent");
   });
 
+  it("treats adding the current item as an idempotent no-op", () => {
+    const state = createInitialMusicQueue([makeItem("current", "Current")], "2026-06-14T00:00:00.000Z");
+
+    expect(addQueueItem(state, makeClientItem("current", "Current"), "2026-06-14T00:01:00.000Z")).toBe(state);
+    expect(getUpcomingQueueEntries(state)).toEqual([]);
+  });
+
   it("inserts and explicitly saves an item", () => {
     const initial = createInitialMusicQueue([makeItem("current", "Current")], "2026-06-14T00:00:00.000Z");
     const state = saveQueueItem(initial, makeClientItem("saved", "Saved"), "2026-06-14T00:01:00.000Z");
@@ -267,5 +301,19 @@ describe("musicQueue", () => {
     expect(getUpcomingQueueEntries(state)).toEqual([]);
     expect(getRecentQueueEntries(state).map((entry) => entry.id)).toEqual(["recent"]);
     expect(getSavedQueueEntries(state).map((entry) => entry.id)).toEqual(["saved"]);
+  });
+
+  it("moves played upcoming entries back to recent when clearing upcoming", () => {
+    const initial = createInitialMusicQueue(
+      [makeItem("a", "Alpha"), makeItem("b", "Beta")],
+      "2026-06-14T00:00:00.000Z"
+    );
+    const playedB = playQueueItem(initial, "b", "2026-06-14T00:01:00.000Z");
+    const requeuedA = addQueueItem(playedB, makeClientItem("a", "Alpha"), "2026-06-14T00:02:00.000Z");
+    const state = clearUpcomingQueue(requeuedA);
+
+    expect(getUpcomingQueueEntries(state)).toEqual([]);
+    expect(getRecentQueueEntries(state).map((entry) => entry.id)).toEqual(["a"]);
+    expect(state.entries.find((entry) => entry.id === "a")?.status).toBe("played");
   });
 });

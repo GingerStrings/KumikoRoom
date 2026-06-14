@@ -82,8 +82,9 @@ export function getUpcomingQueueEntries(state: MusicQueueState): MusicQueueEntry
 
 export function getRecentQueueEntries(state: MusicQueueState): MusicQueueEntry[] {
   return state.entries
-    .filter((entry) => entry.status === "played" && entry.playCount > 0)
-    .sort((left, right) => (right.lastPlayedAt ?? "").localeCompare(left.lastPlayedAt ?? ""));
+    .filter((entry) => entry.id !== state.currentId && entry.playCount > 0)
+    .sort((left, right) => (right.lastPlayedAt ?? "").localeCompare(left.lastPlayedAt ?? ""))
+    .slice(0, state.recentLimit);
 }
 
 export function getSavedQueueEntries(state: MusicQueueState): MusicQueueEntry[] {
@@ -126,6 +127,10 @@ export function addQueueItem(
   item: ClientMusicItem,
   now = currentIsoTime()
 ): MusicQueueState {
+  if (getCurrentQueueEntry(state)?.id === item.id) {
+    return state;
+  }
+
   const musicItem = makeMusicItemFromClientActionItem(item);
   const upserted = upsertQueueItem(state, musicItem, getClientItemQueueMetadata(item), now);
   const entry = upserted.entries.find((candidate) => candidate.id === musicItem.id);
@@ -195,18 +200,18 @@ export function clearUpcomingQueue(state: MusicQueueState): MusicQueueState {
     return state;
   }
 
-  return {
+  return capRecentRecords({
     ...state,
     entries: state.entries.flatMap((entry) => {
       if (entry.status !== "queued") {
         return [entry];
       }
-      if (entry.saved) {
+      if (entry.playCount > 0 || entry.saved) {
         return [{ ...entry, status: "played" as const }];
       }
       return [];
     }),
-  };
+  });
 }
 
 export function upsertQueueItem(
