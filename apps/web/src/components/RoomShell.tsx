@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, SyntheticEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   createSession,
   deleteSession,
@@ -19,7 +19,12 @@ import type {
 } from "../api/types";
 import type { ConnectionStatus } from "../lib/connectionStatus";
 import { PLAYER_TRACKS, buildListeningContext } from "../lib/musicItems";
-import type { MusicSourceKind } from "../lib/musicItems";
+import type { ListeningContext, MusicSourceKind } from "../lib/musicItems";
+import {
+  createRoomAgentRuntime,
+  dispatchRoomAgentAction,
+  routeRoomAgentIntent
+} from "../lib/roomAgent";
 import { SessionSidebar } from "./SessionSidebar";
 import { VideoMiniWindow } from "./VideoMiniWindow";
 
@@ -44,6 +49,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const sessionActionPendingRef = useRef(false);
   const sessionsLoadingRef = useRef(false);
   const timelineRef = useRef<HTMLDivElement | null>(null);
+  const platformAudioRef = useRef<HTMLAudioElement | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [isSending, setIsSending] = useState(false);
@@ -68,10 +74,20 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const [failedOutgoing, setFailedOutgoing] = useState<FailedOutgoingMessage | null>(null);
   const [playerTrackIndex, setPlayerTrackIndex] = useState(0);
   const [isPlayerPlaying, setIsPlayerPlaying] = useState(true);
+  const [playerCurrentTime, setPlayerCurrentTime] = useState(0);
+  const [playerDuration, setPlayerDuration] = useState((PLAYER_TRACKS[0]?.durationMs ?? 0) / 1000);
   const [videoWindowOpen, setVideoWindowOpen] = useState(false);
   const [videoWindowSize, setVideoWindowSize] = useState<"compact" | "large">("compact");
   const connectionLabel = providerStatus?.label ?? connectionStatus.label;
   const activeTrack = PLAYER_TRACKS[playerTrackIndex] ?? PLAYER_TRACKS[0];
+  const hasPlatformAudio = Boolean(activeTrack.platformAudioUrl);
+  const activeTrackDuration = activeTrack.durationMs / 1000;
+  const playerDurationSeconds = playerDuration > 0 ? playerDuration : activeTrackDuration;
+  const playerProgress = hasPlatformAudio && playerDurationSeconds > 0
+    ? Math.min(100, Math.max(0, (playerCurrentTime / playerDurationSeconds) * 100))
+    : 0;
+  const playerProgressWidth = `${Math.round(playerProgress * 10) / 10}%`;
+  const playButtonLabel = hasPlatformAudio ? (isPlayerPlaying ? "暂停" : "播放") : "打开平台播放器";
   const activeListeningContext = buildListeningContext(activeTrack, isPlayerPlaying);
   const setActiveSessionId = useCallback((sessionId: string | null) => {
     activeSessionIdRef.current = sessionId;
@@ -196,6 +212,17 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   }, [activeTrack.canOpenVideo]);
 
   useEffect(() => {
+    setPlayerCurrentTime(0);
+    setPlayerDuration(activeTrack.durationMs / 1000);
+  }, [activeTrack.id, activeTrack.durationMs]);
+
+  useEffect(() => {
+    if (!activeTrack.platformAudioUrl || !isPlayerPlaying) return;
+
+    void playPlatformAudio();
+  }, [activeTrack.id, activeTrack.platformAudioUrl, isPlayerPlaying]);
+
+  useEffect(() => {
     const timeline = timelineRef.current;
     if (!timeline) return;
 
@@ -226,6 +253,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     setSendError(null);
     setFailedOutgoing(null);
     setSendingState(true);
+    const listeningContext = applyRoomAgentIntent(message) ?? activeListeningContext;
 
     const recentMessages = retryMessage?.recentMessages ?? messages.slice(-8);
     const userMessage: ChatMessage = {
@@ -247,7 +275,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
         recentMessages,
         personaStrength,
         memoryEnabled,
-        listeningContext: activeListeningContext
+        listeningContext
       });
       if (activeSessionIdRef.current !== submittedSessionId) {
         return;
@@ -414,6 +442,116 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     setMobileRenamingSessionId(null);
     setMobileRenameTitle("");
     setMobileDeleteConfirmId(null);
+  }
+
+  function applyRoomAgentIntent(message: string): ListeningContext | null {
+    const action = routeRoomAgentIntent(message, PLAYER_TRACKS);
+
+    if (!action) {
+      return null;
+    }
+
+    const runtime = createRoomAgentRuntime({
+      activeItemId: activeTrack.id,
+      videoWindowOpen
+    });
+    const result = dispatchRoomAgentAction(runtime, action, PLAYER_TRACKS);
+
+    if (!result.ok) {
+      return null;
+    }
+
+    const nextTrackIndex = result.state.activeItemId
+      ? PLAYER_TRACKS.findIndex((track) => track.id === result.state.activeItemId)
+      : playerTrackIndex;
+    const nextTrack = nextTrackIndex >= 0 ? PLAYER_TRACKS[nextTrackIndex] : activeTrack;
+    const shouldPlay = action.toolName === "play_item" || action.toolName === "recommend_next" || action.toolName === "open_video_window";
+
+    if (nextTrackIndex >= 0 && nextTrackIndex !== playerTrackIndex) {
+      setPlayerTrackIndex(nextTrackIndex);
+      setPlayerCurrentTime(0);
+      setPlayerDuration(nextTrack.durationMs / 1000);
+    }
+
+    if (shouldPlay) {
+      setIsPlayerPlaying(true);
+    }
+
+    setVideoWindowOpen(result.state.videoWindowOpen);
+
+    return buildListeningContext(nextTrack, shouldPlay ? true : isPlayerPlaying);
+  }
+
+  function handlePreviousTrack() {
+    selectPlayerTrack((playerTrackIndex - 1 + PLAYER_TRACKS.length) % PLAYER_TRACKS.length);
+  }
+
+  function handleNextTrack() {
+    selectPlayerTrack((playerTrackIndex + 1) % PLAYER_TRACKS.length);
+  }
+
+  function selectPlayerTrack(nextIndex: number) {
+    const nextTrack = PLAYER_TRACKS[nextIndex] ?? PLAYER_TRACKS[0];
+
+    platformAudioRef.current?.pause();
+    setPlayerTrackIndex(nextIndex);
+    setPlayerCurrentTime(0);
+    setPlayerDuration(nextTrack.durationMs / 1000);
+    if (!nextTrack.canOpenVideo) {
+      setVideoWindowOpen(false);
+    }
+  }
+
+  function handlePlayPause() {
+    if (!hasPlatformAudio) {
+      if (activeTrack.canOpenVideo) {
+        setVideoWindowOpen(true);
+        setIsPlayerPlaying(true);
+      }
+      return;
+    }
+
+    if (isPlayerPlaying) {
+      platformAudioRef.current?.pause();
+      setIsPlayerPlaying(false);
+      return;
+    }
+
+    setIsPlayerPlaying(true);
+    void playPlatformAudio();
+  }
+
+  async function playPlatformAudio() {
+    const audio = platformAudioRef.current;
+
+    if (!audio) {
+      return;
+    }
+
+    try {
+      await audio.play();
+    } catch {
+      setIsPlayerPlaying(false);
+    }
+  }
+
+  function handlePlatformAudioLoadedMetadata(event: SyntheticEvent<HTMLAudioElement>) {
+    const audio = event.currentTarget;
+    const metadataDuration = Number.isFinite(audio.duration) && audio.duration > 0
+      ? audio.duration
+      : activeTrack.durationMs / 1000;
+
+    setPlayerDuration(metadataDuration);
+    setPlayerCurrentTime(audio.currentTime);
+  }
+
+  function handlePlatformAudioTimeUpdate(event: SyntheticEvent<HTMLAudioElement>) {
+    setPlayerCurrentTime(event.currentTarget.currentTime);
+  }
+
+  function handlePlatformAudioEnded(event: SyntheticEvent<HTMLAudioElement>) {
+    setPlayerCurrentTime(event.currentTarget.currentTime);
+    setIsPlayerPlaying(false);
   }
 
   function beginMobileRename(session: ChatSession) {
@@ -884,6 +1022,17 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
             <img className="standee-img" src="/assets/kumiko-standee-v1.png" alt="" />
           </div>
           <section className="media-player" aria-label="氛围播放器">
+            {activeTrack.platformAudioUrl ? (
+              <audio
+                ref={platformAudioRef}
+                className="platform-audio-host"
+                src={activeTrack.platformAudioUrl}
+                preload="metadata"
+                onLoadedMetadata={handlePlatformAudioLoadedMetadata}
+                onTimeUpdate={handlePlatformAudioTimeUpdate}
+                onEnded={handlePlatformAudioEnded}
+              />
+            ) : null}
             <div className="track-head">
               <div className="track-title">
                 <strong>{activeTrack.title}</strong>
@@ -901,28 +1050,28 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
               </div>
             </div>
             <div className="progress" aria-label="播放进度">
-              <span>00:42</span>
+              <span>{hasPlatformAudio ? formatPlayerTime(playerCurrentTime) : "平台内"}</span>
               <div className="bar">
-                <span />
+                <span style={{ width: playerProgressWidth }} />
               </div>
-              <span>02:18</span>
+              <span>{hasPlatformAudio ? formatPlayerTime(playerDurationSeconds) : "控制"}</span>
             </div>
             <div
               className="player-controls"
               data-has-video={activeTrack.canOpenVideo ? "true" : undefined}
             >
-              <button className="control" type="button" aria-label="上一首">
+              <button className="control" type="button" aria-label="上一首" onClick={handlePreviousTrack}>
                 ‹
               </button>
               <button
                 className="control play"
                 type="button"
-                aria-label={isPlayerPlaying ? "暂停" : "播放"}
-                onClick={() => setIsPlayerPlaying((current) => !current)}
+                aria-label={playButtonLabel}
+                onClick={handlePlayPause}
               >
-                {isPlayerPlaying ? "Ⅱ" : "▶"}
+                {hasPlatformAudio && isPlayerPlaying ? "Ⅱ" : "▶"}
               </button>
-              <button className="control" type="button" aria-label="下一首">
+              <button className="control" type="button" aria-label="下一首" onClick={handleNextTrack}>
                 ›
               </button>
               <div className="volume" aria-label="音量">
@@ -948,7 +1097,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                   type="button"
                   data-active={index === playerTrackIndex ? "true" : undefined}
                   key={track.title}
-                  onClick={() => setPlayerTrackIndex(index)}
+                  onClick={() => selectPlayerTrack(index)}
                 >
                   {track.title}
                 </button>
@@ -976,6 +1125,14 @@ function getMusicSourceLabel(source: MusicSourceKind): string {
   if (source === "netease") return "网易云";
 
   return "本地";
+}
+
+function formatPlayerTime(value: number): string {
+  const safeValue = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+  const minutes = Math.floor(safeValue / 60);
+  const seconds = safeValue % 60;
+
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 function shouldUseSparseTimeline(messages: ChatMessage[]): boolean {

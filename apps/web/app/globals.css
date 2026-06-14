@@ -1319,6 +1319,10 @@ p {
   backdrop-filter: blur(16px);
 }
 
+.platform-audio-host {
+  display: none;
+}
+
 .track-head {
   display: flex;
   align-items: flex-start;

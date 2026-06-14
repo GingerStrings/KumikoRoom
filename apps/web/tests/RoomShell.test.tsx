@@ -37,11 +37,24 @@ const defaultCreatedSession = makeSession({
   latestMessagePreview: null
 });
 
+const mediaPlayMock = vi.fn(() => Promise.resolve());
+const mediaPauseMock = vi.fn();
+
 describe("RoomShell", () => {
   beforeEach(() => {
     for (const mock of Object.values(apiMocks)) {
       mock.mockReset();
     }
+    mediaPlayMock.mockClear();
+    mediaPauseMock.mockClear();
+    Object.defineProperty(HTMLMediaElement.prototype, "play", {
+      configurable: true,
+      value: mediaPlayMock
+    });
+    Object.defineProperty(HTMLMediaElement.prototype, "pause", {
+      configurable: true,
+      value: mediaPauseMock
+    });
     localStorage.clear();
     apiMocks.getSessions.mockResolvedValue([defaultSession]);
     apiMocks.getSessionMessages.mockResolvedValue([]);
@@ -101,38 +114,72 @@ describe("RoomShell", () => {
     expect(createButton.textContent).toBe("+");
   });
 
-  it("keeps the default player music-first before video is opened", async () => {
+  it("renders the default Netease platform track before video is opened", async () => {
     render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
 
     expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
     expect(screen.getByLabelText("氛围播放器")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "青鸟的间奏" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: PLAYER_TRACKS[0].title })).toBeTruthy();
+    expect(screen.getByText(PLAYER_TRACKS[0].creator)).toBeTruthy();
     const playerControls = getPlayerControls();
     const sourceBadge = document.querySelector<HTMLElement>(".source-badge");
+    const audio = getPlatformAudio();
 
     expect(playerControls.getAttribute("data-has-video")).not.toBe("true");
-    expect(sourceBadge?.textContent).toBe("本地");
-    expect(sourceBadge?.getAttribute("data-source")).toBe("local");
+    expect(sourceBadge?.getAttribute("data-source")).toBe("netease");
+    expect(audio.getAttribute("src")).toBe(PLAYER_TRACKS[0].platformAudioUrl);
+    expect(audio.getAttribute("src")).not.toContain("/assets/");
     expect(screen.queryByRole("button", { name: "打开视频小窗" })).toBeNull();
     expect(screen.queryByRole("dialog", { name: "B站视频小窗" })).toBeNull();
     expect(screen.queryByTitle(/视频播放/)).toBeNull();
+  });
+
+  it("updates Netease progress from media events and controls the platform audio element", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    const audio = getPlatformAudio();
+    Object.defineProperty(audio, "duration", {
+      configurable: true,
+      value: PLAYER_TRACKS[0].durationMs / 1000
+    });
+    audio.currentTime = 42;
+    fireEvent.loadedMetadata(audio);
+    fireEvent.timeUpdate(audio);
+
+    const progress = document.querySelector<HTMLElement>(".progress");
+    const fill = document.querySelector<HTMLElement>(".bar span");
+    expect(progress?.textContent).toContain("00:42");
+    expect(progress?.textContent).toContain("03:35");
+    expect(fill?.style.width).toBe("19.5%");
+
+    fireEvent.click(screen.getByRole("button", { name: "暂停" }));
+    expect(mediaPauseMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "播放" }));
+    expect(mediaPlayMock).toHaveBeenCalled();
+
+    audio.currentTime = PLAYER_TRACKS[0].durationMs / 1000;
+    fireEvent.ended(audio);
+    expect(screen.getByRole("button", { name: "播放" })).toBeTruthy();
   });
 
   it("opens and closes the Bilibili mini-window from the music player", async () => {
     render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
 
     expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "合奏前调音" }));
+    fireEvent.click(screen.getByRole("button", { name: PLAYER_TRACKS[1].title }));
     const sourceBadge = document.querySelector<HTMLElement>(".source-badge");
 
-    expect(sourceBadge?.textContent).toBe("B站");
     expect(sourceBadge?.getAttribute("data-source")).toBe("bilibili");
     expect(getPlayerControls().getAttribute("data-has-video")).toBe("true");
     expect(screen.getByRole("button", { name: "打开视频小窗" })).toBeTruthy();
+    expect(document.querySelector("audio.platform-audio-host")).toBeNull();
+    expect(document.querySelector(".progress")?.textContent).not.toContain("00:42");
+    expect(document.querySelector(".progress")?.textContent).not.toContain("02:18");
     fireEvent.click(screen.getByRole("button", { name: "打开视频小窗" }));
 
     expect(screen.getByRole("dialog", { name: "B站视频小窗" })).toBeTruthy();
-    expect(screen.getByTitle("合奏前调音 视频播放")).toBeTruthy();
+    expect(screen.getByTitle(new RegExp(PLAYER_TRACKS[1].title))).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "关闭视频小窗" }));
     expect(screen.queryByRole("dialog", { name: "B站视频小窗" })).toBeNull();
@@ -156,6 +203,53 @@ describe("RoomShell", () => {
     expect(apiMocks.postChat).toHaveBeenCalledWith(
       expect.objectContaining({
         listeningContext: buildListeningContext(bilibiliTrack, true)
+      })
+    );
+  });
+
+  it("uses room agent intent to open the Bilibili mini-window from chat", async () => {
+    const bilibiliTrack = PLAYER_TRACKS.find((track) => track.id === "bilibili-blue-bird-rehearsal");
+    if (!bilibiliTrack) {
+      throw new Error("Bilibili player track not found");
+    }
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), {
+      target: { value: "打开 B站 视频小窗" }
+    });
+    fireEvent.click(getComposerSubmit());
+
+    expect(await screen.findByRole("dialog", { name: "B站视频小窗" })).toBeTruthy();
+    expect(document.querySelector<HTMLElement>(".source-badge")?.getAttribute("data-source")).toBe("bilibili");
+    await waitFor(() => expect(apiMocks.postChat).toHaveBeenCalledTimes(1));
+    expect(apiMocks.postChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        listeningContext: buildListeningContext(bilibiliTrack, true)
+      })
+    );
+  });
+
+  it("uses room agent intent to play the Netease platform track from chat", async () => {
+    const neteaseTrack = PLAYER_TRACKS.find((track) => track.id === "netease-red-horse-instrumental");
+    if (!neteaseTrack) {
+      throw new Error("Netease player track not found");
+    }
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: PLAYER_TRACKS[1].title }));
+    fireEvent.change(getComposerInput(), {
+      target: { value: "播放 红马 (伴奏)" }
+    });
+    fireEvent.click(getComposerSubmit());
+
+    expect(document.querySelector<HTMLElement>(".source-badge")?.getAttribute("data-source")).toBe("netease");
+    expect(getPlatformAudio().getAttribute("src")).toBe(neteaseTrack.platformAudioUrl);
+    await waitFor(() => expect(apiMocks.postChat).toHaveBeenCalledTimes(1));
+    expect(apiMocks.postChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        listeningContext: buildListeningContext(neteaseTrack, true)
       })
     );
   });
@@ -580,7 +674,7 @@ describe("RoomShell", () => {
 
     render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
 
-    expect(await screen.findByText("Saved two")).toBeTruthy();
+    expect(await within(getTimeline()).findByText("Saved two")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Session Two" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "展开会话列表" })).toBeNull();
     expect(apiMocks.getSessionMessages).toHaveBeenCalledWith("session-2");
@@ -918,6 +1012,15 @@ function getPlayerControls(): HTMLElement {
   }
 
   return controls;
+}
+
+function getPlatformAudio(): HTMLAudioElement {
+  const audio = document.querySelector<HTMLAudioElement>("audio.platform-audio-host");
+  if (!audio) {
+    throw new Error("Platform audio host not found");
+  }
+
+  return audio;
 }
 
 function queryDeleteButtonFor(title: string): HTMLButtonElement | null {

@@ -9,10 +9,10 @@ import {
 
 describe("room agent runtime", () => {
   it("routes play intent to a typed player action", () => {
-    expect(routeRoomAgentIntent("播放 合奏前调音", PLAYER_TRACKS)).toEqual({
-      id: "agent-action-play-bilibili-blue-bird-rehearsal",
+    expect(routeRoomAgentIntent("播放 红马 (伴奏)", PLAYER_TRACKS)).toEqual({
+      id: "agent-action-play-netease-red-horse-instrumental",
       toolName: "play_item",
-      input: { itemId: "bilibili-blue-bird-rehearsal" }
+      input: { itemId: "netease-red-horse-instrumental" }
     });
   });
 
@@ -70,7 +70,7 @@ describe("room agent runtime", () => {
       toolName: "save_music_note",
       message: "saved music note",
       state: {
-        activeItemId: "local-rain-corridor",
+        activeItemId: "netease-red-horse-instrumental",
         videoWindowOpen: false,
         notes: ["适合写主旋律"]
       }
@@ -174,7 +174,7 @@ describe("room agent runtime", () => {
       toolName: "explode",
       message: "room agent tool failed: boom",
       state: {
-        activeItemId: "local-rain-corridor",
+        activeItemId: "netease-red-horse-instrumental",
         videoWindowOpen: true,
         notes: ["before"]
       }
