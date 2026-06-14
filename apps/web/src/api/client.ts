@@ -2,7 +2,10 @@ import type {
   ChatRequest,
   ChatResponse,
   ChatSession,
+  ClientMusicItem,
   MemoryEvent,
+  MusicSearchResult,
+  RoomClientAction,
   RoomState,
   StoredChatMessage
 } from "./types";
@@ -89,6 +92,17 @@ export function postChat(payload: ChatRequest): Promise<ChatResponse> {
   }).then(mapChatResponse);
 }
 
+export function searchMusic(query: string, limit = 5): Promise<MusicSearchResult[]> {
+  const params = new URLSearchParams({
+    q: query,
+    limit: String(limit)
+  });
+
+  return request<MusicSearchResultApi[]>(`/api/room/music/search?${params.toString()}`).then(
+    (items) => items.map(mapMusicSearchResult)
+  );
+}
+
 export function getMemories(): Promise<MemoryEvent[]> {
   return request<MemoryEventApi[]>("/api/room/memory").then((items) => items.map(mapMemoryEvent));
 }
@@ -155,6 +169,8 @@ interface ChatResponseApi {
   provider_status: ChatResponse["providerStatus"];
   memory_events: MemoryEventApi[];
   session: ChatSessionApi | null;
+  client_actions?: RoomClientActionApi[];
+  agent_trace?: AgentTraceApi;
 }
 
 interface ChatSessionApi {
@@ -183,6 +199,53 @@ interface MemoryEventApi {
   text: string;
   confidence: number;
   created_at: string;
+}
+
+interface MusicSearchResultApi {
+  source: MusicSearchResult["source"];
+  id: string;
+  song_id: string;
+  title: string;
+  creator: string;
+  duration_ms: number;
+  page_url: string;
+  platform_audio_url: string;
+  tags: string[];
+  playable: boolean;
+  popularity: number | null;
+  comment_count: number | null;
+  hot_comment_liked_count: number | null;
+  score: number;
+  evidence: string[];
+}
+
+interface ClientMusicItemApi {
+  id: string;
+  source: ClientMusicItem["source"];
+  title: string;
+  creator: string;
+  duration_ms: number;
+  page_url: string | null;
+  platform_audio_url: string | null;
+  tags: string[];
+  can_open_video: boolean;
+  source_query?: string | null;
+  selected_reason?: string | null;
+  selection_evidence?: string[];
+  selection_score?: number | null;
+}
+
+interface RoomClientActionApi {
+  type: RoomClientAction["type"];
+  item: ClientMusicItemApi;
+}
+
+interface AgentTraceApi {
+  tool_calls?: Array<{
+    id: string;
+    name: string;
+    ok: boolean;
+  }>;
 }
 
 function mapRoomState(value: RoomStateApi): RoomState {
@@ -255,7 +318,11 @@ function mapChatResponse(value: ChatResponseApi): ChatResponse {
     suggestedActions: value.suggested_actions,
     providerStatus: value.provider_status,
     memoryEvents: value.memory_events.map(mapMemoryEvent),
-    session: value.session === null ? null : mapChatSession(value.session)
+    session: value.session === null ? null : mapChatSession(value.session),
+    clientActions: (value.client_actions ?? []).map(mapRoomClientAction),
+    agentTrace: {
+      toolCalls: value.agent_trace?.tool_calls ?? []
+    }
   };
 }
 
@@ -290,5 +357,50 @@ function mapMemoryEvent(value: MemoryEventApi): MemoryEvent {
     text: value.text,
     confidence: value.confidence,
     createdAt: value.created_at
+  };
+}
+
+function mapMusicSearchResult(value: MusicSearchResultApi): MusicSearchResult {
+  return {
+    source: value.source,
+    id: value.id,
+    songId: value.song_id,
+    title: value.title,
+    creator: value.creator,
+    durationMs: value.duration_ms,
+    pageUrl: value.page_url,
+    platformAudioUrl: value.platform_audio_url,
+    tags: value.tags,
+    playable: value.playable,
+    popularity: value.popularity,
+    commentCount: value.comment_count,
+    hotCommentLikedCount: value.hot_comment_liked_count,
+    score: value.score,
+    evidence: value.evidence
+  };
+}
+
+function mapRoomClientAction(value: RoomClientActionApi): RoomClientAction {
+  return {
+    type: value.type,
+    item: mapClientMusicItem(value.item)
+  };
+}
+
+function mapClientMusicItem(value: ClientMusicItemApi): ClientMusicItem {
+  return {
+    id: value.id,
+    source: value.source,
+    title: value.title,
+    creator: value.creator,
+    durationMs: value.duration_ms,
+    pageUrl: value.page_url,
+    platformAudioUrl: value.platform_audio_url,
+    tags: value.tags,
+    canOpenVideo: value.can_open_video,
+    sourceQuery: value.source_query ?? null,
+    selectedReason: value.selected_reason ?? null,
+    selectionEvidence: value.selection_evidence ?? [],
+    selectionScore: value.selection_score ?? null
   };
 }

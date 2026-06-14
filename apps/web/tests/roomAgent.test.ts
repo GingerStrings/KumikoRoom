@@ -3,40 +3,10 @@ import { PLAYER_TRACKS } from "../src/lib/musicItems";
 import {
   createRoomAgentRuntime,
   createRoomAgentToolRegistry,
-  dispatchRoomAgentAction,
-  routeRoomAgentIntent
+  dispatchRoomAgentAction
 } from "../src/lib/roomAgent";
 
 describe("room agent runtime", () => {
-  it("routes play intent to a typed player action", () => {
-    expect(routeRoomAgentIntent("播放 红马 (伴奏)", PLAYER_TRACKS)).toEqual({
-      id: "agent-action-play-netease-red-horse-instrumental",
-      toolName: "play_item",
-      input: { itemId: "netease-red-horse-instrumental" }
-    });
-  });
-
-  it("routes video intent to the Bilibili mini-window action", () => {
-    expect(routeRoomAgentIntent("打开这个 B站 视频小窗", [PLAYER_TRACKS[1]])).toEqual({
-      id: "agent-action-open-video-bilibili-blue-bird-rehearsal",
-      toolName: "open_video_window",
-      input: { itemId: "bilibili-blue-bird-rehearsal" }
-    });
-  });
-
-  it("routes note intent to a note-saving action", () => {
-    expect(routeRoomAgentIntent("记一下这首适合写副歌", [PLAYER_TRACKS[0]])).toEqual({
-      id: "agent-action-save-note",
-      toolName: "save_music_note",
-      input: { note: "记一下这首适合写副歌" }
-    });
-  });
-
-  it("returns null for blank and unrecognized chat", () => {
-    expect(routeRoomAgentIntent("   ", PLAYER_TRACKS)).toBeNull();
-    expect(routeRoomAgentIntent("今天有点累", PLAYER_TRACKS)).toBeNull();
-  });
-
   it("rejects duplicate tool registrations like the Codex tool registry", () => {
     const handler = () => ({
       ok: true,
@@ -108,12 +78,9 @@ describe("room agent runtime", () => {
 
   it("dispatches open_video_window state transitions", () => {
     const runtime = createRoomAgentRuntime();
+    const action = { id: "manual-video", toolName: "open_video_window" as const, input: { itemId: PLAYER_TRACKS[1].id } };
 
-    const result = dispatchRoomAgentAction(
-      runtime,
-      { id: "manual-video", toolName: "open_video_window", input: { itemId: PLAYER_TRACKS[1].id } },
-      PLAYER_TRACKS
-    );
+    const result = dispatchRoomAgentAction(runtime, action, PLAYER_TRACKS);
 
     expect(result).toMatchObject({
       ok: true,

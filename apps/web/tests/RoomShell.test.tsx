@@ -13,7 +13,8 @@ const apiMocks = vi.hoisted(() => ({
   getSessionMessages: vi.fn(),
   getSessions: vi.fn(),
   renameSession: vi.fn(),
-  postChat: vi.fn()
+  postChat: vi.fn(),
+  searchMusic: vi.fn()
 }));
 
 vi.mock("../src/api/client", () => ({
@@ -22,7 +23,8 @@ vi.mock("../src/api/client", () => ({
   getSessionMessages: apiMocks.getSessionMessages,
   getSessions: apiMocks.getSessions,
   renameSession: apiMocks.renameSession,
-  postChat: apiMocks.postChat
+  postChat: apiMocks.postChat,
+  searchMusic: apiMocks.searchMusic
 }));
 
 const connectionStatus = getConnectionStatus("http://127.0.0.1:8000");
@@ -70,6 +72,7 @@ describe("RoomShell", () => {
       )
     );
     apiMocks.postChat.mockResolvedValue(makeChatResponse({ session: null }));
+    apiMocks.searchMusic.mockResolvedValue([]);
   });
 
   it("renders a chat-first workspace without the character placeholder", async () => {
@@ -119,7 +122,7 @@ describe("RoomShell", () => {
 
     expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
     expect(screen.getByLabelText("氛围播放器")).toBeTruthy();
-    expect(screen.getByRole("button", { name: PLAYER_TRACKS[0].title })).toBeTruthy();
+    expect(screen.getByText(PLAYER_TRACKS[0].title)).toBeTruthy();
     expect(screen.getByText(PLAYER_TRACKS[0].creator)).toBeTruthy();
     const playerControls = getPlayerControls();
     const sourceBadge = document.querySelector<HTMLElement>(".source-badge");
@@ -167,7 +170,7 @@ describe("RoomShell", () => {
     render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
 
     expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: PLAYER_TRACKS[1].title }));
+    fireEvent.click(getQueuePreviewMain());
     const sourceBadge = document.querySelector<HTMLElement>(".source-badge");
 
     expect(sourceBadge?.getAttribute("data-source")).toBe("bilibili");
@@ -193,7 +196,7 @@ describe("RoomShell", () => {
     render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
 
     expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: bilibiliTrack.title }));
+    fireEvent.click(getQueuePreviewMain());
     fireEvent.change(getComposerInput(), {
       target: { value: "这首现在是什么感觉？" }
     });
@@ -207,51 +210,198 @@ describe("RoomShell", () => {
     );
   });
 
-  it("uses room agent intent to open the Bilibili mini-window from chat", async () => {
-    const bilibiliTrack = PLAYER_TRACKS.find((track) => track.id === "bilibili-blue-bird-rehearsal");
-    if (!bilibiliTrack) {
-      throw new Error("Bilibili player track not found");
-    }
+  it("sends named play requests through chat and applies the returned music action", async () => {
+    const command = "播放 晴天";
+    apiMocks.postChat.mockResolvedValueOnce(
+      makeChatResponse({
+        reply: { id: "reply-agent", role: "kumiko", content: "我找了一下，选了证据最稳的《晴天》。" },
+        clientActions: [
+          {
+            type: "play_music_item",
+            item: {
+              id: "netease-song-186016",
+              source: "netease",
+              title: "晴天",
+              creator: "周杰伦",
+              durationMs: 269000,
+              pageUrl: "https://music.163.com/#/song?id=186016",
+              platformAudioUrl: "https://music.163.com/song/media/outer/url?id=186016.mp3",
+              tags: ["netease", "search", "agent-selected"],
+              canOpenVideo: false
+            }
+          }
+        ],
+        agentTrace: {
+          toolCalls: [
+            { id: "call-search", name: "search_music", ok: true },
+            { id: "call-play", name: "play_music_item", ok: true }
+          ]
+        }
+      })
+    );
     render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
 
     expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
     fireEvent.change(getComposerInput(), {
-      target: { value: "打开 B站 视频小窗" }
+      target: { value: command }
+    });
+    fireEvent.click(getComposerSubmit());
+
+    await waitFor(() => expect(apiMocks.postChat).toHaveBeenCalledTimes(1));
+    expect(apiMocks.searchMusic).not.toHaveBeenCalled();
+    expect(document.querySelector<HTMLElement>(".source-badge")?.getAttribute("data-source")).toBe("netease");
+    expect(getPlatformAudio().getAttribute("src")).toBe("https://music.163.com/song/media/outer/url?id=186016.mp3");
+    expect(document.querySelector(".queue-preview")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /管理播放队列/ })).toBeTruthy();
+    expect(within(getTimeline()).getByText(command)).toBeTruthy();
+    expect(await within(getTimeline()).findByText("我找了一下，选了证据最稳的《晴天》。")).toBeTruthy();
+    expect(within(getTimeline()).queryByText("已切到《晴天》。")).toBeNull();
+  });
+
+  it("records agent-selected tracks in the queue panel", async () => {
+    apiMocks.postChat.mockResolvedValueOnce(
+      makeChatResponse({
+        reply: { id: "reply-agent", role: "kumiko", content: "我选了这版。" },
+        clientActions: [
+          {
+            type: "play_music_item",
+            item: {
+              id: "netease-song-2",
+              source: "netease",
+              title: "Sunny",
+              creator: "Composer",
+              durationMs: 200000,
+              pageUrl: "https://music.163.com/#/song?id=2",
+              platformAudioUrl: "https://music.163.com/song/media/outer/url?id=2.mp3",
+              tags: ["netease", "search", "agent-selected"],
+              canOpenVideo: false,
+              sourceQuery: "play Sunny",
+              selectedReason: "ranked score 120",
+              selectionEvidence: ["title exact match", "comment_count=10"],
+              selectionScore: 120
+            }
+          }
+        ]
+      })
+    );
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), { target: { value: "play Sunny" } });
+    fireEvent.click(getComposerSubmit());
+
+    await waitFor(() => expect(apiMocks.postChat).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: /管理播放队列/ }));
+
+    const panel = screen.getByRole("dialog", { name: /音乐记录/ });
+    expect(within(panel).getByText("Sunny")).toBeTruthy();
+    expect(within(panel).getByText("来自: play Sunny")).toBeTruthy();
+    expect(within(panel).getByText("ranked score 120")).toBeTruthy();
+  });
+
+  it("saves the current track from the queue panel", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /管理播放队列/ }));
+    const panel = screen.getByRole("dialog", { name: /音乐记录/ });
+    fireEvent.click(within(panel).getByRole("button", { name: `收藏 ${PLAYER_TRACKS[0].title}` }));
+    fireEvent.click(within(panel).getByRole("tab", { name: "收藏" }));
+
+    expect(within(panel).getByText(PLAYER_TRACKS[0].title)).toBeTruthy();
+  });
+
+  it("opens the video mini-window from a backend client action after chat", async () => {
+    const command = "打开这个 B站 视频小窗";
+    apiMocks.postChat.mockResolvedValueOnce(
+      makeChatResponse({
+        reply: { id: "reply-video", role: "kumiko", content: "我把视频小窗打开了。" },
+        clientActions: [
+          {
+            type: "open_video_window",
+            item: {
+              id: "bilibili-video-BV1xx411c7mD",
+              source: "bilibili",
+              title: "B站视频 BV1xx411c7mD",
+              creator: "Bilibili",
+              durationMs: 0,
+              pageUrl: "https://www.bilibili.com/video/BV1xx411c7mD",
+              platformAudioUrl: null,
+              tags: ["bilibili", "agent-selected"],
+              canOpenVideo: true
+            }
+          }
+        ]
+      })
+    );
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), {
+      target: { value: command }
     });
     fireEvent.click(getComposerSubmit());
 
     expect(await screen.findByRole("dialog", { name: "B站视频小窗" })).toBeTruthy();
     expect(document.querySelector<HTMLElement>(".source-badge")?.getAttribute("data-source")).toBe("bilibili");
-    await waitFor(() => expect(apiMocks.postChat).toHaveBeenCalledTimes(1));
-    expect(apiMocks.postChat).toHaveBeenCalledWith(
-      expect.objectContaining({
-        listeningContext: buildListeningContext(bilibiliTrack, true)
-      })
-    );
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe("B站视频 BV1xx411c7mD");
+    expect(within(getTimeline()).getByText(command)).toBeTruthy();
+    expect(await within(getTimeline()).findByText("我把视频小窗打开了。")).toBeTruthy();
+    expect(apiMocks.postChat).toHaveBeenCalledTimes(1);
   });
 
-  it("uses room agent intent to play the Netease platform track from chat", async () => {
-    const neteaseTrack = PLAYER_TRACKS.find((track) => track.id === "netease-red-horse-instrumental");
-    if (!neteaseTrack) {
-      throw new Error("Netease player track not found");
-    }
+  it("sends confirmation text through chat and applies the returned play action", async () => {
+    apiMocks.postChat
+      .mockResolvedValueOnce(
+        makeChatResponse({
+          reply: { id: "reply-recommend", role: "kumiko", content: "那我会选《红马 (伴奏)》。" },
+          session: null
+        })
+      )
+      .mockResolvedValueOnce(
+        makeChatResponse({
+          reply: { id: "reply-confirm", role: "kumiko", content: "好，我现在放这首。" },
+          clientActions: [
+            {
+              type: "play_music_item",
+              item: {
+                id: "netease-red-horse-instrumental",
+                source: "netease",
+                title: "红马 (伴奏)",
+                creator: "闫杰晨",
+                durationMs: 215866,
+                pageUrl: "https://music.163.com/#/song?id=1822942870",
+                platformAudioUrl: "https://music.163.com/song/media/outer/url?id=1822942870.mp3",
+                tags: ["netease", "instrumental", "agent-selected"],
+                canOpenVideo: false
+              }
+            }
+          ],
+          session: null
+        })
+      );
     render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
 
     expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: PLAYER_TRACKS[1].title }));
+    fireEvent.click(getQueuePreviewMain());
     fireEvent.change(getComposerInput(), {
-      target: { value: "播放 红马 (伴奏)" }
+      target: { value: "你今天想听什么" }
     });
     fireEvent.click(getComposerSubmit());
 
+    expect(await within(getTimeline()).findByText("那我会选《红马 (伴奏)》。")).toBeTruthy();
+
+    fireEvent.change(getComposerInput(), {
+      target: { value: "可以" }
+    });
+    fireEvent.click(getComposerSubmit());
+
+    expect(await within(getTimeline()).findByText("好，我现在放这首。")).toBeTruthy();
     expect(document.querySelector<HTMLElement>(".source-badge")?.getAttribute("data-source")).toBe("netease");
-    expect(getPlatformAudio().getAttribute("src")).toBe(neteaseTrack.platformAudioUrl);
-    await waitFor(() => expect(apiMocks.postChat).toHaveBeenCalledTimes(1));
-    expect(apiMocks.postChat).toHaveBeenCalledWith(
-      expect.objectContaining({
-        listeningContext: buildListeningContext(neteaseTrack, true)
-      })
-    );
+    expect(getPlatformAudio().getAttribute("src")).toBe("https://music.163.com/song/media/outer/url?id=1822942870.mp3");
+    expect(within(getTimeline()).getByText("可以")).toBeTruthy();
+    expect(within(getTimeline()).queryByText("已切到《红马 (伴奏)》。")).toBeNull();
+    expect(apiMocks.postChat).toHaveBeenCalledTimes(2);
   });
 
   it("exposes compact session controls from the chat header", async () => {
@@ -654,6 +804,7 @@ describe("RoomShell", () => {
     const shortMessage = within(timeline).getByText("你好").closest("article");
     expect(shortMessage?.classList.contains("message--short")).toBe(true);
     expect(shortMessage?.classList.contains("me")).toBe(true);
+    expect(shortMessage?.querySelector(".avatar.small.user-avatar")).toBeTruthy();
   });
 
   it("restores the last session while keeping the v6 sidebar expanded", async () => {
@@ -754,9 +905,18 @@ describe("RoomShell", () => {
     expect(screen.queryByLabelText("最近记住的内容")).toBeNull();
     expect(screen.queryByText("用户喜欢安静的钢琴。")).toBeNull();
     expect(screen.queryByText("思考")).toBeNull();
+    const currentRoomState = {
+      ...DEFAULT_ROOM_STATE,
+      music: {
+        currentTrackTitle: PLAYER_TRACKS[0].title,
+        currentArtist: PLAYER_TRACKS[0].creator,
+        listeningMood: "playing"
+      }
+    };
+
     expect(apiMocks.postChat).toHaveBeenNthCalledWith(1, {
       message: "晚上好",
-      roomState: DEFAULT_ROOM_STATE,
+      roomState: currentRoomState,
       listeningContext: buildListeningContext(PLAYER_TRACKS[0], true),
       recentMessages: [],
       personaStrength: "strong",
@@ -772,7 +932,7 @@ describe("RoomShell", () => {
     expect(await screen.findByText("我们继续慢慢听。")).toBeTruthy();
     expect(apiMocks.postChat).toHaveBeenNthCalledWith(2, {
       message: "想继续聊这首",
-      roomState: DEFAULT_ROOM_STATE,
+      roomState: currentRoomState,
       listeningContext: buildListeningContext(PLAYER_TRACKS[0], true),
       recentMessages: [
         {
@@ -947,6 +1107,8 @@ function makeChatResponse(overrides: Partial<Awaited<ReturnType<typeof apiMocks.
     },
     memoryEvents: [],
     session: null,
+    clientActions: [],
+    agentTrace: { toolCalls: [] },
     ...overrides
   };
 }
@@ -1012,6 +1174,15 @@ function getPlayerControls(): HTMLElement {
   }
 
   return controls;
+}
+
+function getQueuePreviewMain(): HTMLButtonElement {
+  const button = document.querySelector<HTMLButtonElement>(".queue-preview-main");
+  if (!button) {
+    throw new Error("Queue preview button not found");
+  }
+
+  return button;
 }
 
 function getPlatformAudio(): HTMLAudioElement {

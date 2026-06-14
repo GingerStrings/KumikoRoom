@@ -7,16 +7,20 @@ const homeHeroAssetPath = path.resolve(__dirname, "../public/assets/home-rehears
 const chatAvatarAssetPath = path.resolve(__dirname, "../public/assets/kumiko-avatar-v1.png");
 
 function expectRuleToContain(css: string, selector: string, declarations: string[]) {
+  const body = ruleBody(css, selector);
+
+  for (const declaration of declarations) {
+    expect(body).toContain(declaration);
+  }
+}
+
+function ruleBody(css: string, selector: string): string {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = css.match(new RegExp(`${escapedSelector}\\s*\\{(?<body>[^}]*)\\}`));
 
   expect(match, `Expected ${selector} rule to exist`).not.toBeNull();
 
-  const body = match?.groups?.body ?? "";
-
-  for (const declaration of declarations) {
-    expect(body).toContain(declaration);
-  }
+  return match?.groups?.body ?? "";
 }
 
 describe("Liz Bluebird room visual tokens", () => {
@@ -125,13 +129,39 @@ describe("Liz Bluebird room visual tokens", () => {
     const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
 
     expectRuleToContain(css, ".player-controls", [
-      "grid-template-columns: 34px 42px 34px minmax(0, 1fr) 34px;",
+      "grid-template-columns: clamp(28px, 10vw, 34px) clamp(38px, 12vw, 42px) clamp(28px, 10vw, 34px) minmax(44px, 1fr) clamp(28px, 10vw, 34px);",
     ]);
     expectRuleToContain(css, ".player-controls[data-has-video=\"true\"]", [
-      "grid-template-columns: 34px 42px 34px minmax(0, 1fr) 34px 34px;",
+      "grid-template-columns: clamp(28px, 9vw, 34px) clamp(38px, 12vw, 42px) clamp(28px, 9vw, 34px) minmax(36px, 1fr) clamp(28px, 9vw, 34px) clamp(28px, 9vw, 34px);",
     ]);
     expect(css).toContain("@media (max-height: 520px)");
     expect(css).toContain("max-height: calc(100vh - 24px);");
+  });
+
+  it("keeps the right rail media player from overflowing narrow player widths", () => {
+    const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
+
+    expectRuleToContain(css, ".media-player", [
+      "min-width: 0;",
+      "overflow: hidden;",
+    ]);
+    expectRuleToContain(css, ".player-controls", [
+      "grid-template-columns: clamp(28px, 10vw, 34px) clamp(38px, 12vw, 42px) clamp(28px, 10vw, 34px) minmax(44px, 1fr) clamp(28px, 10vw, 34px);",
+    ]);
+    expectRuleToContain(css, ".queue-preview", [
+      "display: grid;",
+      "grid-template-columns: minmax(0, 1fr) auto;",
+      "overflow: hidden;",
+    ]);
+    expectRuleToContain(css, ".queue-preview-main", [
+      "min-width: 0;",
+      "overflow: hidden;",
+    ]);
+    expectRuleToContain(css, ".music-queue-panel", [
+      "position: fixed;",
+      "max-width: calc(100vw - 32px);",
+    ]);
+    expect(css).not.toContain(".playlist {");
   });
 
   it("uses the soft Kumiko chat avatar asset in message chrome", () => {
@@ -139,6 +169,14 @@ describe("Liz Bluebird room visual tokens", () => {
 
     expect(fs.existsSync(chatAvatarAssetPath)).toBe(true);
     expectRuleToContain(css, ".avatar", ['url("/assets/kumiko-avatar-v1.png")']);
+  });
+
+  it("keeps the user chat avatar visually distinct from Kumiko", () => {
+    const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
+    const body = ruleBody(css, ".avatar.user-avatar");
+
+    expect(body).toContain("background:");
+    expect(body).not.toContain("kumiko-avatar-v1.png");
   });
 
   it("keeps non-chat pages aligned with the v6 window language", () => {

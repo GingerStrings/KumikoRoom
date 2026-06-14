@@ -7,6 +7,7 @@ import pytest
 from kumikoroom.config import ApiSettings
 from kumikoroom.llm import (
     DeepSeekLLMProvider,
+    LLMToolCall,
     MockLLMProvider,
     ProviderUnavailable,
     build_provider,
@@ -105,6 +106,82 @@ def test_deepseek_provider_posts_openai_compatible_payload(tmp_path) -> None:
     assert result.provider_status.provider == "deepseek"
     assert result.provider_status.model == "deepseek-v4-flash"
     assert result.provider_status.configured is True
+
+
+def test_deepseek_provider_posts_tools_and_parses_tool_calls(tmp_path) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload["tools"] == [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_music",
+                    "description": "Search playable music candidates.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                },
+            }
+        ]
+        assert payload["tool_choice"] == "auto"
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call-search",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "search_music",
+                                        "arguments": '{"query":"晴天"}',
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            },
+        )
+
+    provider = _deepseek_provider(
+        tmp_path=tmp_path,
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = provider.generate(
+        [{"role": "user", "content": "播放 晴天"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_music",
+                    "description": "Search playable music candidates.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                },
+            }
+        ],
+        tool_choice="auto",
+    )
+
+    assert len(requests) == 1
+    assert result.content == ""
+    assert result.tool_calls == [
+        LLMToolCall(id="call-search", name="search_music", arguments={"query": "晴天"})
+    ]
 
 
 def test_deepseek_provider_requires_key(tmp_path) -> None:

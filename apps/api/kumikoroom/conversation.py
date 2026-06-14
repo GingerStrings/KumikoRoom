@@ -1,10 +1,20 @@
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
+import json
 from typing import Any
 
+from kumikoroom.agent_tools import (
+    RoomAgentToolContext,
+    dispatch_room_agent_tool,
+    room_agent_tool_specs,
+)
 from kumikoroom.config import ApiSettings, load_settings
 from kumikoroom.llm import (
+    LLMMessage,
     LLMProvider,
+    LLMResult,
+    LLMToolCall,
     ProviderUnavailable,
+    ProviderStatus,
     build_provider,
     unconfigured_deepseek_status,
 )
@@ -15,10 +25,23 @@ from kumikoroom.schemas import (
     ChatMessageOut,
     ChatOut,
     ChatSessionOut,
+    AgentTraceOut,
     MemoryEventOut,
     ProviderStatusOut,
+    RoomClientActionOut,
 )
 from kumikoroom.sessions import ChatSession, SessionStore
+
+
+MAX_AGENT_TOOL_STEPS = 5
+
+
+@dataclass(frozen=True)
+class AgentTurnResult:
+    content: str
+    provider_status: ProviderStatus
+    client_actions: list[RoomClientActionOut]
+    agent_trace: AgentTraceOut
 
 
 class ConversationManager:
@@ -45,7 +68,7 @@ class ConversationManager:
         messages = self._build_messages(payload, saved_user_message.content)
 
         try:
-            result = self.provider.generate(messages)
+            result = self._run_agent_turn(messages)
         except ProviderUnavailable:
             return self._provider_unavailable_response(session)
 
@@ -85,6 +108,8 @@ class ConversationManager:
             provider_status=ProviderStatusOut(**asdict(result.provider_status)),
             memory_events=memory_events,
             session=_session_out(session),
+            client_actions=result.client_actions,
+            agent_trace=result.agent_trace,
         )
 
     def _resolve_session(self, session_id: str | None) -> ChatSession:
@@ -92,7 +117,7 @@ class ConversationManager:
             return self.session_store.get_session(session_id)
         return self.session_store.ensure_default_session()
 
-    def _build_messages(self, payload: ChatIn, message: str) -> list[dict[str, str]]:
+    def _build_messages(self, payload: ChatIn, message: str) -> list[LLMMessage]:
         system_parts = [build_persona_prompt(payload.persona_strength).strip()]
 
         memories = self.memory_store.list_recent(limit=8)
@@ -110,12 +135,68 @@ class ConversationManager:
         if listening_context:
             system_parts.append(listening_context)
 
-        messages: list[dict[str, str]] = [
+        messages: list[LLMMessage] = [
             {"role": "system", "content": "\n\n".join(system_parts)}
         ]
         messages.extend(_recent_messages(payload))
         messages.append({"role": "user", "content": message})
         return messages
+
+    def _run_agent_turn(self, messages: list[LLMMessage]) -> AgentTurnResult:
+        tool_context = RoomAgentToolContext()
+        trace: list[dict[str, str | bool]] = []
+        working_messages = list(messages)
+        tools = room_agent_tool_specs()
+        last_result: LLMResult | None = None
+
+        for _ in range(MAX_AGENT_TOOL_STEPS):
+            result = self.provider.generate(
+                working_messages,
+                tools=tools,
+                tool_choice="auto",
+            )
+            last_result = result
+            if not result.tool_calls:
+                return AgentTurnResult(
+                    content=result.content,
+                    provider_status=result.provider_status,
+                    client_actions=list(tool_context.client_actions),
+                    agent_trace=AgentTraceOut(tool_calls=trace),
+                )
+
+            working_messages.append(_assistant_tool_call_message(result))
+            for tool_call in result.tool_calls:
+                tool_result = dispatch_room_agent_tool(tool_call, tool_context)
+                trace.append(
+                    {
+                        "id": tool_call.id,
+                        "name": tool_call.name,
+                        "ok": tool_result.ok,
+                    }
+                )
+                working_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "name": tool_call.name,
+                        "content": tool_result.content,
+                    }
+                )
+
+        provider_status = (
+            last_result.provider_status
+            if last_result is not None
+            else _provider_status_from_settings(self.settings)
+        )
+        return AgentTurnResult(
+            content=(
+                "我已经尝试用工具找歌了，但这轮工具调用还没有收束。"
+                "先停在这里，避免替你乱播放。"
+            ),
+            provider_status=provider_status,
+            client_actions=list(tool_context.client_actions),
+            agent_trace=AgentTraceOut(tool_calls=trace),
+        )
 
     def _provider_unavailable_response(self, session: ChatSession) -> ChatOut:
         provider_status = _fallback_provider_status(self.settings)
@@ -140,6 +221,8 @@ class ConversationManager:
             provider_status=provider_status,
             memory_events=[],
             session=_session_out(session),
+            client_actions=[],
+            agent_trace=AgentTraceOut(),
         )
 
 
@@ -170,6 +253,46 @@ def _fallback_provider_status(settings: ApiSettings) -> ProviderStatusOut:
     )
 
 
+def _provider_status_from_settings(settings: ApiSettings) -> ProviderStatus:
+    if settings.llm_provider == "deepseek":
+        if not settings.is_deepseek_configured:
+            return unconfigured_deepseek_status(settings)
+        return ProviderStatus(
+            provider="deepseek",
+            model=settings.deepseek_model,
+            configured=True,
+            label=f"DeepSeek {settings.deepseek_model}",
+        )
+    return ProviderStatus(
+        provider="mock",
+        model=None,
+        configured=False,
+        label="Local Mock API unavailable",
+    )
+
+
+def _assistant_tool_call_message(result: LLMResult) -> LLMMessage:
+    return {
+        "role": "assistant",
+        "content": result.content or "",
+        "tool_calls": [
+            {
+                "id": tool_call.id,
+                "type": "function",
+                "function": {
+                    "name": tool_call.name,
+                    "arguments": json.dumps(
+                        tool_call.arguments,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                },
+            }
+            for tool_call in result.tool_calls
+        ],
+    }
+
+
 def _memory_event_out(memory: Any) -> MemoryEventOut:
     data = asdict(memory)
     data.pop("source", None)
@@ -180,8 +303,8 @@ def _session_out(session: ChatSession) -> ChatSessionOut:
     return ChatSessionOut(**asdict(session))
 
 
-def _recent_messages(payload: ChatIn) -> list[dict[str, str]]:
-    messages: list[dict[str, str]] = []
+def _recent_messages(payload: ChatIn) -> list[LLMMessage]:
+    messages: list[LLMMessage] = []
     for recent in payload.recent_messages[-8:]:
         content = recent.content.strip()
         if not content:

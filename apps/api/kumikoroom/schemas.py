@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 PersonaStrength = Literal["medium", "strong"]
 MemoryCategory = Literal["preference", "diary", "creative_note", "profile_fact"]
-MusicSourceKind = Literal["local", "bilibili", "netease"]
+MusicSourceKind = Literal["bilibili", "netease"]
 
 
 class CharacterStateOut(BaseModel):
@@ -50,6 +50,49 @@ class ListeningContextIn(BaseModel):
     is_playing: bool
     page_url: str | None = None
     tags: list[str] = Field(default_factory=list)
+
+
+class MusicSearchResultOut(BaseModel):
+    source: Literal["netease"]
+    id: str
+    song_id: str
+    title: str
+    creator: str
+    duration_ms: int
+    page_url: str
+    platform_audio_url: str
+    tags: list[str] = Field(default_factory=list)
+    playable: bool
+    popularity: float | None = None
+    comment_count: int | None = None
+    hot_comment_liked_count: int | None = None
+    score: float
+    evidence: list[str] = Field(default_factory=list)
+
+
+class ClientMusicItemOut(BaseModel):
+    id: str
+    source: MusicSourceKind
+    title: str
+    creator: str
+    duration_ms: int
+    page_url: str | None = None
+    platform_audio_url: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    can_open_video: bool = False
+    source_query: str | None = None
+    selected_reason: str | None = None
+    selection_evidence: list[str] = Field(default_factory=list)
+    selection_score: float | None = None
+
+
+class RoomClientActionOut(BaseModel):
+    type: Literal["play_music_item", "open_video_window"]
+    item: ClientMusicItemOut
+
+
+class AgentTraceOut(BaseModel):
+    tool_calls: list[dict[str, str | bool]] = Field(default_factory=list)
 
 
 class ChatIn(BaseModel):
@@ -108,3 +151,5 @@ class ChatOut(BaseModel):
     provider_status: ProviderStatusOut
     memory_events: list[MemoryEventOut] = Field(default_factory=list)
     session: ChatSessionOut | None = None
+    client_actions: list[RoomClientActionOut] = Field(default_factory=list)
+    agent_trace: AgentTraceOut = Field(default_factory=AgentTraceOut)

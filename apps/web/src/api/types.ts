@@ -81,6 +81,58 @@ export interface ChatRequest {
   listeningContext?: ListeningContext;
 }
 
+export interface MusicSearchResult {
+  source: "netease";
+  id: string;
+  songId: string;
+  title: string;
+  creator: string;
+  durationMs: number;
+  pageUrl: string;
+  platformAudioUrl: string;
+  tags: string[];
+  playable: boolean;
+  popularity: number | null;
+  commentCount: number | null;
+  hotCommentLikedCount: number | null;
+  score: number;
+  evidence: string[];
+}
+
+export interface ClientMusicItem {
+  id: string;
+  source: "bilibili" | "netease";
+  title: string;
+  creator: string;
+  durationMs: number;
+  pageUrl: string | null;
+  platformAudioUrl: string | null;
+  tags: string[];
+  canOpenVideo: boolean;
+  sourceQuery?: string | null;
+  selectedReason?: string | null;
+  selectionEvidence?: string[];
+  selectionScore?: number | null;
+}
+
+export type RoomClientAction =
+  | {
+      type: "play_music_item";
+      item: ClientMusicItem;
+    }
+  | {
+      type: "open_video_window";
+      item: ClientMusicItem;
+    };
+
+export interface AgentTrace {
+  toolCalls: Array<{
+    id: string;
+    name: string;
+    ok: boolean;
+  }>;
+}
+
 export interface ChatResponse {
   reply: ChatMessage;
   expression: CharacterState["expression"];
@@ -88,4 +140,6 @@ export interface ChatResponse {
   providerStatus: ProviderStatus;
   memoryEvents: MemoryEvent[];
   session: ChatSession | null;
+  clientActions: RoomClientAction[];
+  agentTrace: AgentTrace;
 }

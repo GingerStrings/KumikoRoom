@@ -1,4 +1,6 @@
-export type MusicSourceKind = "local" | "bilibili" | "netease";
+import type { ClientMusicItem } from "../api/types";
+
+export type MusicSourceKind = "bilibili" | "netease";
 
 export interface MusicItem {
   id: string;
@@ -35,6 +37,24 @@ export interface ParsedNeteaseSong {
   pageUrl: string;
   embedUrl: string;
   platformAudioUrl: string;
+}
+
+export interface MusicSearchResultItem {
+  source: "netease";
+  id: string;
+  songId: string;
+  title: string;
+  creator: string;
+  durationMs: number;
+  pageUrl: string;
+  platformAudioUrl: string;
+  tags: string[];
+  playable: boolean;
+  popularity: number | null;
+  commentCount: number | null;
+  hotCommentLikedCount: number | null;
+  score: number;
+  evidence: string[];
 }
 
 interface BilibiliMusicItemInput {
@@ -195,6 +215,41 @@ export function makeNeteaseMusicItem(input: NeteaseMusicItemInput): MusicItem {
     tags: input.tags ?? ["netease"],
     notes: input.notes,
     canOpenVideo: false
+  };
+}
+
+export function makeMusicItemFromSearchResult(result: MusicSearchResultItem): MusicItem {
+  const parsedSong = parseNeteaseSongUrl(result.pageUrl);
+
+  return {
+    id: result.id,
+    source: result.source,
+    title: result.title,
+    creator: result.creator,
+    durationMs: result.durationMs,
+    pageUrl: result.pageUrl,
+    embedUrl: parsedSong?.embedUrl,
+    platformAudioUrl: result.platformAudioUrl,
+    tags: result.tags,
+    canOpenVideo: false
+  };
+}
+
+export function makeMusicItemFromClientActionItem(item: ClientMusicItem): MusicItem {
+  const neteaseSong = item.pageUrl ? parseNeteaseSongUrl(item.pageUrl) : null;
+  const bilibiliVideo = item.pageUrl ? parseBilibiliVideoUrl(item.pageUrl) : null;
+
+  return {
+    id: item.id,
+    source: item.source,
+    title: item.title,
+    creator: item.creator,
+    durationMs: item.durationMs,
+    pageUrl: item.pageUrl ?? undefined,
+    embedUrl: neteaseSong?.embedUrl ?? bilibiliVideo?.embedUrl,
+    platformAudioUrl: item.platformAudioUrl ?? undefined,
+    tags: item.tags,
+    canOpenVideo: item.canOpenVideo
   };
 }
 

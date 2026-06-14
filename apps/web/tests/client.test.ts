@@ -246,7 +246,9 @@ describe("room API client", () => {
           createdAt: "2026-06-06T23:00:00Z"
         }
       ],
-      session: null
+      session: null,
+      clientActions: [],
+      agentTrace: { toolCalls: [] }
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
@@ -328,6 +330,80 @@ describe("room API client", () => {
     });
   });
 
+  it("maps chat client actions and agent trace fields", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({
+          reply: { id: "4", role: "kumiko", content: "我找了一下，选了《晴天》。" },
+          expression: "listening",
+          suggested_actions: [],
+          provider_status: {
+            provider: "deepseek",
+            model: "deepseek-v4-flash",
+            configured: true,
+            label: "DeepSeek"
+          },
+          memory_events: [],
+          session: null,
+          client_actions: [
+            {
+              type: "play_music_item",
+              item: {
+                id: "netease-song-2",
+                source: "netease",
+                title: "晴天 (原唱 周杰伦)",
+                creator: "RyaVocal",
+                duration_ms: 270738,
+                page_url: "https://music.163.com/#/song?id=2",
+                platform_audio_url: "https://music.163.com/song/media/outer/url?id=2.mp3",
+                tags: ["netease", "agent-selected"],
+                can_open_video: false,
+                source_query: "play Sunny",
+                selected_reason: "ranked score 120",
+                selection_evidence: ["title exact match", "comment_count=10"],
+                selection_score: 120
+              }
+            }
+          ],
+          agent_trace: {
+            tool_calls: [{ id: "call-play", name: "play_music_item", ok: true }]
+          }
+        })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      roomApi.postChat({ message: "播放 晴天", roomState: DEFAULT_ROOM_STATE })
+    ).resolves.toMatchObject({
+      clientActions: [
+        {
+          type: "play_music_item",
+          item: {
+            id: "netease-song-2",
+            source: "netease",
+            title: "晴天 (原唱 周杰伦)",
+            creator: "RyaVocal",
+            durationMs: 270738,
+            pageUrl: "https://music.163.com/#/song?id=2",
+            platformAudioUrl: "https://music.163.com/song/media/outer/url?id=2.mp3",
+            tags: ["netease", "agent-selected"],
+            canOpenVideo: false,
+            sourceQuery: "play Sunny",
+            selectedReason: "ranked score 120",
+            selectionEvidence: ["title exact match", "comment_count=10"],
+            selectionScore: 120
+          }
+        }
+      ],
+      agentTrace: {
+        toolCalls: [{ id: "call-play", name: "play_music_item", ok: true }]
+      }
+    });
+  });
+
   it("posts chat messages with optional listening context", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,
@@ -373,6 +449,59 @@ describe("room API client", () => {
         tags: ["bilibili", "rehearsal"]
       }
     });
+  });
+
+  it("searches music by query and maps platform fields", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify([
+          {
+            source: "netease",
+            id: "netease-song-186016",
+            song_id: "186016",
+            title: "晴天",
+            creator: "周杰伦",
+            duration_ms: 269000,
+            page_url: "https://music.163.com/#/song?id=186016",
+            platform_audio_url: "https://music.163.com/song/media/outer/url?id=186016.mp3",
+            tags: ["netease", "search"],
+            playable: true,
+            popularity: 100,
+            comment_count: 1970484,
+            hot_comment_liked_count: 823181,
+            score: 180.5,
+            evidence: ["title exact match", "comment_count=1970484"]
+          }
+        ])
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(roomApi.searchMusic("晴天", 1)).resolves.toEqual([
+      {
+        source: "netease",
+        id: "netease-song-186016",
+        songId: "186016",
+        title: "晴天",
+        creator: "周杰伦",
+        durationMs: 269000,
+        pageUrl: "https://music.163.com/#/song?id=186016",
+        platformAudioUrl: "https://music.163.com/song/media/outer/url?id=186016.mp3",
+        tags: ["netease", "search"],
+        playable: true,
+        popularity: 100,
+        commentCount: 1970484,
+        hotCommentLikedCount: 823181,
+        score: 180.5,
+        evidence: ["title exact match", "comment_count=1970484"]
+      }
+    ]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/room/music/search?q=%E6%99%B4%E5%A4%A9&limit=1",
+      expect.any(Object)
+    );
   });
 
   it("loads memories and maps created timestamps", async () => {

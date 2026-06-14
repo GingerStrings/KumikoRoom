@@ -92,6 +92,33 @@ describe("music item platform helpers", () => {
     expect(musicItems.parseNeteaseSongUrl("1822942870")).toEqual(expected);
   });
 
+  it("creates a player item from a backend client action item", () => {
+    expect(
+      musicItems.makeMusicItemFromClientActionItem({
+        id: "netease-song-2",
+        source: "netease",
+        title: "晴天 (原唱 周杰伦)",
+        creator: "RyaVocal",
+        durationMs: 270738,
+        pageUrl: "https://music.163.com/#/song?id=2",
+        platformAudioUrl: "https://music.163.com/song/media/outer/url?id=2.mp3",
+        tags: ["netease", "agent-selected"],
+        canOpenVideo: false
+      })
+    ).toMatchObject({
+      id: "netease-song-2",
+      source: "netease",
+      title: "晴天 (原唱 周杰伦)",
+      creator: "RyaVocal",
+      durationMs: 270738,
+      pageUrl: "https://music.163.com/#/song?id=2",
+      embedUrl: "https://music.163.com/outchain/player?type=2&id=2&auto=0&height=66",
+      platformAudioUrl: "https://music.163.com/song/media/outer/url?id=2.mp3",
+      tags: ["netease", "agent-selected"],
+      canOpenVideo: false
+    });
+  });
+
   it("keeps the default queue on platform sources with verified metadata", () => {
     expect(PLAYER_TRACKS).toMatchObject([
       {

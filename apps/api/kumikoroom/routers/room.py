@@ -1,15 +1,17 @@
 from dataclasses import asdict
 
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 
 from kumikoroom.config import load_settings
 from kumikoroom.conversation import ConversationManager
 from kumikoroom.memory import MemoryStore
+from kumikoroom.music_search import MusicSearchError, search_netease_songs
 from kumikoroom.schemas import (
     ChatIn,
     ChatOut,
     ChatSessionOut,
     MemoryEventOut,
+    MusicSearchResultOut,
     RoomStateOut,
     SessionRenameIn,
     StoredChatMessageOut,
@@ -47,6 +49,41 @@ def default_room_state() -> RoomStateOut:
 @router.get("/state", response_model=RoomStateOut)
 def get_room_state() -> RoomStateOut:
     return default_room_state()
+
+
+@router.get("/music/search", response_model=list[MusicSearchResultOut])
+def search_music(
+    q: str = Query(..., min_length=1), limit: int = Query(5, ge=1, le=10)
+) -> list[MusicSearchResultOut]:
+    query = q.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Search query is empty")
+
+    try:
+        results = search_netease_songs(query, limit=limit)
+    except MusicSearchError as error:
+        raise HTTPException(status_code=502, detail=str(error))
+
+    return [
+        MusicSearchResultOut(
+            source="netease",
+            id=result.id,
+            song_id=result.song_id,
+            title=result.title,
+            creator=result.creator,
+            duration_ms=result.duration_ms,
+            page_url=result.page_url,
+            platform_audio_url=result.platform_audio_url,
+            tags=["netease", "search"],
+            playable=result.playable,
+            popularity=result.popularity,
+            comment_count=result.comment_count,
+            hot_comment_liked_count=result.hot_comment_liked_count,
+            score=result.score,
+            evidence=result.evidence,
+        )
+        for result in results
+    ]
 
 
 @router.post("/chat", response_model=ChatOut)

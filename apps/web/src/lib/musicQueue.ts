@@ -20,8 +20,12 @@ export interface MusicQueueEntry {
   saved?: boolean;
 }
 
-type ClientMusicQueueItem = ClientMusicItem &
-  Partial<Pick<MusicQueueEntry, "sourceQuery" | "selectedReason" | "selectionEvidence" | "selectionScore">>;
+type ClientMusicQueueItem = ClientMusicItem & {
+  sourceQuery?: string | null;
+  selectedReason?: string | null;
+  selectionEvidence?: string[] | null;
+  selectionScore?: number | null;
+};
 
 export interface MusicQueueState {
   entries: MusicQueueEntry[];

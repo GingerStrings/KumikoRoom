@@ -55,11 +55,6 @@ export interface RoomAgentRuntime {
 
 type RoomAgentToolEntry = readonly [RoomAgentToolName, RoomAgentToolHandler];
 
-const VIDEO_INTENT_PATTERN = /视频|小窗|B站|b站|bilibili/i;
-const NOTE_INTENT_PATTERN = /记一下|记录|note/i;
-const PLAY_INTENT_PATTERN = /播放|听|放一下/;
-const RECOMMEND_INTENT_PATTERN = /推荐|下一首/;
-
 export function createRoomAgentRuntime(initialState: Partial<RoomAgentState> = {}): RoomAgentRuntime {
   return {
     state: {
@@ -84,56 +79,6 @@ export function createRoomAgentToolRegistry(entries: Iterable<RoomAgentToolEntry
   }
 
   return registry;
-}
-
-export function routeRoomAgentIntent(message: string, queue: MusicItem[]): RoomAgentAction | null {
-  const trimmedMessage = message.trim();
-
-  if (!trimmedMessage) {
-    return null;
-  }
-
-  if (NOTE_INTENT_PATTERN.test(trimmedMessage)) {
-    return {
-      id: "agent-action-save-note",
-      toolName: "save_music_note",
-      input: { note: trimmedMessage }
-    };
-  }
-
-  if (VIDEO_INTENT_PATTERN.test(trimmedMessage)) {
-    const videoItem = queue.find((item) => item.canOpenVideo);
-
-    if (videoItem) {
-      return {
-        id: `agent-action-open-video-${videoItem.id}`,
-        toolName: "open_video_window",
-        input: { itemId: videoItem.id }
-      };
-    }
-  }
-
-  if (PLAY_INTENT_PATTERN.test(trimmedMessage)) {
-    const matchedItem = queue.find((item) => trimmedMessage.includes(item.title)) ?? queue[0];
-
-    if (matchedItem) {
-      return {
-        id: `agent-action-play-${matchedItem.id}`,
-        toolName: "play_item",
-        input: { itemId: matchedItem.id }
-      };
-    }
-  }
-
-  if (RECOMMEND_INTENT_PATTERN.test(trimmedMessage)) {
-    return {
-      id: "agent-action-recommend-next",
-      toolName: "recommend_next",
-      input: {}
-    };
-  }
-
-  return null;
 }
 
 export function dispatchRoomAgentAction(
