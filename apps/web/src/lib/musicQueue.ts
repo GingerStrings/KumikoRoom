@@ -229,7 +229,7 @@ export function upsertQueueItem(
       index === existingIndex
         ? {
             ...entry,
-            item,
+            item: mergeKnownMusicItem(entry.item, item),
             addedBy: metadata.addedBy ?? entry.addedBy,
             sourceQuery: metadata.sourceQuery ?? entry.sourceQuery,
             selectedReason: metadata.selectedReason ?? entry.selectedReason,
@@ -358,6 +358,18 @@ export function toggleQueueEntrySaved(state: MusicQueueState, itemId: string): M
 
 function cloneSelectionEvidence(selectionEvidence: string[] | undefined): string[] | undefined {
   return selectionEvidence ? [...selectionEvidence] : selectionEvidence;
+}
+
+function mergeKnownMusicItem(existing: MusicItem, incoming: MusicItem): MusicItem {
+  const definedIncoming = Object.fromEntries(
+    Object.entries(incoming).filter(([, value]) => value !== undefined)
+  ) as Partial<MusicItem>;
+
+  return {
+    ...existing,
+    ...definedIncoming,
+    tags: [...incoming.tags],
+  };
 }
 
 function getClientItemQueueMetadata(

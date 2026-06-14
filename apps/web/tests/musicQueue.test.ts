@@ -46,6 +46,15 @@ function makeClientItem(id: string, title: string, source: ClientMusicItem["sour
   };
 }
 
+function makeExtendedItem(id: string, title: string): MusicItem {
+  return {
+    ...makeItem(id, title),
+    coverUrl: `https://example.test/${id}.jpg`,
+    embedUrl: `https://example.test/embed/${id}`,
+    notes: `${title} notes`,
+  };
+}
+
 describe("musicQueue", () => {
   it("creates a current item and queued items from defaults", () => {
     const state = createInitialMusicQueue([makeItem("a", "Alpha"), makeItem("b", "Beta")], "2026-06-14T00:00:00.000Z");
@@ -93,6 +102,41 @@ describe("musicQueue", () => {
     expect(current?.selectedReason).toBe("ranked score 120");
     expect(current?.selectionEvidence).toEqual(["title exact match", "comment_count=10"]);
     expect(current?.selectionScore).toBe(120);
+  });
+
+  it.each([
+    ["play", (state: ReturnType<typeof createInitialMusicQueue>, item: ClientMusicItem) =>
+      applyClientMusicActionToQueue(state, item, "2026-06-14T00:02:00.000Z")],
+    ["add", (state: ReturnType<typeof createInitialMusicQueue>, item: ClientMusicItem) =>
+      addQueueItem(state, item, "2026-06-14T00:02:00.000Z")],
+    ["save", (state: ReturnType<typeof createInitialMusicQueue>, item: ClientMusicItem) =>
+      saveQueueItem(state, item, "2026-06-14T00:02:00.000Z")],
+  ])("preserves existing item extensions while %s updates playback fields", (_, updateItem) => {
+    const initial = createInitialMusicQueue(
+      [makeItem("current", "Current"), makeExtendedItem("known", "Known")],
+      "2026-06-14T00:00:00.000Z"
+    );
+    const incoming = {
+      ...makeClientItem("known", "Updated"),
+      creator: "Updated creator",
+      durationMs: 240000,
+      pageUrl: "https://music.163.com/#/song?id=42",
+      platformAudioUrl: "https://music.163.com/song/media/outer/url?id=42.mp3",
+      tags: ["netease", "updated"],
+    };
+    const state = updateItem(initial, incoming);
+    const updated = state.entries.find((entry) => entry.id === "known")?.item;
+
+    expect(updated).toMatchObject({
+      title: "Updated",
+      creator: "Updated creator",
+      durationMs: 240000,
+      pageUrl: "https://music.163.com/#/song?id=42",
+      platformAudioUrl: "https://music.163.com/song/media/outer/url?id=42.mp3",
+      tags: ["netease", "updated"],
+      coverUrl: "https://example.test/known.jpg",
+      notes: "Known notes",
+    });
   });
 
   it("builds a compact preview from the next queued item", () => {
