@@ -128,6 +128,52 @@ export function applyClientMusicActionToQueue(
   return playQueueItem(upserted, musicItem.id, now);
 }
 
+export function playMusicItemsAsQueue(
+  state: MusicQueueState,
+  items: MusicItem[],
+  addedBy: MusicQueueAddedBy = "user",
+  now = currentIsoTime()
+): MusicQueueState {
+  if (items.length === 0) {
+    return state;
+  }
+
+  const queued = appendMusicItemsToQueue(clearUpcomingQueue(state), items, addedBy, now);
+  return playQueueItem(queued, items[0].id, now);
+}
+
+export function appendMusicItemsToQueue(
+  state: MusicQueueState,
+  items: MusicItem[],
+  addedBy: MusicQueueAddedBy = "user",
+  now = currentIsoTime()
+): MusicQueueState {
+  if (items.length === 0) {
+    return state;
+  }
+
+  return items.reduce((queueState, item) => {
+    const upserted = upsertQueueItem(queueState, musicItemToUpdate(item), { addedBy }, now);
+    const entry = upserted.entries.find((candidate) => candidate.id === item.id);
+
+    if (!entry || entry.status === "current") {
+      return upserted;
+    }
+
+    return {
+      ...upserted,
+      entries: [
+        ...upserted.entries.filter((candidate) => candidate.id !== item.id),
+        {
+          ...entry,
+          status: "queued",
+          addedAt: now,
+        },
+      ],
+    };
+  }, state);
+}
+
 export function addQueueItem(
   state: MusicQueueState,
   item: ClientMusicItem,
@@ -367,6 +413,36 @@ export function toggleQueueEntrySaved(state: MusicQueueState, itemId: string): M
 
 function cloneSelectionEvidence(selectionEvidence: string[] | undefined): string[] | undefined {
   return selectionEvidence ? [...selectionEvidence] : selectionEvidence;
+}
+
+function musicItemToUpdate(item: MusicItem): MusicItemUpdate {
+  const update: MusicItemUpdate = {
+    id: item.id,
+    source: item.source,
+    title: item.title,
+    creator: item.creator,
+    durationMs: item.durationMs,
+    tags: [...item.tags],
+    canOpenVideo: item.canOpenVideo,
+  };
+
+  if (item.coverUrl !== undefined) {
+    update.coverUrl = item.coverUrl;
+  }
+  if (item.pageUrl !== undefined) {
+    update.pageUrl = item.pageUrl;
+  }
+  if (item.embedUrl !== undefined) {
+    update.embedUrl = item.embedUrl;
+  }
+  if (item.platformAudioUrl !== undefined) {
+    update.platformAudioUrl = item.platformAudioUrl;
+  }
+  if (item.notes !== undefined) {
+    update.notes = item.notes;
+  }
+
+  return update;
 }
 
 function makeMusicItemUpdateFromClientActionItem(item: ClientMusicItem): MusicItemUpdate {

@@ -2,6 +2,7 @@ import type { MusicItem } from "../src/lib/musicItems";
 import type { ClientMusicItem } from "../src/api/types";
 import {
   addQueueItem,
+  appendMusicItemsToQueue,
   applyClientMusicActionToQueue,
   clearUpcomingQueue,
   createInitialMusicQueue,
@@ -11,6 +12,7 @@ import {
   getRecentQueueEntries,
   getSavedQueueEntries,
   getUpcomingQueueEntries,
+  playMusicItemsAsQueue,
   playQueueItem,
   removeQueueEntry,
   saveQueueItem,
@@ -451,5 +453,41 @@ describe("musicQueue", () => {
     expect(getUpcomingQueueEntries(state)).toEqual([]);
     expect(getRecentQueueEntries(state).map((entry) => entry.id)).toEqual(["a"]);
     expect(state.entries.find((entry) => entry.id === "a")?.status).toBe("played");
+  });
+
+  it("plays a list of music items as the current queue", () => {
+    const initial = createInitialMusicQueue([makeItem("old", "Old"), makeItem("stale", "Stale")], "2026-06-15T00:00:00.000Z");
+    const state = playMusicItemsAsQueue(
+      initial,
+      [makeItem("a", "Alpha"), makeItem("b", "Beta"), makeItem("c", "Gamma")],
+      "user",
+      "2026-06-15T00:01:00.000Z"
+    );
+
+    expect(getCurrentQueueEntry(state)?.id).toBe("a");
+    expect(getPlaybackQueueEntries(state).map((entry) => entry.id)).toEqual(["a", "b", "c"]);
+    expect(getRecentQueueEntries(state).map((entry) => entry.id)).toEqual(["old"]);
+    expect(getUpcomingQueueEntries(state).map((entry) => entry.addedBy)).toEqual(["user", "user"]);
+  });
+
+  it("appends a list of music items to upcoming without interrupting current", () => {
+    const initial = createInitialMusicQueue([makeItem("current", "Current")], "2026-06-15T00:00:00.000Z");
+    const state = appendMusicItemsToQueue(
+      initial,
+      [makeItem("a", "Alpha"), makeItem("b", "Beta")],
+      "agent",
+      "2026-06-15T00:01:00.000Z"
+    );
+
+    expect(getCurrentQueueEntry(state)?.id).toBe("current");
+    expect(getUpcomingQueueEntries(state).map((entry) => entry.id)).toEqual(["a", "b"]);
+    expect(getUpcomingQueueEntries(state).map((entry) => entry.addedBy)).toEqual(["agent", "agent"]);
+  });
+
+  it("returns the same queue when asked to play or append an empty list", () => {
+    const state = createInitialMusicQueue([makeItem("current", "Current")], "2026-06-15T00:00:00.000Z");
+
+    expect(playMusicItemsAsQueue(state, [], "user", "2026-06-15T00:01:00.000Z")).toBe(state);
+    expect(appendMusicItemsToQueue(state, [], "user", "2026-06-15T00:01:00.000Z")).toBe(state);
   });
 });
