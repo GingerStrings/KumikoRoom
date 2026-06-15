@@ -160,10 +160,85 @@ describe("RoomShell", () => {
     expect(mediaPauseMock).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "播放" }));
     expect(mediaPlayMock).toHaveBeenCalled();
+  });
 
-    audio.currentTime = PLAYER_TRACKS[0].durationMs / 1000;
+  it("advances to the next queued audio track on ended without removing played tracks", async () => {
+    const firstTrack = {
+      id: "netease-ended-first",
+      source: "netease" as const,
+      title: "自动播放第一首",
+      creator: "Queue Test",
+      durationMs: 180000,
+      pageUrl: "https://music.163.com/#/song?id=180",
+      platformAudioUrl: "https://music.163.com/song/media/outer/url?id=180.mp3",
+      tags: ["netease", "queue-test"],
+      canOpenVideo: false
+    };
+    const secondTrack = {
+      id: "netease-ended-second",
+      source: "netease" as const,
+      title: "自动播放第二首",
+      creator: "Queue Test",
+      durationMs: 181000,
+      pageUrl: "https://music.163.com/#/song?id=181",
+      platformAudioUrl: "https://music.163.com/song/media/outer/url?id=181.mp3",
+      tags: ["netease", "queue-test"],
+      canOpenVideo: false
+    };
+    apiMocks.postChat.mockResolvedValueOnce(
+      makeChatResponse({
+        reply: { id: "reply-auto-next", role: "kumiko", content: "我排好队列并开始播放了。" },
+        clientActions: [
+          { type: "play_music_item", item: firstTrack },
+          { type: "add_music_to_queue", item: secondTrack }
+        ]
+      })
+    );
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), { target: { value: "播放并排下一首" } });
+    fireEvent.click(getComposerSubmit());
+
+    expect(await within(getTimeline()).findByText("我排好队列并开始播放了。")).toBeTruthy();
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe(firstTrack.title);
+    const audio = getPlatformAudio();
+    audio.currentTime = firstTrack.durationMs / 1000;
     fireEvent.ended(audio);
-    expect(screen.getByRole("button", { name: "播放" })).toBeTruthy();
+
+    await waitFor(() =>
+      expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe(secondTrack.title)
+    );
+    fireEvent.click(getQueueManageButton());
+    const panel = getMusicQueuePanel();
+    const firstRow = within(panel).getByText(firstTrack.title).closest(".music-queue-row");
+    const secondRow = within(panel).getByText(secondTrack.title).closest(".music-queue-row");
+    expect(firstRow).toBeTruthy();
+    expect(secondRow?.getAttribute("data-active")).toBe("true");
+  });
+
+  it("cycles playback modes from the player controls", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "播放模式：顺序播放" }));
+    expect(screen.getByRole("button", { name: "播放模式：随机播放" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "播放模式：随机播放" }));
+    expect(screen.getByRole("button", { name: "播放模式：单曲循环" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "播放模式：单曲循环" }));
+    expect(screen.getByRole("button", { name: "播放模式：顺序播放" })).toBeTruthy();
+  });
+
+  it("wraps from the last track to the first track when pressing next in sequence mode", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(getQueuePreviewMain());
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe(PLAYER_TRACKS[1].title);
+
+    fireEvent.click(screen.getByRole("button", { name: "下一首" }));
+
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe(PLAYER_TRACKS[0].title);
   });
 
   it("opens and closes the Bilibili mini-window from the music player", async () => {
@@ -514,8 +589,9 @@ describe("RoomShell", () => {
 
     const panel = getMusicQueuePanel();
     expect(within(panel).getByRole("tab", { name: "接下来" }).getAttribute("aria-selected")).toBe("true");
-    expect(within(panel).getByText("正在播放")).toBeTruthy();
-    expect(within(panel).getByText(PLAYER_TRACKS[0].title)).toBeTruthy();
+    expect(within(panel).getByText("播放队列")).toBeTruthy();
+    const currentRow = within(panel).getByText(PLAYER_TRACKS[0].title).closest(".music-queue-row");
+    expect(currentRow?.getAttribute("data-active")).toBe("true");
     expect(within(panel).getByText("接下来测试曲")).toBeTruthy();
     expect(within(panel).getByText("来自: 加到队列")).toBeTruthy();
     expect(within(panel).getByText("综合热度和评论更稳")).toBeTruthy();
@@ -630,8 +706,10 @@ describe("RoomShell", () => {
 
     fireEvent.click(getQueueManageButton());
     const panel = getMusicQueuePanel();
-    expect(within(panel).getByText("接下来还没有歌曲")).toBeTruthy();
-    expect(within(panel).getByText(PLAYER_TRACKS[0].title)).toBeTruthy();
+    expect(within(panel).getByText("播放队列")).toBeTruthy();
+    const currentRow = within(panel).getByText(PLAYER_TRACKS[0].title).closest(".music-queue-row");
+    expect(currentRow?.getAttribute("data-active")).toBe("true");
+    expect(within(panel).queryByText("待清空测试曲")).toBeNull();
     fireEvent.click(within(panel).getByRole("tab", { name: "收藏" }));
     expect(within(panel).queryByText("待清空测试曲")).toBeNull();
   });

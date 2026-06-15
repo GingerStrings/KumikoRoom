@@ -1,6 +1,7 @@
 import type { MusicItem } from "../src/lib/musicItems";
 import type { ClientMusicItem } from "../src/api/types";
 import {
+  advanceQueuePlayback,
   addQueueItem,
   appendMusicItemsToQueue,
   applyClientMusicActionToQueue,
@@ -71,8 +72,79 @@ describe("musicQueue", () => {
     const state = playQueueItem(initial, "b", "2026-06-14T00:01:00.000Z");
 
     expect(getCurrentQueueEntry(state)?.id).toBe("b");
+    expect(getPlaybackQueueEntries(state).map((entry) => entry.id)).toEqual(["a", "b"]);
     expect(getRecentQueueEntries(state).map((entry) => entry.id)).toEqual(["a"]);
     expect(getRecentQueueEntries(state)[0].lastPlayedAt).toBe("2026-06-14T00:01:00.000Z");
+  });
+
+  it("keeps full queue order while previewing only items after the current track", () => {
+    const initial = createInitialMusicQueue(
+      [makeItem("a", "Alpha"), makeItem("b", "Beta"), makeItem("c", "Gamma")],
+      "2026-06-14T00:00:00.000Z"
+    );
+    const state = playQueueItem(initial, "b", "2026-06-14T00:01:00.000Z");
+
+    expect(getPlaybackQueueEntries(state).map((entry) => entry.id)).toEqual(["a", "b", "c"]);
+    expect(getUpcomingQueueEntries(state).map((entry) => entry.id)).toEqual(["c"]);
+    expect(getQueuePreview(state)).toEqual({
+      nextEntryId: "c",
+      nextTitle: "Gamma",
+      nextCreator: "Gamma creator",
+      nextSource: "netease",
+      remainingCount: 1,
+    });
+  });
+
+  it("advances to the next queue item in sequence mode without removing played tracks", () => {
+    const initial = createInitialMusicQueue(
+      [makeItem("a", "Alpha"), makeItem("b", "Beta"), makeItem("c", "Gamma")],
+      "2026-06-14T00:00:00.000Z"
+    );
+    const result = advanceQueuePlayback(initial, "sequence", "2026-06-14T00:01:00.000Z");
+
+    expect(result.shouldContinue).toBe(true);
+    expect(result.currentEntry?.id).toBe("b");
+    expect(getPlaybackQueueEntries(result.state).map((entry) => entry.id)).toEqual(["a", "b", "c"]);
+    expect(getRecentQueueEntries(result.state).map((entry) => entry.id)).toEqual(["a"]);
+  });
+
+  it("wraps from the last queue item to the first in sequence mode", () => {
+    const initial = createInitialMusicQueue(
+      [makeItem("a", "Alpha"), makeItem("b", "Beta")],
+      "2026-06-14T00:00:00.000Z"
+    );
+    const playingLast = playQueueItem(initial, "b", "2026-06-14T00:01:00.000Z");
+    const result = advanceQueuePlayback(playingLast, "sequence", "2026-06-14T00:02:00.000Z");
+
+    expect(result.shouldContinue).toBe(true);
+    expect(result.currentEntry?.id).toBe("a");
+    expect(getPlaybackQueueEntries(result.state).map((entry) => entry.id)).toEqual(["a", "b"]);
+  });
+
+  it("replays the current queue item in repeat-one mode", () => {
+    const initial = createInitialMusicQueue([makeItem("a", "Alpha")], "2026-06-14T00:00:00.000Z");
+    const result = advanceQueuePlayback(initial, "repeat-one", "2026-06-14T00:01:00.000Z");
+
+    expect(result.shouldContinue).toBe(true);
+    expect(result.currentEntry?.id).toBe("a");
+    expect(result.currentEntry?.playCount).toBe(2);
+  });
+
+  it("selects another queue item in shuffle mode", () => {
+    const initial = createInitialMusicQueue(
+      [makeItem("a", "Alpha"), makeItem("b", "Beta"), makeItem("c", "Gamma")],
+      "2026-06-14T00:00:00.000Z"
+    );
+    const result = advanceQueuePlayback(
+      initial,
+      "shuffle",
+      "2026-06-14T00:01:00.000Z",
+      () => 0.99
+    );
+
+    expect(result.shouldContinue).toBe(true);
+    expect(result.currentEntry?.id).toBe("c");
+    expect(getPlaybackQueueEntries(result.state).map((entry) => entry.id)).toEqual(["a", "b", "c"]);
   });
 
   it("applies agent metadata from a client action item", () => {
@@ -183,21 +255,21 @@ describe("musicQueue", () => {
     });
   });
 
-  it("keeps playback order and preview aligned after playing an out-of-order item", () => {
+  it("keeps full playback order and preview aligned after playing an out-of-order item", () => {
     const initial = createInitialMusicQueue(
       [makeItem("a", "Alpha"), makeItem("b", "Beta"), makeItem("c", "Gamma")],
       "2026-06-14T00:00:00.000Z"
     );
     const state = playQueueItem(initial, "c", "2026-06-14T00:01:00.000Z");
 
-    expect(getPlaybackQueueEntries(state).map((entry) => entry.id)).toEqual(["c", "b"]);
-    expect(getPlaybackQueueEntries(state).map((entry) => entry.status)).toEqual(["current", "queued"]);
+    expect(getPlaybackQueueEntries(state).map((entry) => entry.id)).toEqual(["a", "b", "c"]);
+    expect(getPlaybackQueueEntries(state).map((entry) => entry.status)).toEqual(["queued", "queued", "current"]);
     expect(getQueuePreview(state)).toEqual({
-      nextEntryId: "b",
-      nextTitle: "Beta",
-      nextCreator: "Beta creator",
-      nextSource: "netease",
-      remainingCount: 1,
+      nextEntryId: null,
+      nextTitle: null,
+      nextCreator: null,
+      nextSource: null,
+      remainingCount: 0,
     });
   });
 
@@ -212,7 +284,7 @@ describe("musicQueue", () => {
     const state = playQueueItem(playedC, "d", "2026-06-14T00:03:00.000Z");
 
     expect(getRecentQueueEntries(state).map((entry) => entry.id)).toEqual(["c", "b"]);
-    expect(state.entries.some((entry) => entry.id === "a")).toBe(false);
+    expect(state.entries.some((entry) => entry.id === "a")).toBe(true);
   });
 
   it("keeps a played item in recent after adding it back to upcoming", () => {
@@ -403,7 +475,7 @@ describe("musicQueue", () => {
 
     expect(getSavedQueueEntries(state)).toEqual([]);
     expect(getRecentQueueEntries(state).map((entry) => entry.id)).toEqual(["b"]);
-    expect(state.entries.some((entry) => entry.id === "a")).toBe(false);
+    expect(state.entries.some((entry) => entry.id === "a")).toBe(true);
   });
 
   it("caps recent records after toggling off a saved old played item", () => {
@@ -419,7 +491,7 @@ describe("musicQueue", () => {
 
     expect(getSavedQueueEntries(state)).toEqual([]);
     expect(getRecentQueueEntries(state).map((entry) => entry.id)).toEqual(["b"]);
-    expect(state.entries.some((entry) => entry.id === "a")).toBe(false);
+    expect(state.entries.some((entry) => entry.id === "a")).toBe(true);
   });
 
   it("clears only upcoming entries while preserving current, recent, and saved records", () => {

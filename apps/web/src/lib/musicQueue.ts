@@ -4,6 +4,7 @@ import { makeMusicItemFromClientActionItem } from "./musicItems";
 
 export type MusicQueueStatus = "current" | "queued" | "played";
 export type MusicQueueAddedBy = "agent" | "user" | "default";
+export type MusicPlaybackMode = "sequence" | "shuffle" | "repeat-one";
 
 export interface MusicQueueEntry {
   id: string;
@@ -47,6 +48,12 @@ export interface QueuePreview {
   remainingCount: number;
 }
 
+export interface QueueAdvanceResult {
+  state: MusicQueueState;
+  currentEntry: MusicQueueEntry | null;
+  shouldContinue: boolean;
+}
+
 export const DEFAULT_RECENT_LIMIT = 30;
 
 export function createInitialMusicQueue(
@@ -76,14 +83,18 @@ export function getCurrentQueueEntry(state: MusicQueueState): MusicQueueEntry | 
 }
 
 export function getPlaybackQueueEntries(state: MusicQueueState): MusicQueueEntry[] {
-  const currentEntry = getCurrentQueueEntry(state);
-  const queuedEntries = getUpcomingQueueEntries(state);
-
-  return currentEntry ? [currentEntry, ...queuedEntries] : queuedEntries;
+  return state.entries.filter((entry) => entry.status === "current" || entry.status === "queued");
 }
 
 export function getUpcomingQueueEntries(state: MusicQueueState): MusicQueueEntry[] {
-  return state.entries.filter((entry) => entry.status === "queued");
+  const playbackEntries = getPlaybackQueueEntries(state);
+  const currentIndex = playbackEntries.findIndex((entry) => entry.id === state.currentId);
+
+  if (currentIndex < 0) {
+    return playbackEntries.filter((entry) => entry.status === "queued");
+  }
+
+  return playbackEntries.slice(currentIndex + 1).filter((entry) => entry.status === "queued");
 }
 
 export function getRecentQueueEntries(state: MusicQueueState): MusicQueueEntry[] {
@@ -139,7 +150,7 @@ export function playMusicItemsAsQueue(
   }
 
   const [firstItem, ...remainingItems] = items;
-  const cleared = clearUpcomingQueue(state);
+  const cleared = clearPlaybackQueueForReplacement(state, now);
   const upsertedFirst = upsertQueueItem(cleared, musicItemToUpdate(firstItem), { addedBy }, now);
   const playingFirst = playQueueItem(upsertedFirst, firstItem.id, now);
 
@@ -270,6 +281,26 @@ export function clearUpcomingQueue(state: MusicQueueState): MusicQueueState {
   });
 }
 
+function clearPlaybackQueueForReplacement(state: MusicQueueState, now: string): MusicQueueState {
+  return capRecentRecords({
+    ...state,
+    currentId: null,
+    entries: state.entries.flatMap((entry) => {
+      if (entry.status === "played") {
+        return [entry];
+      }
+      if (entry.playCount > 0 || entry.saved) {
+        return [{
+          ...entry,
+          status: "played" as const,
+          lastPlayedAt: entry.status === "current" ? now : entry.lastPlayedAt,
+        }];
+      }
+      return [];
+    }),
+  });
+}
+
 export function upsertQueueItem(
   state: MusicQueueState,
   item: MusicItemUpdate,
@@ -338,7 +369,7 @@ export function playQueueItem(state: MusicQueueState, itemId: string, now = curr
     if (entry.status === "current") {
       return {
         ...entry,
-        status: "played" as const,
+        status: "queued" as const,
         lastPlayedAt: now,
       };
     }
@@ -349,12 +380,60 @@ export function playQueueItem(state: MusicQueueState, itemId: string, now = curr
   return capRecentRecords({ ...state, currentId: itemId, entries });
 }
 
+export function advanceQueuePlayback(
+  state: MusicQueueState,
+  mode: MusicPlaybackMode,
+  now = currentIsoTime(),
+  random: () => number = Math.random
+): QueueAdvanceResult {
+  const currentEntry = getCurrentQueueEntry(state);
+  const playbackEntries = getPlaybackQueueEntries(state);
+
+  if (!currentEntry || playbackEntries.length === 0) {
+    return {
+      state,
+      currentEntry,
+      shouldContinue: false,
+    };
+  }
+
+  if (mode === "repeat-one") {
+    const nextState = playQueueItem(state, currentEntry.id, now);
+    return {
+      state: nextState,
+      currentEntry: getCurrentQueueEntry(nextState),
+      shouldContinue: true,
+    };
+  }
+
+  const nextEntry = mode === "shuffle"
+    ? getRandomNextQueueEntry(playbackEntries, currentEntry.id, random)
+    : getSequenceNextQueueEntry(playbackEntries, currentEntry.id);
+
+  if (!nextEntry) {
+    return {
+      state,
+      currentEntry,
+      shouldContinue: false,
+    };
+  }
+
+  const nextState = playQueueItem(state, nextEntry.id, now);
+  return {
+    state: nextState,
+    currentEntry: getCurrentQueueEntry(nextState),
+    shouldContinue: true,
+  };
+}
+
 export function removeQueueEntry(state: MusicQueueState, itemId: string, now = currentIsoTime()): MusicQueueState {
   const removedEntry = state.entries.find((entry) => entry.id === itemId);
   if (!removedEntry) {
     return state;
   }
 
+  const playbackEntriesBeforeRemoval = getPlaybackQueueEntries(state);
+  const removedPlaybackIndex = playbackEntriesBeforeRemoval.findIndex((entry) => entry.id === itemId);
   const entriesWithoutItem = state.entries.flatMap((entry) => {
     if (entry.id !== itemId) {
       return [entry];
@@ -379,7 +458,12 @@ export function removeQueueEntry(state: MusicQueueState, itemId: string, now = c
     });
   }
 
-  const nextQueued = entriesWithoutItem.find((entry) => entry.status === "queued");
+  const nextQueuedId = getNextRemainingQueueId(
+    playbackEntriesBeforeRemoval,
+    entriesWithoutItem,
+    removedPlaybackIndex
+  );
+  const nextQueued = entriesWithoutItem.find((entry) => entry.id === nextQueuedId);
   if (!nextQueued) {
     return capRecentRecords({
       ...state,
@@ -397,6 +481,54 @@ export function removeQueueEntry(state: MusicQueueState, itemId: string, now = c
     nextQueued.id,
     now
   );
+}
+
+function getSequenceNextQueueEntry(
+  playbackEntries: MusicQueueEntry[],
+  currentId: string
+): MusicQueueEntry | null {
+  const currentIndex = playbackEntries.findIndex((entry) => entry.id === currentId);
+  if (currentIndex < 0) {
+    return playbackEntries[0] ?? null;
+  }
+  return playbackEntries[currentIndex + 1] ?? playbackEntries[0] ?? null;
+}
+
+function getRandomNextQueueEntry(
+  playbackEntries: MusicQueueEntry[],
+  currentId: string,
+  random: () => number
+): MusicQueueEntry | null {
+  const candidates = playbackEntries.filter((entry) => entry.id !== currentId);
+  if (candidates.length === 0) {
+    return playbackEntries.find((entry) => entry.id === currentId) ?? null;
+  }
+  const index = Math.min(candidates.length - 1, Math.floor(random() * candidates.length));
+  return candidates[index] ?? null;
+}
+
+function getNextRemainingQueueId(
+  playbackEntriesBeforeRemoval: MusicQueueEntry[],
+  entriesWithoutItem: MusicQueueEntry[],
+  removedPlaybackIndex: number
+): string | null {
+  const remainingQueueIds = new Set(
+    entriesWithoutItem
+      .filter((entry) => entry.status === "current" || entry.status === "queued")
+      .map((entry) => entry.id)
+  );
+  const orderedRemainingIds = playbackEntriesBeforeRemoval
+    .map((entry) => entry.id)
+    .filter((id) => remainingQueueIds.has(id));
+
+  if (orderedRemainingIds.length === 0) {
+    return null;
+  }
+  if (removedPlaybackIndex < 0) {
+    return orderedRemainingIds[0] ?? null;
+  }
+
+  return orderedRemainingIds[removedPlaybackIndex] ?? orderedRemainingIds[0] ?? null;
 }
 
 export function toggleQueueEntrySaved(state: MusicQueueState, itemId: string): MusicQueueState {

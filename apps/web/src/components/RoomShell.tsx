@@ -37,6 +37,7 @@ import {
 } from "../lib/musicLibrary";
 import {
   addQueueItem,
+  advanceQueuePlayback,
   appendMusicItemsToQueue,
   applyClientMusicActionToQueue,
   clearUpcomingQueue,
@@ -54,6 +55,7 @@ import {
   saveQueueItem,
   toggleQueueEntrySaved,
   unsaveQueueItem,
+  type MusicPlaybackMode,
   type MusicQueueEntry,
   type MusicQueueState
 } from "../lib/musicQueue";
@@ -119,6 +121,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const [playlistDraftDescription, setPlaylistDraftDescription] = useState("");
   const [playlistRenameName, setPlaylistRenameName] = useState("");
   const [isPlayerPlaying, setIsPlayerPlaying] = useState(true);
+  const [playbackMode, setPlaybackMode] = useState<MusicPlaybackMode>("sequence");
   const [playerCurrentTime, setPlayerCurrentTime] = useState(0);
   const [playerDuration, setPlayerDuration] = useState((PLAYER_TRACKS[0]?.durationMs ?? 0) / 1000);
   const [videoWindowOpen, setVideoWindowOpen] = useState(false);
@@ -145,7 +148,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     null;
   const visibleQueuePanelEntries = getVisibleQueuePanelEntries(
     queuePanelTab,
-    upcomingQueueEntries,
+    playerQueueEntries,
     recentQueueEntries,
     savedQueueEntries
   );
@@ -157,6 +160,8 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     : 0;
   const playerProgressWidth = `${Math.round(playerProgress * 10) / 10}%`;
   const playButtonLabel = hasPlatformAudio ? (isPlayerPlaying ? "暂停" : "播放") : "打开平台播放器";
+  const playbackModeLabel = getPlaybackModeLabel(playbackMode);
+  const playbackModeIcon = getPlaybackModeIcon(playbackMode);
   const activeListeningContext = buildListeningContext(activeTrack, isPlayerPlaying);
   const setActiveSessionId = useCallback((sessionId: string | null) => {
     activeSessionIdRef.current = sessionId;
@@ -694,15 +699,41 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     commitVideoWindowOpen(resolvedVideoWindowOpen);
   }
 
+  function advancePlayerQueue(mode: MusicPlaybackMode = playbackMode) {
+    const result = advanceQueuePlayback(musicQueueRef.current, mode);
+    const nextEntry = result.currentEntry;
+
+    if (!result.shouldContinue || !nextEntry) {
+      setIsPlayerPlaying(false);
+      return;
+    }
+
+    const nextTrack = nextEntry.item;
+    platformAudioRef.current?.pause();
+    commitMusicQueue(result.state);
+    setPlayerCurrentTime(0);
+    setPlayerDuration(nextTrack.durationMs / 1000);
+    setIsPlayerPlaying(true);
+    if (!nextTrack.canOpenVideo) {
+      commitVideoWindowOpen(false);
+    }
+  }
+
   function handlePreviousTrack() {
+    if (playerQueue.length === 0) return;
+
     selectPlayerTrack((playerTrackIndex - 1 + playerQueue.length) % playerQueue.length);
   }
 
   function handleNextTrack() {
-    selectPlayerTrack((playerTrackIndex + 1) % playerQueue.length);
+    if (playerQueue.length === 0) return;
+
+    advancePlayerQueue(playbackMode);
   }
 
   function selectPlayerTrack(nextIndex: number) {
+    if (playerQueue.length === 0) return;
+
     const nextTrack = playerQueue[nextIndex] ?? playerQueue[0] ?? PLAYER_TRACKS[0];
 
     platformAudioRef.current?.pause();
@@ -860,6 +891,15 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     void playPlatformAudio();
   }
 
+  function cyclePlaybackMode() {
+    setPlaybackMode((current) => {
+      if (current === "sequence") return "shuffle";
+      if (current === "shuffle") return "repeat-one";
+
+      return "sequence";
+    });
+  }
+
   function commitMusicQueue(nextQueueState: MusicQueueState) {
     musicQueueRef.current = nextQueueState;
     setMusicQueue(nextQueueState);
@@ -912,7 +952,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
 
   function handlePlatformAudioEnded(event: SyntheticEvent<HTMLAudioElement>) {
     setPlayerCurrentTime(event.currentTarget.currentTime);
-    setIsPlayerPlaying(false);
+    advancePlayerQueue(playbackMode);
   }
 
   function beginMobileRename(session: ChatSession) {
@@ -1546,8 +1586,15 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
               <div className="volume" aria-label="音量">
                 <span />
               </div>
-              <button className="control" type="button" aria-label="循环">
-                ↻
+              <button
+                className="control playback-mode"
+                type="button"
+                aria-label={`播放模式：${playbackModeLabel}`}
+                title={playbackModeLabel}
+                data-mode={playbackMode}
+                onClick={cyclePlaybackMode}
+              >
+                {playbackModeIcon}
               </button>
               {activeTrack.canOpenVideo ? (
                 <button
@@ -1626,19 +1673,16 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
               ))}
             </div>
             <div className="music-queue-list">
-              {queuePanelTab === "queue" && activeQueueEntry ? (
-                <div className="music-queue-now">
-                  <span className="music-queue-section-label">正在播放</span>
-                  {renderQueueEntryRow(activeQueueEntry, { active: true, removable: false })}
-                </div>
-              ) : null}
               {queuePanelTab === "queue" && visibleQueuePanelEntries.length > 0 ? (
-                <span className="music-queue-section-label">接下来</span>
+                <span className="music-queue-section-label">播放队列</span>
               ) : null}
               {queuePanelTab === "queue"
                 ? visibleQueuePanelEntries.map((entry) => (
                     <Fragment key={`${queuePanelTab}-${entry.id}`}>
-                      {renderQueueEntryRow(entry, { removable: true })}
+                      {renderQueueEntryRow(entry, {
+                        active: activeQueueEntry?.id === entry.id,
+                        removable: true
+                      })}
                     </Fragment>
                   ))
                 : null}
@@ -1857,15 +1901,29 @@ function isOptionalStringArray(value: unknown): boolean {
 
 function getVisibleQueuePanelEntries(
   tab: MusicPanelTab,
-  upcomingEntries: MusicQueueEntry[],
+  queueEntries: MusicQueueEntry[],
   recentEntries: MusicQueueEntry[],
   savedEntries: MusicQueueEntry[]
 ): MusicQueueEntry[] {
   if (tab === "recent") return recentEntries;
   if (tab === "saved") return savedEntries;
-  if (tab === "queue") return upcomingEntries;
+  if (tab === "queue") return queueEntries;
 
   return [];
+}
+
+function getPlaybackModeLabel(mode: MusicPlaybackMode): string {
+  if (mode === "shuffle") return "随机播放";
+  if (mode === "repeat-one") return "单曲循环";
+
+  return "顺序播放";
+}
+
+function getPlaybackModeIcon(mode: MusicPlaybackMode): string {
+  if (mode === "shuffle") return "⇄";
+  if (mode === "repeat-one") return "①";
+
+  return "↻";
 }
 
 function getQueuePanelEmptyLabel(tab: MusicPanelTab): string {
