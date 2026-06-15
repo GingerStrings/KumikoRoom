@@ -122,11 +122,20 @@ export interface MusicAgentTrack {
   title: string;
   creator: string;
   durationMs: number;
-  pageUrl: string | null;
-  platformAudioUrl: string | null;
+  pageUrl?: string | null;
+  platformAudioUrl?: string | null;
   tags: string[];
   canOpenVideo: boolean;
   saved: boolean;
+}
+
+export interface MusicAgentPlaylist {
+  id: string;
+  name: string;
+  description?: string | null;
+  itemCount: number;
+  updatedAt: string;
+  items: MusicAgentTrack[];
 }
 
 export interface MusicAgentState {
@@ -139,6 +148,7 @@ export interface MusicAgentState {
   upcoming: MusicAgentTrack[];
   recent: MusicAgentTrack[];
   saved: MusicAgentTrack[];
+  playlists: MusicAgentPlaylist[];
 }
 
 export type RoomClientAction =

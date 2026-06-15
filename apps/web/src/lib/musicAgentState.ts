@@ -1,4 +1,6 @@
 import type { MusicAgentState, MusicAgentTrack } from "../api/types";
+import type { MusicItem } from "./musicItems";
+import { createInitialMusicLibrary, type MusicLibraryState } from "./musicLibrary";
 import {
   getCurrentQueueEntry,
   getRecentQueueEntries,
@@ -16,7 +18,8 @@ interface MusicPlaybackState {
 
 export function buildMusicAgentState(
   queue: MusicQueueState,
-  playback: MusicPlaybackState
+  playback: MusicPlaybackState,
+  library: MusicLibraryState = createInitialMusicLibrary()
 ): MusicAgentState {
   const currentEntry = getCurrentQueueEntry(queue);
   const upcomingEntries = getUpcomingQueueEntries(queue);
@@ -32,6 +35,14 @@ export function buildMusicAgentState(
     upcoming: upcomingEntries.map(mapQueueEntryToAgentTrackRequired),
     recent: recentEntries.map(mapQueueEntryToAgentTrackRequired),
     saved: getSavedQueueEntries(queue).map(mapQueueEntryToAgentTrackRequired),
+    playlists: library.playlists.map((playlist) => ({
+      id: playlist.id,
+      name: playlist.name,
+      description: playlist.description,
+      itemCount: playlist.items.length,
+      updatedAt: playlist.updatedAt,
+      items: playlist.items.map((entry) => mapMusicItemToAgentTrack(entry.item, false)),
+    })),
   };
 }
 
@@ -40,16 +51,27 @@ function mapQueueEntryToAgentTrack(entry: MusicQueueEntry | null): MusicAgentTra
 }
 
 function mapQueueEntryToAgentTrackRequired(entry: MusicQueueEntry): MusicAgentTrack {
+  const track = mapMusicItemToAgentTrack(entry.item, entry.saved === true);
+
   return {
+    ...track,
     id: entry.id,
-    source: entry.item.source,
-    title: entry.item.title,
-    creator: entry.item.creator,
-    durationMs: entry.item.durationMs,
-    pageUrl: entry.item.pageUrl ?? null,
-    platformAudioUrl: entry.item.platformAudioUrl ?? null,
-    tags: [...entry.item.tags],
-    canOpenVideo: entry.item.canOpenVideo,
-    saved: entry.saved === true,
+    pageUrl: track.pageUrl ?? null,
+    platformAudioUrl: track.platformAudioUrl ?? null,
+  };
+}
+
+function mapMusicItemToAgentTrack(item: MusicItem, saved: boolean): MusicAgentTrack {
+  return {
+    id: item.id,
+    source: item.source,
+    title: item.title,
+    creator: item.creator,
+    durationMs: item.durationMs,
+    pageUrl: item.pageUrl,
+    platformAudioUrl: item.platformAudioUrl,
+    tags: [...item.tags],
+    canOpenVideo: item.canOpenVideo,
+    saved,
   };
 }

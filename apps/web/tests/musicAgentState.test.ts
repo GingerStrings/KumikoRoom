@@ -1,5 +1,10 @@
 import type { MusicItem } from "../src/lib/musicItems";
 import { buildMusicAgentState } from "../src/lib/musicAgentState";
+import {
+  addMusicItemToPlaylist,
+  createInitialMusicLibrary,
+  createMusicPlaylist,
+} from "../src/lib/musicLibrary";
 import type { MusicQueueState } from "../src/lib/musicQueue";
 
 function makeItem(
@@ -131,6 +136,59 @@ describe("buildMusicAgentState", () => {
     expect(queue.entries[0].item.tags).toEqual(["netease", "focus"]);
   });
 
+  it("includes playlists in the music agent snapshot", () => {
+    const queue: MusicQueueState = {
+      currentId: null,
+      recentLimit: 30,
+      entries: [],
+    };
+    const library = addMusicItemToPlaylist(
+      createMusicPlaylist(
+        createInitialMusicLibrary(),
+        { name: "夜晚写作", description: "quiet" },
+        "2026-06-15T00:00:00.000Z"
+      ),
+      "playlist-night-writing",
+      makeItem("song", "Song"),
+      "user",
+      "2026-06-15T00:01:00.000Z"
+    );
+
+    const snapshot = buildMusicAgentState(
+      queue,
+      {
+        isPlaying: false,
+        currentTimeMs: 0,
+        durationMs: 0,
+      },
+      library
+    );
+
+    expect(snapshot.playlists).toEqual([
+      {
+        id: "playlist-night-writing",
+        name: "夜晚写作",
+        description: "quiet",
+        itemCount: 1,
+        updatedAt: "2026-06-15T00:01:00.000Z",
+        items: [
+          {
+            id: "song",
+            source: "netease",
+            title: "Song",
+            creator: "Song creator",
+            durationMs: 180000,
+            pageUrl: undefined,
+            platformAudioUrl: "https://example.test/song.mp3",
+            tags: ["netease"],
+            canOpenVideo: false,
+            saved: false,
+          },
+        ],
+      },
+    ]);
+  });
+
   it("returns empty tracks and zero progress when there is no current item", () => {
     const snapshot = buildMusicAgentState(
       {
@@ -155,6 +213,7 @@ describe("buildMusicAgentState", () => {
       upcoming: [],
       recent: [],
       saved: [],
+      playlists: [],
     });
   });
 });

@@ -27,6 +27,7 @@ from kumikoroom.schemas import (
     ChatSessionOut,
     AgentTraceOut,
     MemoryEventOut,
+    MusicAgentPlaylist,
     MusicAgentState,
     MusicAgentTrack,
     ProviderStatusOut,
@@ -388,7 +389,24 @@ def _music_state_context(payload: ChatIn) -> str:
         lines.append(f"- Recent: {_music_track_list(state.recent)}")
     if state.saved:
         lines.append(f"- Saved: {_music_track_list(state.saved)}")
+    if state.playlists:
+        lines.append(f"- Playlists: {_music_playlist_list(state.playlists)}")
     return "\n".join(lines)
+
+
+def _music_playlist_list(playlists: list[MusicAgentPlaylist], limit: int = 5) -> str:
+    visible = playlists[:limit]
+    labels = [
+        f"{playlist.name} ({playlist.item_count} {_track_count_label(playlist.item_count)}, {playlist.id})"
+        for playlist in visible
+    ]
+    if len(playlists) > limit:
+        labels.append(f"+{len(playlists) - limit} more")
+    return "; ".join(labels)
+
+
+def _track_count_label(count: int) -> str:
+    return "track" if count == 1 else "tracks"
 
 
 def _music_track_list(tracks: list[MusicAgentTrack], limit: int = 5) -> str:

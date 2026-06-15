@@ -163,6 +163,16 @@ def music_state_fixture() -> dict:
             music_track_fixture("current", "Current Song", saved=True),
             music_track_fixture("saved", "Saved Song", saved=True),
         ],
+        "playlists": [
+            {
+                "id": "playlist-night-writing",
+                "name": "Night Writing",
+                "description": "quiet songs",
+                "item_count": 1,
+                "updated_at": "2026-06-15T00:01:00.000Z",
+                "items": [music_track_fixture("saved", "Saved Song", saved=True)],
+            }
+        ],
     }
 
 
@@ -180,6 +190,7 @@ def test_music_state_schema_preserves_snapshot_and_prompt(monkeypatch, tmp_path)
     assert payload.music_state.next is not None
     assert payload.music_state.next.title == "Next Song"
     assert payload.music_state.upcoming[1].id == "later"
+    assert payload.music_state.playlists[0].name == "Night Writing"
 
     ConversationManager(settings=load_settings(), provider=provider).chat(payload)
 
@@ -197,6 +208,7 @@ def test_music_state_schema_preserves_snapshot_and_prompt(monkeypatch, tmp_path)
         "Saved: Current Song - Fixture Artist (current); "
         "Saved Song - Fixture Artist (saved)"
     ) in system_text
+    assert "Playlists: Night Writing (1 track, playlist-night-writing)" in system_text
 
 
 def test_get_music_state_and_state_mutation_tools_emit_client_actions() -> None:

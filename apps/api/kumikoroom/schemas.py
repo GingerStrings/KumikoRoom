@@ -65,6 +65,15 @@ class MusicAgentTrack(BaseModel):
     saved: bool = False
 
 
+class MusicAgentPlaylist(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    item_count: int
+    updated_at: str
+    items: list[MusicAgentTrack] = Field(default_factory=list)
+
+
 class MusicAgentState(BaseModel):
     is_playing: bool = False
     current_time_ms: int = 0
@@ -75,6 +84,7 @@ class MusicAgentState(BaseModel):
     upcoming: list[MusicAgentTrack] = Field(default_factory=list)
     recent: list[MusicAgentTrack] = Field(default_factory=list)
     saved: list[MusicAgentTrack] = Field(default_factory=list)
+    playlists: list[MusicAgentPlaylist] = Field(default_factory=list)
 
 
 class MusicSearchResultOut(BaseModel):
