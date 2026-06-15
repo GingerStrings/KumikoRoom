@@ -326,7 +326,8 @@ function mapMusicAgentStateRequest(value: MusicAgentState) {
     next: mapMusicAgentTrackRequest(value.next),
     upcoming: value.upcoming.map(mapMusicAgentTrackRequest),
     recent: value.recent.map(mapMusicAgentTrackRequest),
-    saved: value.saved.map(mapMusicAgentTrackRequest)
+    saved: value.saved.map(mapMusicAgentTrackRequest),
+    playlists: value.playlists.map(mapMusicAgentPlaylistRequest)
   };
 }
 
@@ -344,6 +345,17 @@ function mapMusicAgentTrackRequest(value: MusicAgentState["current"]) {
     tags: value.tags,
     can_open_video: value.canOpenVideo,
     saved: value.saved
+  };
+}
+
+function mapMusicAgentPlaylistRequest(value: MusicAgentState["playlists"][number]) {
+  return {
+    id: value.id,
+    name: value.name,
+    description: value.description ?? null,
+    item_count: value.itemCount,
+    updated_at: value.updatedAt,
+    items: value.items.map(mapMusicAgentTrackRequest)
   };
 }
 

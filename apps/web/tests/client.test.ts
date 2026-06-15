@@ -456,7 +456,24 @@ describe("room API client", () => {
           })
         ],
         recent: [musicAgentTrack({ id: "recent", title: "Recent Song", saved: false })],
-        saved: [musicAgentTrack({ id: "saved", title: "Saved Song", saved: true })]
+        saved: [musicAgentTrack({ id: "saved", title: "Saved Song", saved: true })],
+        playlists: [
+          {
+            id: "playlist-night-writing",
+            name: "Night Writing",
+            description: "quiet songs",
+            itemCount: 1,
+            updatedAt: "2026-06-15T00:01:00.000Z",
+            items: [
+              musicAgentTrack({
+                id: "playlist-song",
+                title: "Playlist Song",
+                tags: ["playlist"],
+                saved: false
+              })
+            ]
+          }
+        ]
       }
     });
 
@@ -491,7 +508,24 @@ describe("room API client", () => {
         })
       ],
       recent: [musicAgentTrackApi({ id: "recent", title: "Recent Song", saved: false })],
-      saved: [musicAgentTrackApi({ id: "saved", title: "Saved Song", saved: true })]
+      saved: [musicAgentTrackApi({ id: "saved", title: "Saved Song", saved: true })],
+      playlists: [
+        {
+          id: "playlist-night-writing",
+          name: "Night Writing",
+          description: "quiet songs",
+          item_count: 1,
+          updated_at: "2026-06-15T00:01:00.000Z",
+          items: [
+            musicAgentTrackApi({
+              id: "playlist-song",
+              title: "Playlist Song",
+              tags: ["playlist"],
+              saved: false
+            })
+          ]
+        }
+      ]
     });
   });
 
