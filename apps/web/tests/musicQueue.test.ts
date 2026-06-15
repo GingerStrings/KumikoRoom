@@ -470,6 +470,22 @@ describe("musicQueue", () => {
     expect(getUpcomingQueueEntries(state).map((entry) => entry.addedBy)).toEqual(["user", "user"]);
   });
 
+  it("keeps a repeated current item in playlist order when playing a list", () => {
+    const current = makeItem("current", "Current");
+    const initial = createInitialMusicQueue([current, makeItem("stale", "Stale")], "2026-06-15T00:00:00.000Z");
+    const state = playMusicItemsAsQueue(
+      initial,
+      [makeItem("a", "Alpha"), current, makeItem("b", "Beta")],
+      "user",
+      "2026-06-15T00:01:00.000Z"
+    );
+
+    expect(getCurrentQueueEntry(state)?.id).toBe("a");
+    expect(getPlaybackQueueEntries(state).map((entry) => entry.id)).toEqual(["a", "current", "b"]);
+    expect(getUpcomingQueueEntries(state).map((entry) => entry.id)).toEqual(["current", "b"]);
+    expect(getUpcomingQueueEntries(state)[0].playCount).toBe(1);
+  });
+
   it("appends a list of music items to upcoming without interrupting current", () => {
     const initial = createInitialMusicQueue([makeItem("current", "Current")], "2026-06-15T00:00:00.000Z");
     const state = appendMusicItemsToQueue(
@@ -482,6 +498,34 @@ describe("musicQueue", () => {
     expect(getCurrentQueueEntry(state)?.id).toBe("current");
     expect(getUpcomingQueueEntries(state).map((entry) => entry.id)).toEqual(["a", "b"]);
     expect(getUpcomingQueueEntries(state).map((entry) => entry.addedBy)).toEqual(["agent", "agent"]);
+  });
+
+  it("preserves optional item fields and clones tags when appending music items", () => {
+    const tags = ["netease", "playlist"];
+    const item: MusicItem = {
+      ...makeItem("detailed", "Detailed"),
+      coverUrl: "https://example.test/detailed.jpg",
+      pageUrl: "https://example.test/detailed",
+      embedUrl: "https://example.test/embed/detailed",
+      platformAudioUrl: "https://example.test/detailed.mp3",
+      notes: "Detailed notes",
+      tags,
+    };
+    const initial = createInitialMusicQueue([makeItem("current", "Current")], "2026-06-15T00:00:00.000Z");
+    const state = appendMusicItemsToQueue(initial, [item], "user", "2026-06-15T00:01:00.000Z");
+
+    tags.push("mutated");
+
+    const queuedItem = getUpcomingQueueEntries(state)[0].item;
+    expect(queuedItem).toMatchObject({
+      coverUrl: "https://example.test/detailed.jpg",
+      pageUrl: "https://example.test/detailed",
+      embedUrl: "https://example.test/embed/detailed",
+      platformAudioUrl: "https://example.test/detailed.mp3",
+      notes: "Detailed notes",
+      tags: ["netease", "playlist"],
+    });
+    expect(queuedItem.tags).not.toBe(tags);
   });
 
   it("returns the same queue when asked to play or append an empty list", () => {

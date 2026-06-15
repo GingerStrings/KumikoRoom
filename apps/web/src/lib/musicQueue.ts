@@ -138,8 +138,12 @@ export function playMusicItemsAsQueue(
     return state;
   }
 
-  const queued = appendMusicItemsToQueue(clearUpcomingQueue(state), items, addedBy, now);
-  return playQueueItem(queued, items[0].id, now);
+  const [firstItem, ...remainingItems] = items;
+  const cleared = clearUpcomingQueue(state);
+  const upsertedFirst = upsertQueueItem(cleared, musicItemToUpdate(firstItem), { addedBy }, now);
+  const playingFirst = playQueueItem(upsertedFirst, firstItem.id, now);
+
+  return appendMusicItemsToQueue(playingFirst, remainingItems, addedBy, now);
 }
 
 export function appendMusicItemsToQueue(
