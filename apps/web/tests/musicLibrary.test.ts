@@ -25,9 +25,38 @@ function makeItem(id: string, title: string): MusicItem {
   };
 }
 
+function makeStoredLibrary(item: unknown) {
+  return {
+    playlists: [
+      {
+        id: "playlist-a",
+        name: "A",
+        items: [
+          {
+            id: "a",
+            item,
+            addedAt: "2026-06-15T00:01:00.000Z",
+            addedBy: "user",
+          },
+        ],
+        createdAt: "2026-06-15T00:00:00.000Z",
+        updatedAt: "2026-06-15T00:01:00.000Z",
+      },
+    ],
+  };
+}
+
 describe("musicLibrary", () => {
   it("creates an empty library", () => {
     expect(createInitialMusicLibrary()).toEqual({ playlists: [] });
+  });
+
+  it("returns the unchanged state for blank playlist names", () => {
+    const empty = createInitialMusicLibrary();
+    const library = createMusicPlaylist(empty, { name: "A" }, "2026-06-15T00:00:00.000Z");
+
+    expect(createMusicPlaylist(empty, { name: "   " }, "2026-06-15T00:01:00.000Z")).toBe(empty);
+    expect(renameMusicPlaylist(library, "playlist-a", "   ", "2026-06-15T00:02:00.000Z")).toBe(library);
   });
 
   it("creates, resolves, and summarizes playlists", () => {
@@ -53,11 +82,13 @@ describe("musicLibrary", () => {
   });
 
   it("keeps duplicate playlist names addressable with stable ids", () => {
-    const first = createMusicPlaylist(createInitialMusicLibrary(), { name: "歌单" }, "2026-06-15T00:00:00.000Z");
-    const second = createMusicPlaylist(first, { name: "歌单" }, "2026-06-15T00:01:00.000Z");
+    const name = "\u6b4c\u5355";
+    const first = createMusicPlaylist(createInitialMusicLibrary(), { name }, "2026-06-15T00:00:00.000Z");
+    const second = createMusicPlaylist(first, { name }, "2026-06-15T00:01:00.000Z");
+    const third = createMusicPlaylist(second, { name }, "2026-06-15T00:02:00.000Z");
 
-    expect(second.playlists.map((playlist) => playlist.id)).toEqual(["playlist-playlist", "playlist-playlist-2"]);
-    expect(second.playlists.map((playlist) => playlist.name)).toEqual(["歌单", "歌单"]);
+    expect(third.playlists.map((playlist) => playlist.id)).toEqual(["playlist-playlist", "playlist-playlist-2", "playlist-playlist-3"]);
+    expect(third.playlists.map((playlist) => playlist.name)).toEqual([name, name, name]);
   });
 
   it("renames and deletes playlists without touching other playlists", () => {
@@ -82,6 +113,34 @@ describe("musicLibrary", () => {
     expect(updated.playlists[0].updatedAt).toBe("2026-06-15T00:02:00.000Z");
   });
 
+  it("clones returned arrays and items without mutating input state", () => {
+    const item = makeItem("song", "Song");
+    const library = createMusicPlaylist(createInitialMusicLibrary(), { name: "A" }, "2026-06-15T00:00:00.000Z");
+    const withSong = addMusicItemToPlaylist(library, "playlist-a", item, "user", "2026-06-15T00:01:00.000Z");
+    const resolved = getMusicPlaylistByIdOrName(withSong, "playlist-a");
+
+    item.tags.push("mutated-input");
+
+    expect(library.playlists[0].items).toEqual([]);
+    expect(withSong).not.toBe(library);
+    expect(withSong.playlists).not.toBe(library.playlists);
+    expect(withSong.playlists[0]).not.toBe(library.playlists[0]);
+    expect(withSong.playlists[0].items).not.toBe(library.playlists[0].items);
+    expect(withSong.playlists[0].items[0].item).not.toBe(item);
+    expect(withSong.playlists[0].items[0].item.tags).toEqual(["netease"]);
+
+    expect(resolved).not.toBeNull();
+    const resolvedPlaylist = resolved!;
+    expect(resolvedPlaylist).not.toBe(withSong.playlists[0]);
+    expect(resolvedPlaylist.items).not.toBe(withSong.playlists[0].items);
+    expect(resolvedPlaylist.items[0]).not.toBe(withSong.playlists[0].items[0]);
+    expect(resolvedPlaylist.items[0].item).not.toBe(withSong.playlists[0].items[0].item);
+
+    resolvedPlaylist.items[0].item.tags.push("mutated-resolved");
+
+    expect(withSong.playlists[0].items[0].item.tags).toEqual(["netease"]);
+  });
+
   it("removes one item from a playlist", () => {
     const library = createMusicPlaylist(createInitialMusicLibrary(), { name: "A" }, "2026-06-15T00:00:00.000Z");
     const withA = addMusicItemToPlaylist(library, "playlist-a", makeItem("a", "A"), "user", "2026-06-15T00:01:00.000Z");
@@ -97,5 +156,14 @@ describe("musicLibrary", () => {
 
     expect(isMusicLibraryState(library)).toBe(true);
     expect(isMusicLibraryState({ playlists: [{ id: "bad", name: "Bad", items: [{}] }] })).toBe(false);
+  });
+
+  it("rejects stored music items with invalid hydration fields", () => {
+    const nonArrayTags = { ...makeItem("a", "A"), tags: "netease" };
+    const missingCanOpenVideo: Record<string, unknown> = { ...makeItem("b", "B") };
+    delete missingCanOpenVideo.canOpenVideo;
+
+    expect(isMusicLibraryState(makeStoredLibrary(nonArrayTags))).toBe(false);
+    expect(isMusicLibraryState(makeStoredLibrary(missingCanOpenVideo))).toBe(false);
   });
 });
