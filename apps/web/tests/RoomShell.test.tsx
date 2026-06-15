@@ -1097,6 +1097,34 @@ describe("RoomShell", () => {
     expect(apiMocks.createSession).not.toHaveBeenCalled();
   });
 
+  it("renders markdown formatting inside chat bubbles", async () => {
+    const session = makeSession({
+      id: "session-markdown",
+      title: "Markdown session",
+      latestMessagePreview: "Markdown preview"
+    });
+    apiMocks.getSessions.mockResolvedValueOnce([session]);
+    apiMocks.getSessionMessages.mockResolvedValueOnce([
+      makeStoredMessage({
+        id: "message-markdown",
+        sessionId: "session-markdown",
+        role: "kumiko",
+        content: "**Strong theme**\n\n- First cue\n- Second cue"
+      })
+    ]);
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: "Markdown session" })).toBeTruthy();
+    const timelineElement = document.querySelector<HTMLElement>(".chat-timeline");
+    expect(timelineElement).toBeTruthy();
+    const timeline = within(timelineElement as HTMLElement);
+    const strong = await timeline.findByText("Strong theme");
+    expect(strong.tagName).toBe("STRONG");
+    expect(within(timeline.getByRole("list")).getAllByRole("listitem")).toHaveLength(2);
+    expect(timeline.queryByText(/\*\*Strong theme\*\*/)).toBeNull();
+  });
+
   it("creates a session and switches to its empty timeline", async () => {
     const createdSession = makeSession({
       id: "session-created",

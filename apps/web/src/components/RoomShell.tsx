@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, FormEvent, KeyboardEvent, SyntheticEvent, useCallback, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import {
   createSession,
   deleteSession,
@@ -1442,7 +1443,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                         <span>{isUser ? "你" : initialState.character.displayName}</span>
                         <span>{getMessageStatusLabel(isUser, isPending, isFailed)}</span>
                       </div>
-                      <p className="bubble">{message.content}</p>
+                      <MarkdownBubble content={message.content} />
                       {isFailed ? (
                         <button
                           className="message-retry"
@@ -1983,6 +1984,262 @@ function formatPlayerTime(value: number): string {
   const seconds = safeValue % 60;
 
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+type MarkdownBlock =
+  | { type: "paragraph"; text: string }
+  | { type: "heading"; level: number; text: string }
+  | { type: "blockquote"; text: string }
+  | { type: "unordered-list"; items: string[] }
+  | { type: "ordered-list"; items: string[] }
+  | { type: "code"; language: string; text: string };
+
+function MarkdownBubble({ content }: { content: string }) {
+  const blocks = parseMarkdownBlocks(content);
+
+  return <div className="bubble bubble-markdown">{blocks.map((block, index) => renderMarkdownBlock(block, index))}</div>;
+}
+
+function parseMarkdownBlocks(content: string): MarkdownBlock[] {
+  const lines = content.replace(/\r\n?/g, "\n").split("\n");
+  const blocks: MarkdownBlock[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    if (line.trim() === "") {
+      index += 1;
+      continue;
+    }
+
+    const codeFence = line.match(/^\s*```([\w-]+)?\s*$/);
+    if (codeFence) {
+      const codeLines: string[] = [];
+      index += 1;
+      while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) index += 1;
+      blocks.push({ type: "code", language: codeFence[1] ?? "", text: codeLines.join("\n") });
+      continue;
+    }
+
+    const heading = line.match(/^\s{0,3}(#{1,4})\s+(.+)$/);
+    if (heading) {
+      blocks.push({ type: "heading", level: heading[1].length, text: heading[2].trim() });
+      index += 1;
+      continue;
+    }
+
+    const unorderedItem = line.match(/^\s*[-+*]\s+(.+)$/);
+    if (unorderedItem) {
+      const items: string[] = [];
+      while (index < lines.length) {
+        const item = lines[index].match(/^\s*[-+*]\s+(.+)$/);
+        if (!item) break;
+        items.push(item[1]);
+        index += 1;
+      }
+      blocks.push({ type: "unordered-list", items });
+      continue;
+    }
+
+    const orderedItem = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (orderedItem) {
+      const items: string[] = [];
+      while (index < lines.length) {
+        const item = lines[index].match(/^\s*\d+[.)]\s+(.+)$/);
+        if (!item) break;
+        items.push(item[1]);
+        index += 1;
+      }
+      blocks.push({ type: "ordered-list", items });
+      continue;
+    }
+
+    const quote = line.match(/^\s*>\s?(.*)$/);
+    if (quote) {
+      const quoteLines: string[] = [];
+      while (index < lines.length) {
+        const quoteLine = lines[index].match(/^\s*>\s?(.*)$/);
+        if (!quoteLine) break;
+        quoteLines.push(quoteLine[1]);
+        index += 1;
+      }
+      blocks.push({ type: "blockquote", text: quoteLines.join("\n") });
+      continue;
+    }
+
+    const paragraphLines: string[] = [];
+    while (index < lines.length && lines[index].trim() !== "" && !isMarkdownBlockStart(lines[index])) {
+      paragraphLines.push(lines[index]);
+      index += 1;
+    }
+    blocks.push({ type: "paragraph", text: paragraphLines.join("\n") });
+  }
+
+  if (blocks.length === 0) return [{ type: "paragraph", text: "" }];
+
+  return blocks;
+}
+
+function isMarkdownBlockStart(line: string): boolean {
+  return (
+    /^\s*```/.test(line) ||
+    /^\s{0,3}#{1,4}\s+/.test(line) ||
+    /^\s*[-+*]\s+/.test(line) ||
+    /^\s*\d+[.)]\s+/.test(line) ||
+    /^\s*>\s?/.test(line)
+  );
+}
+
+function renderMarkdownBlock(block: MarkdownBlock, index: number): ReactNode {
+  if (block.type === "heading") {
+    return (
+      <p className="markdown-heading" role="heading" aria-level={Math.min(block.level + 2, 6)} key={`heading-${index}`}>
+        {renderInlineMarkdown(block.text, `heading-${index}`)}
+      </p>
+    );
+  }
+
+  if (block.type === "blockquote") {
+    return <blockquote key={`quote-${index}`}>{renderInlineMarkdown(block.text, `quote-${index}`)}</blockquote>;
+  }
+
+  if (block.type === "unordered-list") {
+    return (
+      <ul key={`ul-${index}`}>
+        {block.items.map((item, itemIndex) => (
+          <li key={`ul-${index}-${itemIndex}`}>{renderInlineMarkdown(item, `ul-${index}-${itemIndex}`)}</li>
+        ))}
+      </ul>
+    );
+  }
+
+  if (block.type === "ordered-list") {
+    return (
+      <ol key={`ol-${index}`}>
+        {block.items.map((item, itemIndex) => (
+          <li key={`ol-${index}-${itemIndex}`}>{renderInlineMarkdown(item, `ol-${index}-${itemIndex}`)}</li>
+        ))}
+      </ol>
+    );
+  }
+
+  if (block.type === "code") {
+    return (
+      <pre key={`code-${index}`}>
+        <code className={block.language ? `language-${block.language}` : undefined}>{block.text}</code>
+      </pre>
+    );
+  }
+
+  return <p key={`paragraph-${index}`}>{renderInlineMarkdown(block.text, `paragraph-${index}`)}</p>;
+}
+
+function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  let buffer = "";
+  let index = 0;
+  let nodeIndex = 0;
+
+  const flushText = () => {
+    if (!buffer) return;
+    const parts = buffer.split("\n");
+    parts.forEach((part, partIndex) => {
+      if (partIndex > 0) {
+        nodes.push(<br key={`${keyPrefix}-br-${nodeIndex}`} />);
+        nodeIndex += 1;
+      }
+      if (part) nodes.push(part);
+    });
+    buffer = "";
+  };
+
+  while (index < text.length) {
+    if (text[index] === "`") {
+      const end = text.indexOf("`", index + 1);
+      if (end > index + 1) {
+        flushText();
+        nodes.push(<code key={`${keyPrefix}-code-${nodeIndex}`}>{text.slice(index + 1, end)}</code>);
+        nodeIndex += 1;
+        index = end + 1;
+        continue;
+      }
+    }
+
+    if (text.startsWith("**", index)) {
+      const end = text.indexOf("**", index + 2);
+      if (end > index + 2) {
+        flushText();
+        nodes.push(
+          <strong key={`${keyPrefix}-strong-${nodeIndex}`}>
+            {renderInlineMarkdown(text.slice(index + 2, end), `${keyPrefix}-strong-${nodeIndex}`)}
+          </strong>
+        );
+        nodeIndex += 1;
+        index = end + 2;
+        continue;
+      }
+    }
+
+    if (text[index] === "*" && !text.startsWith("**", index)) {
+      const end = text.indexOf("*", index + 1);
+      if (end > index + 1) {
+        flushText();
+        nodes.push(
+          <em key={`${keyPrefix}-em-${nodeIndex}`}>
+            {renderInlineMarkdown(text.slice(index + 1, end), `${keyPrefix}-em-${nodeIndex}`)}
+          </em>
+        );
+        nodeIndex += 1;
+        index = end + 1;
+        continue;
+      }
+    }
+
+    if (text[index] === "[") {
+      const labelEnd = text.indexOf("](", index);
+      const hrefEnd = labelEnd >= 0 ? text.indexOf(")", labelEnd + 2) : -1;
+      if (labelEnd > index && hrefEnd > labelEnd + 2) {
+        const label = text.slice(index + 1, labelEnd);
+        const href = getSafeMarkdownHref(text.slice(labelEnd + 2, hrefEnd));
+        if (href) {
+          const isExternal = /^https?:\/\//i.test(href);
+          flushText();
+          nodes.push(
+            <a
+              href={href}
+              key={`${keyPrefix}-link-${nodeIndex}`}
+              rel={isExternal ? "noreferrer" : undefined}
+              target={isExternal ? "_blank" : undefined}
+            >
+              {renderInlineMarkdown(label, `${keyPrefix}-link-${nodeIndex}`)}
+            </a>
+          );
+          nodeIndex += 1;
+          index = hrefEnd + 1;
+          continue;
+        }
+      }
+    }
+
+    buffer += text[index];
+    index += 1;
+  }
+
+  flushText();
+  return nodes;
+}
+
+function getSafeMarkdownHref(href: string): string | null {
+  const trimmed = href.trim();
+  if (/^(https?:\/\/|mailto:)/i.test(trimmed) || trimmed.startsWith("/") || trimmed.startsWith("#")) {
+    return trimmed;
+  }
+
+  return null;
 }
 
 function shouldUseSparseTimeline(messages: ChatMessage[]): boolean {
