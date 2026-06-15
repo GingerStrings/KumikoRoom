@@ -137,6 +137,20 @@ describe("RoomShell", () => {
     expect(screen.queryByTitle(/视频播放/)).toBeNull();
   });
 
+  it("switches the right-side standee between playing and idle art", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    const standee = document.querySelector<HTMLImageElement>(".standee-img");
+    expect(standee?.getAttribute("src")).toBe("/assets/kumiko-euphonium-playing-v1.png");
+
+    fireEvent.click(screen.getByRole("button", { name: "暂停" }));
+    expect(standee?.getAttribute("src")).toBe("/assets/kumiko-standee-v1.png");
+
+    fireEvent.click(screen.getByRole("button", { name: "播放" }));
+    expect(standee?.getAttribute("src")).toBe("/assets/kumiko-euphonium-playing-v1.png");
+  });
+
   it("updates Netease progress from media events and controls the platform audio element", async () => {
     render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
 

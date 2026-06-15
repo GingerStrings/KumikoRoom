@@ -162,6 +162,9 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const playButtonLabel = hasPlatformAudio ? (isPlayerPlaying ? "暂停" : "播放") : "打开平台播放器";
   const playbackModeLabel = getPlaybackModeLabel(playbackMode);
   const playbackModeIcon = getPlaybackModeIcon(playbackMode);
+  const standeeImageSrc = isPlayerPlaying
+    ? "/assets/kumiko-euphonium-playing-v1.png"
+    : "/assets/kumiko-standee-v1.png";
   const activeListeningContext = buildListeningContext(activeTrack, isPlayerPlaying);
   const setActiveSessionId = useCallback((sessionId: string | null) => {
     activeSessionIdRef.current = sessionId;
@@ -1528,7 +1531,12 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
 
         <aside className="profile" aria-label="播放器面板" data-playing={isPlayerPlaying ? "true" : "false"}>
           <div className="standee-stage" aria-hidden="true">
-            <img className="standee-img" src="/assets/kumiko-standee-v1.png" alt="" />
+            <img
+              className="standee-img"
+              src={standeeImageSrc}
+              alt=""
+              data-performance={isPlayerPlaying ? "playing" : "idle"}
+            />
           </div>
           <section className="media-player" aria-label="氛围播放器">
             {activeTrack.platformAudioUrl ? (
