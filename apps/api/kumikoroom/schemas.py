@@ -130,9 +130,19 @@ class RoomClientActionOut(BaseModel):
         "unsave_music_item",
         "clear_music_queue",
         "open_video_window",
+        "create_music_playlist",
+        "rename_music_playlist",
+        "delete_music_playlist",
+        "add_music_to_playlist",
+        "remove_music_from_playlist",
+        "play_music_playlist",
+        "add_playlist_to_queue",
     ]
     item: ClientMusicItemOut | None = None
     item_id: str | None = None
+    playlist_id: str | None = None
+    playlist_name: str | None = None
+    description: str | None = None
 
 
 class AgentTraceOut(BaseModel):

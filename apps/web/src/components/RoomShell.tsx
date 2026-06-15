@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, SyntheticEvent, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, FormEvent, KeyboardEvent, SyntheticEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   createSession,
   deleteSession,
@@ -12,6 +12,7 @@ import {
 import type {
   ChatMessage,
   ChatSession,
+  ClientMusicItem,
   PersonaStrength,
   ProviderStatus,
   RoomClientAction,
@@ -19,11 +20,24 @@ import type {
   StoredChatMessage
 } from "../api/types";
 import type { ConnectionStatus } from "../lib/connectionStatus";
-import { PLAYER_TRACKS, buildListeningContext } from "../lib/musicItems";
+import { PLAYER_TRACKS, buildListeningContext, makeMusicItemFromClientActionItem } from "../lib/musicItems";
 import type { ListeningContext, MusicItem, MusicSourceKind } from "../lib/musicItems";
 import { buildMusicAgentState } from "../lib/musicAgentState";
 import {
+  addMusicItemToPlaylist,
+  createInitialMusicLibrary,
+  createMusicPlaylist,
+  deleteMusicPlaylist,
+  getAvailableMusicPlaylistId,
+  getMusicPlaylistByIdOrName,
+  isMusicLibraryState,
+  removeMusicItemFromPlaylist,
+  renameMusicPlaylist,
+  type MusicLibraryState
+} from "../lib/musicLibrary";
+import {
   addQueueItem,
+  appendMusicItemsToQueue,
   applyClientMusicActionToQueue,
   clearUpcomingQueue,
   createInitialMusicQueue,
@@ -34,6 +48,7 @@ import {
   getRecentQueueEntries,
   getSavedQueueEntries,
   getUpcomingQueueEntries,
+  playMusicItemsAsQueue,
   playQueueItem,
   removeQueueEntry,
   saveQueueItem,
@@ -47,6 +62,9 @@ import { VideoMiniWindow } from "./VideoMiniWindow";
 
 const LAST_SESSION_STORAGE_KEY = "kumikoroom.lastSessionId";
 const MUSIC_QUEUE_STORAGE_KEY = "kumikoroom.musicQueue";
+const MUSIC_LIBRARY_STORAGE_KEY = "kumikoroom.musicLibrary";
+
+type MusicPanelTab = "queue" | "playlists" | "recent" | "saved";
 
 interface FailedOutgoingMessage {
   id: string;
@@ -92,17 +110,25 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const [failedOutgoing, setFailedOutgoing] = useState<FailedOutgoingMessage | null>(null);
   const [musicQueue, setMusicQueue] = useState<MusicQueueState>(() => createInitialMusicQueue(PLAYER_TRACKS));
   const [musicQueueHydrated, setMusicQueueHydrated] = useState(false);
+  const [musicLibrary, setMusicLibrary] = useState<MusicLibraryState>(() => createInitialMusicLibrary());
+  const [musicLibraryHydrated, setMusicLibraryHydrated] = useState(false);
   const [queuePanelOpen, setQueuePanelOpen] = useState(false);
-  const [queuePanelTab, setQueuePanelTab] = useState<"upcoming" | "recent" | "saved">("upcoming");
+  const [queuePanelTab, setQueuePanelTab] = useState<MusicPanelTab>("queue");
+  const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null);
+  const [playlistDraftName, setPlaylistDraftName] = useState("");
+  const [playlistDraftDescription, setPlaylistDraftDescription] = useState("");
+  const [playlistRenameName, setPlaylistRenameName] = useState("");
   const [isPlayerPlaying, setIsPlayerPlaying] = useState(true);
   const [playerCurrentTime, setPlayerCurrentTime] = useState(0);
   const [playerDuration, setPlayerDuration] = useState((PLAYER_TRACKS[0]?.durationMs ?? 0) / 1000);
   const [videoWindowOpen, setVideoWindowOpen] = useState(false);
   const [videoWindowSize, setVideoWindowSize] = useState<"compact" | "large">("compact");
   const musicQueueRef = useRef(musicQueue);
+  const musicLibraryRef = useRef(musicLibrary);
   const videoWindowOpenRef = useRef(videoWindowOpen);
   const connectionLabel = providerStatus?.label ?? connectionStatus.label;
   musicQueueRef.current = musicQueue;
+  musicLibraryRef.current = musicLibrary;
   videoWindowOpenRef.current = videoWindowOpen;
   const playerQueueEntries = getPlaybackQueueEntries(musicQueue);
   const playerQueue = playerQueueEntries.map((entry) => entry.item);
@@ -113,6 +139,10 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const upcomingQueueEntries = getUpcomingQueueEntries(musicQueue);
   const recentQueueEntries = getRecentQueueEntries(musicQueue);
   const savedQueueEntries = getSavedQueueEntries(musicQueue);
+  const selectedPlaylist =
+    musicLibrary.playlists.find((playlist) => playlist.id === selectedPlaylistId) ??
+    musicLibrary.playlists[0] ??
+    null;
   const visibleQueuePanelEntries = getVisibleQueuePanelEntries(
     queuePanelTab,
     upcomingQueueEntries,
@@ -255,10 +285,38 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const storedLibrary = readStoredMusicLibrary(window.localStorage);
+    if (storedLibrary) {
+      setMusicLibrary(storedLibrary);
+    }
+    setMusicLibraryHydrated(true);
+  }, []);
+
+  useEffect(() => {
     if (!musicQueueHydrated || typeof window === "undefined") return;
 
     window.localStorage.setItem(MUSIC_QUEUE_STORAGE_KEY, JSON.stringify(musicQueue));
   }, [musicQueue, musicQueueHydrated]);
+
+  useEffect(() => {
+    if (!musicLibraryHydrated || typeof window === "undefined") return;
+
+    window.localStorage.setItem(MUSIC_LIBRARY_STORAGE_KEY, JSON.stringify(musicLibrary));
+  }, [musicLibrary, musicLibraryHydrated]);
+
+  useEffect(() => {
+    if (selectedPlaylistId && musicLibrary.playlists.some((playlist) => playlist.id === selectedPlaylistId)) {
+      return;
+    }
+
+    setSelectedPlaylistId(musicLibrary.playlists[0]?.id ?? null);
+  }, [musicLibrary.playlists, selectedPlaylistId]);
+
+  useEffect(() => {
+    setPlaylistRenameName(selectedPlaylist?.name ?? "");
+  }, [selectedPlaylist?.id, selectedPlaylist?.name]);
 
   useEffect(() => {
     if (activeTrack.canOpenVideo) return;
@@ -314,7 +372,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
       isPlaying: isPlayerPlaying,
       currentTimeMs: Math.round(playerCurrentTime * 1000),
       durationMs: Math.round(playerDurationSeconds * 1000)
-    });
+    }, musicLibrary);
 
     const recentMessages = retryMessage?.recentMessages ?? messages.slice(-8);
     const userMessage: ChatMessage = {
@@ -513,12 +571,19 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     }
 
     const queueBeforeActions = musicQueueRef.current;
+    const libraryBeforeActions = musicLibraryRef.current;
     const activeEntryBeforeActions = getCurrentQueueEntry(queueBeforeActions);
     const activeTrackBeforeActions = activeEntryBeforeActions?.item ?? activeTrack;
     const previousActiveTrackId = activeTrackBeforeActions.id;
     let nextQueueState = queueBeforeActions;
+    let nextLibraryState = libraryBeforeActions;
     let nextVideoWindowOpen = videoWindowOpenRef.current;
     let shouldPlay = false;
+    const playlistIdAliases = new Map<string, string>();
+
+    function resolvePlaylistId(playlistId: string): string {
+      return playlistIdAliases.get(playlistId) ?? playlistId;
+    }
 
     for (const clientAction of actions) {
       switch (clientAction.type) {
@@ -549,6 +614,62 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
           nextVideoWindowOpen = clientAction.item.canOpenVideo;
           shouldPlay = true;
           break;
+        case "create_music_playlist": {
+          const playlistId = getAvailableMusicPlaylistId(nextLibraryState, clientAction.playlistId);
+          playlistIdAliases.set(clientAction.playlistId, playlistId);
+          nextLibraryState = createMusicPlaylist(
+            nextLibraryState,
+            {
+              id: playlistId,
+              name: clientAction.playlistName,
+              description: clientAction.description?.trim() ? clientAction.description : undefined
+            }
+          );
+          break;
+        }
+        case "rename_music_playlist":
+          nextLibraryState = renameMusicPlaylist(
+            nextLibraryState,
+            resolvePlaylistId(clientAction.playlistId),
+            clientAction.playlistName
+          );
+          break;
+        case "delete_music_playlist":
+          nextLibraryState = deleteMusicPlaylist(nextLibraryState, resolvePlaylistId(clientAction.playlistId));
+          break;
+        case "add_music_to_playlist":
+          nextLibraryState = addMusicItemToPlaylist(
+            nextLibraryState,
+            resolvePlaylistId(clientAction.playlistId),
+            makeMusicItemFromClientActionItem(clientAction.item),
+            "agent"
+          );
+          break;
+        case "remove_music_from_playlist":
+          nextLibraryState = removeMusicItemFromPlaylist(
+            nextLibraryState,
+            resolvePlaylistId(clientAction.playlistId),
+            clientAction.itemId
+          );
+          break;
+        case "play_music_playlist": {
+          const playlist = getMusicPlaylistByIdOrName(nextLibraryState, resolvePlaylistId(clientAction.playlistId));
+          const playlistItems = playlist?.items.map((entry) => entry.item) ?? [];
+          if (playlistItems.length > 0) {
+            nextQueueState = playMusicItemsAsQueue(nextQueueState, playlistItems, "agent");
+            nextVideoWindowOpen = playlistItems[0].canOpenVideo ? nextVideoWindowOpen : false;
+            shouldPlay = true;
+          }
+          break;
+        }
+        case "add_playlist_to_queue": {
+          const playlist = getMusicPlaylistByIdOrName(nextLibraryState, resolvePlaylistId(clientAction.playlistId));
+          const playlistItems = playlist?.items.map((entry) => entry.item) ?? [];
+          if (playlistItems.length > 0) {
+            nextQueueState = appendMusicItemsToQueue(nextQueueState, playlistItems, "agent");
+          }
+          break;
+        }
       }
     }
 
@@ -566,6 +687,9 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     }
 
     const resolvedVideoWindowOpen = nextTrack.canOpenVideo ? nextVideoWindowOpen : false;
+    if (nextLibraryState !== libraryBeforeActions) {
+      commitMusicLibrary(nextLibraryState);
+    }
     commitMusicQueue(nextQueueState);
     commitVideoWindowOpen(resolvedVideoWindowOpen);
   }
@@ -620,6 +744,103 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     commitVideoWindowOpen(true);
   }
 
+  function handleCreatePlaylist(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = playlistDraftName.trim();
+    if (!name) return;
+
+    const before = musicLibraryRef.current;
+    const nextLibraryState = createMusicPlaylist(
+      before,
+      {
+        name,
+        description: playlistDraftDescription.trim() || undefined
+      }
+    );
+    const createdPlaylist =
+      nextLibraryState.playlists.find((playlist) => !before.playlists.some((current) => current.id === playlist.id)) ??
+      nextLibraryState.playlists[nextLibraryState.playlists.length - 1] ??
+      null;
+
+    commitMusicLibrary(nextLibraryState);
+    setSelectedPlaylistId(createdPlaylist?.id ?? selectedPlaylistId);
+    setPlaylistRenameName(createdPlaylist?.name ?? "");
+    setPlaylistDraftName("");
+    setPlaylistDraftDescription("");
+  }
+
+  function handlePlaylistSelect(playlistId: string) {
+    const playlist = getMusicPlaylistByIdOrName(musicLibraryRef.current, playlistId);
+    setSelectedPlaylistId(playlistId);
+    setPlaylistRenameName(playlist?.name ?? "");
+  }
+
+  function handleRenameSelectedPlaylist(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedPlaylist) return;
+
+    const nextName = playlistRenameName.trim();
+    if (!nextName) return;
+
+    commitMusicLibrary(renameMusicPlaylist(musicLibraryRef.current, selectedPlaylist.id, nextName));
+  }
+
+  function handleDeletePlaylist(playlistId: string) {
+    commitMusicLibrary(deleteMusicPlaylist(musicLibraryRef.current, playlistId));
+    if (selectedPlaylistId === playlistId) {
+      setSelectedPlaylistId(null);
+      setPlaylistRenameName("");
+    }
+  }
+
+  function handleAddItemToSelectedPlaylist(item: MusicItem) {
+    if (!selectedPlaylist) return;
+
+    commitMusicLibrary(addMusicItemToPlaylist(musicLibraryRef.current, selectedPlaylist.id, item, "user"));
+  }
+
+  function handleRemoveItemFromPlaylist(playlistId: string, itemId: string) {
+    commitMusicLibrary(removeMusicItemFromPlaylist(musicLibraryRef.current, playlistId, itemId));
+  }
+
+  function handlePlayMusicItems(items: MusicItem[]) {
+    const firstItem = items[0];
+    if (!firstItem) return;
+
+    platformAudioRef.current?.pause();
+    commitMusicQueue(playMusicItemsAsQueue(musicQueueRef.current, items, "user"));
+    setPlayerCurrentTime(0);
+    setPlayerDuration(firstItem.durationMs / 1000);
+    setIsPlayerPlaying(true);
+    if (!firstItem.canOpenVideo) {
+      commitVideoWindowOpen(false);
+    }
+  }
+
+  function handlePlayPlaylist(playlistId: string) {
+    const playlist = getMusicPlaylistByIdOrName(musicLibraryRef.current, playlistId);
+    handlePlayMusicItems(playlist?.items.map((entry) => entry.item) ?? []);
+  }
+
+  function handleAppendPlaylistToQueue(playlistId: string) {
+    const playlist = getMusicPlaylistByIdOrName(musicLibraryRef.current, playlistId);
+    const items = playlist?.items.map((entry) => entry.item) ?? [];
+    if (items.length === 0) return;
+
+    commitMusicQueue(appendMusicItemsToQueue(musicQueueRef.current, items, "user"));
+  }
+
+  function handleSaveMusicItem(item: MusicItem) {
+    updateMusicQueue((currentQueue) => saveQueueItem(currentQueue, makeClientMusicItemFromMusicItem(item)));
+  }
+
+  function handleOpenMusicItemVideo(item: MusicItem) {
+    if (!item.canOpenVideo) return;
+
+    handlePlayMusicItems([item]);
+    commitVideoWindowOpen(true);
+  }
+
   function handlePlayPause() {
     if (!hasPlatformAudio) {
       if (activeTrack.canOpenVideo) {
@@ -646,6 +867,14 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
 
   function updateMusicQueue(updater: (currentQueue: MusicQueueState) => MusicQueueState) {
     commitMusicQueue(updater(musicQueueRef.current));
+  }
+
+  function commitMusicLibrary(nextLibraryState: MusicLibraryState) {
+    musicLibraryRef.current = nextLibraryState;
+    setMusicLibrary(nextLibraryState);
+    if (musicLibraryHydrated && typeof window !== "undefined") {
+      window.localStorage.setItem(MUSIC_LIBRARY_STORAGE_KEY, JSON.stringify(nextLibraryState));
+    }
   }
 
   function commitVideoWindowOpen(open: boolean) {
@@ -739,6 +968,114 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     } catch {
       // Session errors are shown by the shared sidebar state.
     }
+  }
+
+  function renderAddToPlaylistControl(item: MusicItem) {
+    if (musicLibrary.playlists.length === 0) {
+      return <span className="music-add-to-playlist-empty">先新建歌单</span>;
+    }
+
+    const playlistId = selectedPlaylist?.id ?? musicLibrary.playlists[0].id;
+
+    return (
+      <div className="music-add-to-playlist">
+        <select
+          aria-label={`选择歌单 ${item.title}`}
+          value={playlistId}
+          onChange={(event) => handlePlaylistSelect(event.currentTarget.value)}
+        >
+          {musicLibrary.playlists.map((playlist) => (
+            <option key={playlist.id} value={playlist.id}>
+              {playlist.name}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={() =>
+            commitMusicLibrary(addMusicItemToPlaylist(musicLibraryRef.current, playlistId, item, "user"))
+          }
+        >
+          加入歌单
+        </button>
+      </div>
+    );
+  }
+
+  function renderQueueEntryRow(
+    entry: MusicQueueEntry,
+    options: { active?: boolean; removable?: boolean } = {}
+  ) {
+    return (
+      <article className="music-queue-row" data-active={options.active ? "true" : undefined}>
+        <div className="music-queue-row-copy">
+          <span className="source-badge" data-source={entry.item.source}>
+            {getMusicSourceLabel(entry.item.source)}
+          </span>
+          <div>
+            <strong>{entry.item.title}</strong>
+            <span>{entry.item.creator}</span>
+            {entry.sourceQuery ? <em>来自: {entry.sourceQuery}</em> : null}
+            {entry.selectedReason ? <em>{entry.selectedReason}</em> : null}
+          </div>
+        </div>
+        <div className="music-queue-row-actions">
+          <button type="button" onClick={() => handleQueueEntryPlay(entry.id)}>
+            播放
+          </button>
+          <button
+            type="button"
+            aria-label={`${entry.saved ? "取消收藏" : "收藏"} ${entry.item.title}`}
+            onClick={() => handleQueueEntrySave(entry.id)}
+          >
+            {entry.saved ? "取消收藏" : "收藏"}
+          </button>
+          {entry.item.canOpenVideo ? (
+            <button type="button" onClick={() => handleQueueEntryVideo(entry)}>
+              小窗
+            </button>
+          ) : null}
+          {options.removable ? (
+            <button type="button" onClick={() => handleQueueEntryRemove(entry.id)}>
+              移除
+            </button>
+          ) : null}
+          {renderAddToPlaylistControl(entry.item)}
+        </div>
+      </article>
+    );
+  }
+
+  function renderPlaylistItemRow(item: MusicItem, playlistId: string) {
+    return (
+      <article className="music-queue-row" key={`${playlistId}-${item.id}`}>
+        <div className="music-queue-row-copy">
+          <span className="source-badge" data-source={item.source}>
+            {getMusicSourceLabel(item.source)}
+          </span>
+          <div>
+            <strong>{item.title}</strong>
+            <span>{item.creator}</span>
+          </div>
+        </div>
+        <div className="music-queue-row-actions">
+          <button type="button" onClick={() => handlePlayMusicItems([item])}>
+            播放
+          </button>
+          <button type="button" onClick={() => handleRemoveItemFromPlaylist(playlistId, item.id)}>
+            移除
+          </button>
+          <button type="button" onClick={() => handleSaveMusicItem(item)}>
+            收藏
+          </button>
+          {item.canOpenVideo ? (
+            <button type="button" onClick={() => handleOpenMusicItemVideo(item)}>
+              小窗
+            </button>
+          ) : null}
+        </div>
+      </article>
+    );
   }
 
   return (
@@ -1264,14 +1601,19 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
             <div className="music-queue-panel-head">
               <div>
                 <strong>音乐记录</strong>
-                <span>正在播放、接下来和收藏</span>
+                <span>正在播放、队列、歌单和收藏</span>
               </div>
               <button type="button" aria-label="关闭音乐记录" onClick={() => setQueuePanelOpen(false)}>
                 ×
               </button>
             </div>
             <div className="music-queue-tabs" role="tablist" aria-label="音乐记录分类">
-              {(["upcoming", "recent", "saved"] as const).map((tab) => (
+              {([
+                ["queue", "接下来"],
+                ["playlists", "我的歌单"],
+                ["recent", "最近"],
+                ["saved", "收藏"]
+              ] as const).map(([tab, label]) => (
                 <button
                   key={tab}
                   type="button"
@@ -1279,88 +1621,121 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                   aria-selected={queuePanelTab === tab}
                   onClick={() => setQueuePanelTab(tab)}
                 >
-                  {tab === "upcoming" ? "接下来" : tab === "recent" ? "最近" : "收藏"}
+                  {label}
                 </button>
               ))}
             </div>
             <div className="music-queue-list">
-              {queuePanelTab === "upcoming" && activeQueueEntry ? (
+              {queuePanelTab === "queue" && activeQueueEntry ? (
                 <div className="music-queue-now">
                   <span className="music-queue-section-label">正在播放</span>
-                  <article className="music-queue-row" data-active="true">
-                    <div className="music-queue-row-copy">
-                      <span className="source-badge" data-source={activeQueueEntry.item.source}>
-                        {getMusicSourceLabel(activeQueueEntry.item.source)}
-                      </span>
-                      <div>
-                        <strong>{activeQueueEntry.item.title}</strong>
-                        <span>{activeQueueEntry.item.creator}</span>
-                        {activeQueueEntry.sourceQuery ? <em>来自: {activeQueueEntry.sourceQuery}</em> : null}
-                        {activeQueueEntry.selectedReason ? <em>{activeQueueEntry.selectedReason}</em> : null}
-                      </div>
-                    </div>
-                    <div className="music-queue-row-actions">
-                      <button type="button" onClick={() => handleQueueEntryPlay(activeQueueEntry.id)}>
-                        播放
-                      </button>
-                      <button
-                        type="button"
-                        aria-label={`${activeQueueEntry.saved ? "取消收藏" : "收藏"} ${activeQueueEntry.item.title}`}
-                        onClick={() => handleQueueEntrySave(activeQueueEntry.id)}
-                      >
-                        {activeQueueEntry.saved ? "取消收藏" : "收藏"}
-                      </button>
-                      {activeQueueEntry.item.canOpenVideo ? (
-                        <button type="button" onClick={() => handleQueueEntryVideo(activeQueueEntry)}>
-                          小窗
-                        </button>
-                      ) : null}
-                    </div>
-                  </article>
+                  {renderQueueEntryRow(activeQueueEntry, { active: true, removable: false })}
                 </div>
               ) : null}
-              {queuePanelTab === "upcoming" && visibleQueuePanelEntries.length > 0 ? (
+              {queuePanelTab === "queue" && visibleQueuePanelEntries.length > 0 ? (
                 <span className="music-queue-section-label">接下来</span>
               ) : null}
-              {visibleQueuePanelEntries.map((entry) => (
-                <article
-                  className="music-queue-row"
-                  key={`${queuePanelTab}-${entry.id}`}
-                >
-                  <div className="music-queue-row-copy">
-                    <span className="source-badge" data-source={entry.item.source}>
-                      {getMusicSourceLabel(entry.item.source)}
-                    </span>
-                    <div>
-                      <strong>{entry.item.title}</strong>
-                      <span>{entry.item.creator}</span>
-                      {entry.sourceQuery ? <em>来自: {entry.sourceQuery}</em> : null}
-                      {entry.selectedReason ? <em>{entry.selectedReason}</em> : null}
+              {queuePanelTab === "queue"
+                ? visibleQueuePanelEntries.map((entry) => (
+                    <Fragment key={`${queuePanelTab}-${entry.id}`}>
+                      {renderQueueEntryRow(entry, { removable: true })}
+                    </Fragment>
+                  ))
+                : null}
+              {queuePanelTab === "playlists" ? (
+                <div className="music-playlist-panel">
+                  <form className="music-library-create" onSubmit={handleCreatePlaylist}>
+                    <label>
+                      <span>歌单名称</span>
+                      <input
+                        value={playlistDraftName}
+                        onChange={(event) => setPlaylistDraftName(event.currentTarget.value)}
+                      />
+                    </label>
+                    <label>
+                      <span>描述</span>
+                      <input
+                        value={playlistDraftDescription}
+                        onChange={(event) => setPlaylistDraftDescription(event.currentTarget.value)}
+                      />
+                    </label>
+                    <button type="submit">新建歌单</button>
+                  </form>
+
+                  {musicLibrary.playlists.length > 0 ? (
+                    <div className="music-playlist-list" aria-label="我的歌单列表">
+                      {musicLibrary.playlists.map((playlist) => (
+                        <article
+                          key={playlist.id}
+                          className="music-playlist-row"
+                          data-selected={selectedPlaylist?.id === playlist.id ? "true" : undefined}
+                        >
+                          <button type="button" onClick={() => handlePlaylistSelect(playlist.id)}>
+                            <strong>{playlist.name}</strong>
+                            <span>{getPlaylistItemCountLabel(playlist.items.length)}</span>
+                          </button>
+                          <div className="music-playlist-row-actions">
+                            <button type="button" onClick={() => handlePlayPlaylist(playlist.id)}>
+                              播放
+                            </button>
+                            <button type="button" onClick={() => handleAppendPlaylistToQueue(playlist.id)}>
+                              加到接下来
+                            </button>
+                            <button type="button" onClick={() => handlePlaylistSelect(playlist.id)}>
+                              重命名
+                            </button>
+                            <button type="button" onClick={() => handleDeletePlaylist(playlist.id)}>
+                              删除
+                            </button>
+                          </div>
+                        </article>
+                      ))}
                     </div>
-                  </div>
-                  <div className="music-queue-row-actions">
-                    <button type="button" onClick={() => handleQueueEntryPlay(entry.id)}>
-                      播放
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`${entry.saved ? "取消收藏" : "收藏"} ${entry.item.title}`}
-                      onClick={() => handleQueueEntrySave(entry.id)}
-                    >
-                      {entry.saved ? "取消收藏" : "收藏"}
-                    </button>
-                    {entry.item.canOpenVideo ? (
-                      <button type="button" onClick={() => handleQueueEntryVideo(entry)}>
-                        小窗
-                      </button>
-                    ) : null}
-                    <button type="button" onClick={() => handleQueueEntryRemove(entry.id)}>
-                      移除
-                    </button>
-                  </div>
-                </article>
-              ))}
-              {visibleQueuePanelEntries.length === 0 ? (
+                  ) : (
+                    <p className="music-queue-empty">还没有歌单</p>
+                  )}
+
+                  {selectedPlaylist ? (
+                    <div className="music-playlist-detail">
+                      <form className="music-playlist-rename" onSubmit={handleRenameSelectedPlaylist}>
+                        <label>
+                          <span>歌单新名称</span>
+                          <input
+                            value={playlistRenameName}
+                            onChange={(event) => setPlaylistRenameName(event.currentTarget.value)}
+                          />
+                        </label>
+                        <button type="submit">重命名</button>
+                      </form>
+                      <div className="music-playlist-detail-actions">
+                        <button type="button" onClick={() => handlePlayPlaylist(selectedPlaylist.id)}>
+                          播放
+                        </button>
+                        <button type="button" onClick={() => handleAppendPlaylistToQueue(selectedPlaylist.id)}>
+                          加到接下来
+                        </button>
+                        <button type="button" onClick={() => handleDeletePlaylist(selectedPlaylist.id)}>
+                          删除
+                        </button>
+                      </div>
+                      <span className="music-queue-section-label">歌曲</span>
+                      {selectedPlaylist.items.length > 0 ? (
+                        selectedPlaylist.items.map((entry) => renderPlaylistItemRow(entry.item, selectedPlaylist.id))
+                      ) : (
+                        <p className="music-queue-empty">这个歌单还没有歌曲</p>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              {queuePanelTab === "recent" || queuePanelTab === "saved"
+                ? visibleQueuePanelEntries.map((entry) => (
+                    <Fragment key={`${queuePanelTab}-${entry.id}`}>
+                      {renderQueueEntryRow(entry, { removable: false })}
+                    </Fragment>
+                  ))
+                : null}
+              {queuePanelTab !== "playlists" && visibleQueuePanelEntries.length === 0 ? (
                 <p className="music-queue-empty">
                   {getQueuePanelEmptyLabel(queuePanelTab)}
                 </p>
@@ -1427,6 +1802,18 @@ function readStoredMusicQueue(storage: Storage): MusicQueueState | null {
   }
 }
 
+function readStoredMusicLibrary(storage: Storage): MusicLibraryState | null {
+  const rawLibrary = storage.getItem(MUSIC_LIBRARY_STORAGE_KEY);
+  if (!rawLibrary) return null;
+
+  try {
+    const parsed = JSON.parse(rawLibrary);
+    return isMusicLibraryState(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function isMusicQueueEntry(value: unknown): value is MusicQueueEntry {
   if (!isRecord(value)) {
     return false;
@@ -1469,21 +1856,42 @@ function isOptionalStringArray(value: unknown): boolean {
 }
 
 function getVisibleQueuePanelEntries(
-  tab: "upcoming" | "recent" | "saved",
+  tab: MusicPanelTab,
   upcomingEntries: MusicQueueEntry[],
   recentEntries: MusicQueueEntry[],
   savedEntries: MusicQueueEntry[]
 ): MusicQueueEntry[] {
   if (tab === "recent") return recentEntries;
   if (tab === "saved") return savedEntries;
-  return upcomingEntries;
+  if (tab === "queue") return upcomingEntries;
+
+  return [];
 }
 
-function getQueuePanelEmptyLabel(tab: "upcoming" | "recent" | "saved"): string {
-  if (tab === "upcoming") return "接下来还没有歌曲";
+function getQueuePanelEmptyLabel(tab: MusicPanelTab): string {
+  if (tab === "queue") return "接下来还没有歌曲";
   if (tab === "saved") return "还没有收藏";
+  if (tab === "playlists") return "还没有歌单";
 
   return "还没有最近播放";
+}
+
+function getPlaylistItemCountLabel(count: number): string {
+  return `${count} 首`;
+}
+
+function makeClientMusicItemFromMusicItem(item: MusicItem): ClientMusicItem {
+  return {
+    id: item.id,
+    source: item.source,
+    title: item.title,
+    creator: item.creator,
+    durationMs: item.durationMs,
+    pageUrl: item.pageUrl ?? null,
+    platformAudioUrl: item.platformAudioUrl ?? null,
+    tags: [...item.tags],
+    canOpenVideo: item.canOpenVideo
+  };
 }
 
 function getMusicSourceLabel(source: MusicSourceKind): string {

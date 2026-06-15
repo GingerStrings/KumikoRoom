@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import json
-from typing import Any
+import re
+import unicodedata
+from typing import Any, Callable
 
 from kumikoroom.llm import LLMToolCall
 from kumikoroom.music_search import (
@@ -15,6 +18,7 @@ from kumikoroom.music_search import (
 )
 from kumikoroom.schemas import (
     ClientMusicItemOut,
+    MusicAgentPlaylist,
     MusicAgentState,
     MusicAgentTrack,
     RoomClientActionOut,
@@ -41,6 +45,16 @@ class ResolvedMusicItem:
 class RoomAgentToolResult:
     ok: bool
     content: str
+
+
+RoomAgentToolHandler = Callable[
+    [dict[str, Any], RoomAgentToolContext],
+    RoomAgentToolResult,
+]
+
+_KNOWN_PLAYLIST_SLUGS = {
+    "夜晚写作": "night-writing",
+}
 
 
 def room_agent_tool_specs() -> list[dict[str, Any]]:
@@ -85,7 +99,7 @@ def room_agent_tool_specs() -> list[dict[str, Any]]:
                 "description": (
                     "Return the complete browser-owned music state snapshot, "
                     "including current, previous, next, upcoming, recent, saved, "
-                    "playback progress, and play/pause state."
+                    "playlists, playback progress, and play/pause state."
                 ),
                 "parameters": {
                     "type": "object",
@@ -94,6 +108,71 @@ def room_agent_tool_specs() -> list[dict[str, Any]]:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_music_playlists",
+                "description": "List browser-owned music playlist summaries without item arrays.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+            },
+        },
+        _playlist_id_tool_spec(
+            "get_music_playlist",
+            "Return one complete browser-owned music playlist, including its items.",
+        ),
+        {
+            "type": "function",
+            "function": {
+                "name": "create_music_playlist",
+                "description": "Create a music playlist. The playlist name must be non-empty.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "New playlist name.",
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Optional playlist description.",
+                        },
+                    },
+                    "required": ["name"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        _playlist_name_tool_spec(
+            "rename_music_playlist",
+            "Rename an existing music playlist. The new name must be non-empty.",
+        ),
+        _playlist_id_tool_spec(
+            "delete_music_playlist",
+            "Delete an existing music playlist.",
+        ),
+        _playlist_item_tool_spec(
+            "add_music_to_playlist",
+            (
+                "Add a search candidate or known music-state item from current, "
+                "previous, next, upcoming, recent, saved, or playlists to an existing playlist."
+            ),
+        ),
+        _playlist_item_tool_spec(
+            "remove_music_from_playlist",
+            "Remove an item that is already in an existing playlist.",
+        ),
+        _playlist_id_tool_spec(
+            "play_music_playlist",
+            "Play an existing non-empty playlist now.",
+        ),
+        _playlist_id_tool_spec(
+            "add_playlist_to_queue",
+            "Add an existing non-empty playlist to the queue.",
+        ),
         {
             "type": "function",
             "function": {
@@ -153,22 +232,9 @@ def dispatch_room_agent_tool(
     tool_call: LLMToolCall,
     context: RoomAgentToolContext,
 ) -> RoomAgentToolResult:
-    if tool_call.name == "get_music_state":
-        return _get_music_state(tool_call.arguments, context)
-    if tool_call.name == "search_music":
-        return _search_music(tool_call.arguments, context)
-    if tool_call.name == "play_music_item":
-        return _play_music_item(tool_call.arguments, context)
-    if tool_call.name == "add_music_to_queue":
-        return _add_music_to_queue(tool_call.arguments, context)
-    if tool_call.name == "remove_music_from_queue":
-        return _remove_music_from_queue(tool_call.arguments, context)
-    if tool_call.name == "save_music_item":
-        return _save_music_item(tool_call.arguments, context)
-    if tool_call.name == "unsave_music_item":
-        return _unsave_music_item(tool_call.arguments, context)
-    if tool_call.name == "clear_music_queue":
-        return _clear_music_queue(tool_call.arguments, context)
+    handler = _ROOM_AGENT_TOOL_HANDLERS.get(tool_call.name)
+    if handler is not None:
+        return handler(tool_call.arguments, context)
 
     return _json_result(
         ok=False,
@@ -194,6 +260,37 @@ def _get_music_state(
                 if context.music_state is not None
                 else None
             ),
+        },
+    )
+
+
+def _list_music_playlists(
+    arguments: dict[str, Any],
+    context: RoomAgentToolContext,
+) -> RoomAgentToolResult:
+    del arguments
+    playlists = context.music_state.playlists if context.music_state is not None else []
+    return _json_result(
+        ok=True,
+        payload={
+            "ok": True,
+            "playlists": [_playlist_summary_payload(playlist) for playlist in playlists],
+        },
+    )
+
+
+def _get_music_playlist(
+    arguments: dict[str, Any],
+    context: RoomAgentToolContext,
+) -> RoomAgentToolResult:
+    playlist, error = _require_existing_playlist(arguments, context)
+    if error is not None:
+        return error
+    return _json_result(
+        ok=True,
+        payload={
+            "ok": True,
+            "playlist": playlist.model_dump(),
         },
     )
 
@@ -294,6 +391,214 @@ def _add_music_to_queue(
     if error is not None:
         return error
     return _emit_item_action("add_music_to_queue", resolved, context)
+
+
+def _create_music_playlist(
+    arguments: dict[str, Any],
+    context: RoomAgentToolContext,
+) -> RoomAgentToolResult:
+    name = _playlist_name_from_arguments(arguments)
+    if not name:
+        return _json_result(
+            ok=False,
+            payload={"ok": False, "error": "playlist name is required"},
+        )
+
+    description = _playlist_description_from_arguments(arguments)
+    playlist = _append_new_playlist_to_music_state(context, name, description)
+    action = RoomClientActionOut(
+        type="create_music_playlist",
+        playlist_id=playlist.id,
+        playlist_name=name,
+        description=description,
+    )
+    context.client_actions.append(action)
+    return _json_result(
+        ok=True,
+        payload={
+            "ok": True,
+            "client_action": action.model_dump(),
+            "playlist": _playlist_summary_payload(playlist),
+            "playlist_name": name,
+            "description": description,
+        },
+    )
+
+
+def _rename_music_playlist(
+    arguments: dict[str, Any],
+    context: RoomAgentToolContext,
+) -> RoomAgentToolResult:
+    playlist, error = _require_existing_playlist(arguments, context)
+    if error is not None:
+        return error
+
+    name = _playlist_name_from_arguments(arguments)
+    if not name:
+        return _json_result(
+            ok=False,
+            payload={"ok": False, "error": "playlist name is required"},
+        )
+
+    action = RoomClientActionOut(
+        type="rename_music_playlist",
+        playlist_id=playlist.id,
+        playlist_name=name,
+    )
+    context.client_actions.append(action)
+    updated_playlist = playlist.model_copy(
+        update={"name": name, "updated_at": _current_iso_time()}
+    )
+    _replace_music_state_playlist(context, updated_playlist)
+    return _json_result(
+        ok=True,
+        payload={
+            "ok": True,
+            "client_action": action.model_dump(),
+            "playlist": _playlist_summary_payload(updated_playlist),
+            "playlist_name": name,
+        },
+    )
+
+
+def _delete_music_playlist(
+    arguments: dict[str, Any],
+    context: RoomAgentToolContext,
+) -> RoomAgentToolResult:
+    playlist, error = _require_existing_playlist(arguments, context)
+    if error is not None:
+        return error
+
+    action = RoomClientActionOut(
+        type="delete_music_playlist",
+        playlist_id=playlist.id,
+        playlist_name=playlist.name,
+    )
+    context.client_actions.append(action)
+    _remove_music_state_playlist(context, playlist.id)
+    return _json_result(
+        ok=True,
+        payload={
+            "ok": True,
+            "client_action": action.model_dump(),
+            "playlist": _playlist_summary_payload(playlist),
+        },
+    )
+
+
+def _add_music_to_playlist(
+    arguments: dict[str, Any],
+    context: RoomAgentToolContext,
+) -> RoomAgentToolResult:
+    playlist, error = _require_existing_playlist(arguments, context)
+    if error is not None:
+        return error
+
+    resolved, error = _resolve_music_item(
+        arguments,
+        context,
+        require_playable_candidate=True,
+    )
+    if error is not None:
+        return error
+
+    action = RoomClientActionOut(
+        type="add_music_to_playlist",
+        playlist_id=playlist.id,
+        playlist_name=playlist.name,
+        item=resolved.item,
+    )
+    context.client_actions.append(action)
+    updated_playlist = _playlist_with_added_track(
+        playlist,
+        _music_agent_track_from_resolved_item(resolved),
+        updated_at=_current_iso_time(),
+    )
+    _replace_music_state_playlist(context, updated_playlist)
+    payload: dict[str, Any] = {
+        "ok": True,
+        "client_action": action.model_dump(),
+        "playlist": _playlist_summary_payload(updated_playlist),
+        "item": resolved.item.model_dump(),
+        "origin": resolved.origin,
+    }
+    if resolved.candidate is not None:
+        payload["candidate"] = _candidate_payload(resolved.candidate)
+        payload["evidence"] = resolved.candidate.evidence
+    if resolved.track is not None:
+        payload["music_state_item"] = resolved.track.model_dump()
+    return _json_result(ok=True, payload=payload)
+
+
+def _remove_music_from_playlist(
+    arguments: dict[str, Any],
+    context: RoomAgentToolContext,
+) -> RoomAgentToolResult:
+    playlist, error = _require_existing_playlist(arguments, context)
+    if error is not None:
+        return error
+
+    item_id = _item_id_from_arguments(arguments)
+    if not item_id:
+        return _item_id_required_result()
+
+    track = _find_track_in_list(item_id, playlist.items)
+    if track is None:
+        return _json_result(
+            ok=False,
+            payload={
+                "ok": False,
+                "error": "remove_music_from_playlist can only remove items from that playlist",
+                "playlist_id": playlist.id,
+                "item_id": item_id,
+            },
+        )
+
+    action = RoomClientActionOut(
+        type="remove_music_from_playlist",
+        playlist_id=playlist.id,
+        playlist_name=playlist.name,
+        item_id=item_id,
+    )
+    context.client_actions.append(action)
+    updated_playlist = _playlist_without_track(
+        playlist,
+        item_id,
+        updated_at=_current_iso_time(),
+    )
+    _replace_music_state_playlist(context, updated_playlist)
+    return _json_result(
+        ok=True,
+        payload={
+            "ok": True,
+            "client_action": action.model_dump(),
+            "playlist": _playlist_summary_payload(updated_playlist),
+            "item_id": item_id,
+            "item": track.model_dump(),
+        },
+    )
+
+
+def _play_music_playlist(
+    arguments: dict[str, Any],
+    context: RoomAgentToolContext,
+) -> RoomAgentToolResult:
+    return _emit_non_empty_playlist_action(
+        "play_music_playlist",
+        arguments,
+        context,
+    )
+
+
+def _add_playlist_to_queue(
+    arguments: dict[str, Any],
+    context: RoomAgentToolContext,
+) -> RoomAgentToolResult:
+    return _emit_non_empty_playlist_action(
+        "add_playlist_to_queue",
+        arguments,
+        context,
+    )
 
 
 def _remove_music_from_queue(
@@ -417,6 +722,70 @@ def _emit_item_action(
     return _json_result(ok=True, payload=payload)
 
 
+def _emit_non_empty_playlist_action(
+    action_type: str,
+    arguments: dict[str, Any],
+    context: RoomAgentToolContext,
+) -> RoomAgentToolResult:
+    playlist, error = _require_existing_playlist(arguments, context)
+    if error is not None:
+        return error
+
+    if not _playlist_has_items(playlist):
+        return _json_result(
+            ok=False,
+            payload={
+                "ok": False,
+                "error": "playlist must contain at least one item",
+                "playlist_id": playlist.id,
+            },
+        )
+
+    action = RoomClientActionOut(
+        type=action_type,
+        playlist_id=playlist.id,
+        playlist_name=playlist.name,
+    )
+    context.client_actions.append(action)
+    return _json_result(
+        ok=True,
+        payload={
+            "ok": True,
+            "client_action": action.model_dump(),
+            "playlist": playlist.model_dump(),
+        },
+    )
+
+
+def _require_existing_playlist(
+    arguments: dict[str, Any],
+    context: RoomAgentToolContext,
+) -> tuple[MusicAgentPlaylist | None, RoomAgentToolResult | None]:
+    playlist_id_or_name = _playlist_id_or_name_from_arguments(arguments)
+    if not playlist_id_or_name:
+        return None, _json_result(
+            ok=False,
+            payload={"ok": False, "error": "playlist_id_or_name is required"},
+        )
+
+    playlist = _find_playlist(playlist_id_or_name, context.music_state)
+    if playlist is None:
+        return None, _json_result(
+            ok=False,
+            payload={
+                "ok": False,
+                "error": f"playlist was not found in current music state: {playlist_id_or_name}",
+                "playlist_id_or_name": playlist_id_or_name,
+            },
+        )
+
+    return playlist, None
+
+
+def _playlist_has_items(playlist: MusicAgentPlaylist) -> bool:
+    return bool(playlist.items)
+
+
 def _resolve_music_item(
     arguments: dict[str, Any],
     context: RoomAgentToolContext,
@@ -516,7 +885,24 @@ def _find_music_state_track(
         if track is not None:
             return track, origin
 
+    for playlist in state.playlists:
+        track = _find_track_in_list(item_id, playlist.items)
+        if track is not None:
+            return track, f"playlists.{playlist.id}.items"
+
     return None, ""
+
+
+def _find_playlist(
+    playlist_id_or_name: str,
+    state: MusicAgentState | None,
+) -> MusicAgentPlaylist | None:
+    if state is None:
+        return None
+    for playlist in state.playlists:
+        if playlist.id == playlist_id_or_name or playlist.name == playlist_id_or_name:
+            return playlist
+    return None
 
 
 def _find_upcoming_track(
@@ -617,8 +1003,239 @@ def _item_id_tool_spec(name: str, description: str) -> dict[str, Any]:
     }
 
 
+def _playlist_id_tool_spec(name: str, description: str) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "playlist_id_or_name": {
+                        "type": "string",
+                        "description": "Music playlist id or exact playlist name from music state.",
+                    }
+                },
+                "required": ["playlist_id_or_name"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _playlist_name_tool_spec(name: str, description: str) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "playlist_id_or_name": {
+                        "type": "string",
+                        "description": "Music playlist id or exact playlist name from music state.",
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "New playlist name.",
+                    },
+                },
+                "required": ["playlist_id_or_name", "name"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _playlist_item_tool_spec(name: str, description: str) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "playlist_id_or_name": {
+                        "type": "string",
+                        "description": "Music playlist id or exact playlist name from music state.",
+                    },
+                    "item_id": {
+                        "type": "string",
+                        "description": "Music item id from search results or music state.",
+                    },
+                },
+                "required": ["playlist_id_or_name", "item_id"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
 def _item_id_from_arguments(arguments: dict[str, Any]) -> str:
     return str(arguments.get("item_id") or "").strip()
+
+
+def _playlist_id_or_name_from_arguments(arguments: dict[str, Any]) -> str:
+    return str(
+        arguments.get("playlist_id_or_name")
+        or arguments.get("playlist_id")
+        or ""
+    ).strip()
+
+
+def _playlist_name_from_arguments(arguments: dict[str, Any]) -> str:
+    return str(arguments.get("name") or "").strip()
+
+
+def _playlist_description_from_arguments(arguments: dict[str, Any]) -> str | None:
+    description = arguments.get("description")
+    if description is None:
+        return None
+    description_text = str(description).strip()
+    return description_text or None
+
+
+def _append_new_playlist_to_music_state(
+    context: RoomAgentToolContext,
+    name: str,
+    description: str | None,
+) -> MusicAgentPlaylist:
+    state = context.music_state or MusicAgentState()
+    playlist = MusicAgentPlaylist(
+        id=_create_unique_playlist_id(name, [candidate.id for candidate in state.playlists]),
+        name=name,
+        description=description,
+        item_count=0,
+        updated_at=_current_iso_time(),
+        items=[],
+    )
+    _set_music_state_playlists(context, [*state.playlists, playlist])
+    return playlist
+
+
+def _replace_music_state_playlist(
+    context: RoomAgentToolContext,
+    playlist: MusicAgentPlaylist,
+) -> None:
+    state = context.music_state
+    if state is None:
+        return
+    _set_music_state_playlists(
+        context,
+        [
+            playlist if candidate.id == playlist.id else candidate
+            for candidate in state.playlists
+        ],
+    )
+
+
+def _remove_music_state_playlist(
+    context: RoomAgentToolContext,
+    playlist_id: str,
+) -> None:
+    state = context.music_state
+    if state is None:
+        return
+    _set_music_state_playlists(
+        context,
+        [playlist for playlist in state.playlists if playlist.id != playlist_id],
+    )
+
+
+def _set_music_state_playlists(
+    context: RoomAgentToolContext,
+    playlists: list[MusicAgentPlaylist],
+) -> None:
+    state = context.music_state or MusicAgentState()
+    context.music_state = state.model_copy(update={"playlists": playlists})
+
+
+def _playlist_with_added_track(
+    playlist: MusicAgentPlaylist,
+    track: MusicAgentTrack,
+    *,
+    updated_at: str,
+) -> MusicAgentPlaylist:
+    replaced = False
+    items: list[MusicAgentTrack] = []
+    for item in playlist.items:
+        if item.id == track.id:
+            items.append(track)
+            replaced = True
+        else:
+            items.append(item)
+    if not replaced:
+        items.append(track)
+    return playlist.model_copy(
+        update={"items": items, "item_count": len(items), "updated_at": updated_at}
+    )
+
+
+def _playlist_without_track(
+    playlist: MusicAgentPlaylist,
+    item_id: str,
+    *,
+    updated_at: str,
+) -> MusicAgentPlaylist:
+    items = [item for item in playlist.items if item.id != item_id]
+    return playlist.model_copy(
+        update={"items": items, "item_count": len(items), "updated_at": updated_at}
+    )
+
+
+def _music_agent_track_from_resolved_item(
+    resolved: ResolvedMusicItem,
+) -> MusicAgentTrack:
+    if resolved.track is not None:
+        return resolved.track
+
+    item = resolved.item
+    return MusicAgentTrack(
+        id=item.id,
+        source=item.source,
+        title=item.title,
+        creator=item.creator,
+        duration_ms=item.duration_ms,
+        page_url=item.page_url,
+        platform_audio_url=item.platform_audio_url,
+        tags=list(item.tags),
+        can_open_video=item.can_open_video,
+    )
+
+
+def _create_unique_playlist_id(name: str, existing_ids: list[str]) -> str:
+    existing = set(existing_ids)
+    base_id = f"playlist-{_slug_playlist_name(name)}"
+    if base_id not in existing:
+        return base_id
+
+    suffix = 2
+    while f"{base_id}-{suffix}" in existing:
+        suffix += 1
+    return f"{base_id}-{suffix}"
+
+
+def _slug_playlist_name(name: str) -> str:
+    trimmed_name = name.strip()
+    known_slug = _KNOWN_PLAYLIST_SLUGS.get(trimmed_name)
+    if known_slug:
+        return known_slug
+
+    normalized_name = unicodedata.normalize("NFKD", trimmed_name)
+    without_marks = "".join(
+        character
+        for character in normalized_name
+        if not unicodedata.combining(character)
+    )
+    words = re.findall(r"[a-z0-9]+", without_marks.lower())
+    return "-".join(words) if words else "playlist"
+
+
+def _current_iso_time() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _item_id_required_result() -> RoomAgentToolResult:
@@ -626,6 +1243,16 @@ def _item_id_required_result() -> RoomAgentToolResult:
         ok=False,
         payload={"ok": False, "error": "item_id is required"},
     )
+
+
+def _playlist_summary_payload(playlist: MusicAgentPlaylist) -> dict[str, Any]:
+    return {
+        "id": playlist.id,
+        "name": playlist.name,
+        "description": playlist.description,
+        "item_count": playlist.item_count,
+        "updated_at": playlist.updated_at,
+    }
 
 
 def _candidate_payload(result: MusicSearchCandidate) -> dict[str, Any]:
@@ -667,3 +1294,24 @@ def _clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(minimum, min(maximum, parsed))
+
+
+_ROOM_AGENT_TOOL_HANDLERS: dict[str, RoomAgentToolHandler] = {
+    "get_music_state": _get_music_state,
+    "list_music_playlists": _list_music_playlists,
+    "get_music_playlist": _get_music_playlist,
+    "create_music_playlist": _create_music_playlist,
+    "rename_music_playlist": _rename_music_playlist,
+    "delete_music_playlist": _delete_music_playlist,
+    "add_music_to_playlist": _add_music_to_playlist,
+    "remove_music_from_playlist": _remove_music_from_playlist,
+    "play_music_playlist": _play_music_playlist,
+    "add_playlist_to_queue": _add_playlist_to_queue,
+    "search_music": _search_music,
+    "play_music_item": _play_music_item,
+    "add_music_to_queue": _add_music_to_queue,
+    "remove_music_from_queue": _remove_music_from_queue,
+    "save_music_item": _save_music_item,
+    "unsave_music_item": _unsave_music_item,
+    "clear_music_queue": _clear_music_queue,
+}

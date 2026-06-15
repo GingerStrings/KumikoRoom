@@ -178,6 +178,39 @@ export type RoomClientAction =
   | {
       type: "open_video_window";
       item: ClientMusicItem;
+    }
+  | {
+      type: "create_music_playlist";
+      playlistId: string;
+      playlistName: string;
+      description?: string | null;
+    }
+  | {
+      type: "rename_music_playlist";
+      playlistId: string;
+      playlistName: string;
+    }
+  | {
+      type: "delete_music_playlist";
+      playlistId: string;
+    }
+  | {
+      type: "add_music_to_playlist";
+      playlistId: string;
+      item: ClientMusicItem;
+    }
+  | {
+      type: "remove_music_from_playlist";
+      playlistId: string;
+      itemId: string;
+    }
+  | {
+      type: "play_music_playlist";
+      playlistId: string;
+    }
+  | {
+      type: "add_playlist_to_queue";
+      playlistId: string;
     };
 
 export interface AgentTrace {

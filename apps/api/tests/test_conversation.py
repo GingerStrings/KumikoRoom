@@ -9,6 +9,7 @@ from kumikoroom.llm import (
     ProviderUnavailable,
 )
 from kumikoroom.memory import MemoryStore
+import kumikoroom.agent_tools as agent_tools
 from kumikoroom.agent_tools import (
     RoomAgentToolContext,
     dispatch_room_agent_tool,
@@ -176,6 +177,35 @@ def music_state_fixture() -> dict:
     }
 
 
+def playlist_only_music_state_fixture() -> dict:
+    state = music_state_fixture()
+    state["playlists"].append(
+        {
+            "id": "playlist-deep-cuts",
+            "name": "Deep Cuts",
+            "description": None,
+            "item_count": 1,
+            "updated_at": "2026-06-15T00:02:00.000Z",
+            "items": [
+                music_track_fixture("playlist-only", "Playlist Only Song"),
+            ],
+        }
+    )
+    return state
+
+
+def assert_successful_playlist_action(context, name, arguments):
+    before_count = len(context.client_actions)
+    result = dispatch_room_agent_tool(
+        LLMToolCall(id=name, name=name, arguments=arguments),
+        context,
+    )
+
+    assert result.ok is True
+    assert len(context.client_actions) == before_count + 1
+    return result, context.client_actions[-1], json.loads(result.content)
+
+
 def test_music_state_schema_preserves_snapshot_and_prompt(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("KUMIKOROOM_MEMORY_DB_PATH", str(tmp_path / "memory.sqlite3"))
     provider = FakeProvider()
@@ -209,6 +239,16 @@ def test_music_state_schema_preserves_snapshot_and_prompt(monkeypatch, tmp_path)
         "Saved Song - Fixture Artist (saved)"
     ) in system_text
     assert "Playlists: Night Writing (1 track, playlist-night-writing)" in system_text
+
+
+def test_music_state_schema_defaults_missing_playlists_to_empty_list() -> None:
+    state = music_state_fixture()
+    state.pop("playlists")
+
+    payload = ChatIn(message="legacy state", music_state=state)
+
+    assert payload.music_state is not None
+    assert payload.music_state.playlists == []
 
 
 def test_get_music_state_and_state_mutation_tools_emit_client_actions() -> None:
@@ -278,6 +318,403 @@ def test_get_music_state_and_state_mutation_tools_emit_client_actions() -> None:
     assert context.client_actions[-1].type == "clear_music_queue"
     assert context.client_actions[-1].item is None
     assert context.client_actions[-1].item_id is None
+
+
+def test_playlist_agent_tool_specs_and_read_tools() -> None:
+    payload = ChatIn(message="playlist state", music_state=music_state_fixture())
+    context = RoomAgentToolContext(music_state=payload.music_state)
+
+    specs_by_name = {
+        spec["function"]["name"]: spec["function"] for spec in room_agent_tool_specs()
+    }
+    assert {
+        "list_music_playlists",
+        "get_music_playlist",
+        "create_music_playlist",
+        "rename_music_playlist",
+        "delete_music_playlist",
+        "add_music_to_playlist",
+        "remove_music_from_playlist",
+        "play_music_playlist",
+        "add_playlist_to_queue",
+    }.issubset(specs_by_name)
+    assert "playlists" in specs_by_name["get_music_state"]["description"]
+
+    list_result = dispatch_room_agent_tool(
+        LLMToolCall(id="list", name="list_music_playlists", arguments={}),
+        context,
+    )
+    assert list_result.ok is True
+    list_payload = json.loads(list_result.content)
+    assert list_payload["playlists"][0] == {
+        "id": "playlist-night-writing",
+        "name": "Night Writing",
+        "description": "quiet songs",
+        "item_count": 1,
+        "updated_at": "2026-06-15T00:01:00.000Z",
+    }
+    assert "items" not in list_payload["playlists"][0]
+    assert context.client_actions == []
+
+    get_result = dispatch_room_agent_tool(
+        LLMToolCall(
+            id="get",
+            name="get_music_playlist",
+            arguments={"playlist_id_or_name": "Night Writing"},
+        ),
+        context,
+    )
+    assert get_result.ok is True
+    get_payload = json.loads(get_result.content)
+    assert get_payload["playlist"]["id"] == "playlist-night-writing"
+    assert get_payload["playlist"]["items"][0]["id"] == "saved"
+    assert context.client_actions == []
+
+
+def test_playlist_mutation_tools_emit_exactly_one_client_action() -> None:
+    def make_context() -> RoomAgentToolContext:
+        payload = ChatIn(message="playlist actions", music_state=music_state_fixture())
+        return RoomAgentToolContext(
+            music_state=payload.music_state,
+            candidates={
+                "netease-song-candidate": NeteaseSongSearchResult(
+                    id="netease-song-candidate",
+                    song_id="candidate",
+                    title="Candidate Song",
+                    creator="Fixture Artist",
+                    duration_ms=210000,
+                    playable=True,
+                    popularity=55.0,
+                    comment_count=100,
+                    hot_comment_liked_count=25,
+                    score=77.0,
+                    evidence=["candidate evidence"],
+                )
+            },
+            candidate_queries={"netease-song-candidate": "candidate query"},
+        )
+
+    context = make_context()
+    _, action, payload = assert_successful_playlist_action(
+        context,
+        "create_music_playlist",
+        {"name": "Focus", "description": "for revisions"},
+    )
+    assert action.type == "create_music_playlist"
+    assert action.playlist_id == "playlist-focus"
+    assert action.playlist_name == "Focus"
+    assert action.description == "for revisions"
+    assert payload["client_action"]["playlist_id"] == payload["playlist"]["id"]
+    assert payload["client_action"]["playlist_name"] == "Focus"
+
+    context = make_context()
+    _, action, _ = assert_successful_playlist_action(
+        context,
+        "rename_music_playlist",
+        {"playlist_id_or_name": "Night Writing", "name": "Late Desk"},
+    )
+    assert action.type == "rename_music_playlist"
+    assert action.playlist_id == "playlist-night-writing"
+    assert action.playlist_name == "Late Desk"
+
+    context = make_context()
+    _, action, _ = assert_successful_playlist_action(
+        context,
+        "delete_music_playlist",
+        {"playlist_id_or_name": "playlist-night-writing"},
+    )
+    assert action.type == "delete_music_playlist"
+    assert action.playlist_id == "playlist-night-writing"
+
+    context = make_context()
+    _, action, _ = assert_successful_playlist_action(
+        context,
+        "add_music_to_playlist",
+        {
+            "playlist_id_or_name": "playlist-night-writing",
+            "item_id": "netease-song-candidate",
+        },
+    )
+    assert action.type == "add_music_to_playlist"
+    assert action.playlist_id == "playlist-night-writing"
+    assert action.item is not None
+    assert action.item.id == "netease-song-candidate"
+    assert action.item.source_query == "candidate query"
+
+    context = make_context()
+    _, action, _ = assert_successful_playlist_action(
+        context,
+        "remove_music_from_playlist",
+        {"playlist_id_or_name": "playlist-night-writing", "item_id": "saved"},
+    )
+    assert action.type == "remove_music_from_playlist"
+    assert action.playlist_id == "playlist-night-writing"
+    assert action.item_id == "saved"
+
+    context = make_context()
+    _, action, _ = assert_successful_playlist_action(
+        context,
+        "play_music_playlist",
+        {"playlist_id_or_name": "playlist-night-writing"},
+    )
+    assert action.type == "play_music_playlist"
+    assert action.playlist_id == "playlist-night-writing"
+    assert action.playlist_name == "Night Writing"
+
+    context = make_context()
+    _, action, _ = assert_successful_playlist_action(
+        context,
+        "add_playlist_to_queue",
+        {"playlist_id_or_name": "playlist-night-writing"},
+    )
+    assert action.type == "add_playlist_to_queue"
+    assert action.playlist_id == "playlist-night-writing"
+    assert action.playlist_name == "Night Writing"
+
+
+def test_playlist_tools_validate_inputs_and_existing_state() -> None:
+    state = music_state_fixture()
+    state["playlists"].append(
+        {
+            "id": "playlist-empty",
+            "name": "Empty",
+            "description": None,
+            "item_count": 0,
+            "updated_at": "2026-06-15T00:03:00.000Z",
+            "items": [],
+        }
+    )
+    payload = ChatIn(message="playlist validation", music_state=state)
+    context = RoomAgentToolContext(music_state=payload.music_state)
+
+    create_result = dispatch_room_agent_tool(
+        LLMToolCall(
+            id="create",
+            name="create_music_playlist",
+            arguments={"name": "   "},
+        ),
+        context,
+    )
+    assert create_result.ok is False
+
+    rename_result = dispatch_room_agent_tool(
+        LLMToolCall(
+            id="rename",
+            name="rename_music_playlist",
+            arguments={"playlist_id_or_name": "missing", "name": "New"},
+        ),
+        context,
+    )
+    assert rename_result.ok is False
+    assert "playlist" in json.loads(rename_result.content)["error"]
+
+    remove_result = dispatch_room_agent_tool(
+        LLMToolCall(
+            id="remove",
+            name="remove_music_from_playlist",
+            arguments={"playlist_id_or_name": "playlist-night-writing", "item_id": "recent"},
+        ),
+        context,
+    )
+    assert remove_result.ok is False
+    assert "playlist" in json.loads(remove_result.content)["error"]
+
+    play_result = dispatch_room_agent_tool(
+        LLMToolCall(
+            id="play",
+            name="play_music_playlist",
+            arguments={"playlist_id_or_name": "playlist-empty"},
+        ),
+        context,
+    )
+    assert play_result.ok is False
+    assert "at least one" in json.loads(play_result.content)["error"]
+    assert context.client_actions == []
+
+
+def test_add_music_to_playlist_supports_playlist_state_items() -> None:
+    payload = ChatIn(
+        message="add playlist-only track",
+        music_state=playlist_only_music_state_fixture(),
+    )
+    context = RoomAgentToolContext(music_state=payload.music_state)
+
+    result = dispatch_room_agent_tool(
+        LLMToolCall(
+            id="add",
+            name="add_music_to_playlist",
+            arguments={
+                "playlist_id_or_name": "playlist-night-writing",
+                "item_id": "playlist-only",
+            },
+        ),
+        context,
+    )
+
+    assert result.ok is True
+    assert context.client_actions[-1].type == "add_music_to_playlist"
+    assert context.client_actions[-1].item is not None
+    assert context.client_actions[-1].item.id == "playlist-only"
+    assert context.client_actions[-1].item.selection_evidence == [
+        "music_state.playlists.playlist-deep-cuts.items"
+    ]
+
+
+def test_playlist_mutation_updates_music_state_for_same_turn_followup_tool() -> None:
+    state = music_state_fixture()
+    state["playlists"].append(
+        {
+            "id": "playlist-empty",
+            "name": "Empty",
+            "description": None,
+            "item_count": 0,
+            "updated_at": "2026-06-15T00:03:00.000Z",
+            "items": [],
+        }
+    )
+    payload = ChatIn(message="playlist followup", music_state=state)
+    context = RoomAgentToolContext(
+        music_state=payload.music_state,
+        candidates={
+            "netease-song-candidate": NeteaseSongSearchResult(
+                id="netease-song-candidate",
+                song_id="candidate",
+                title="Candidate Song",
+                creator="Fixture Artist",
+                duration_ms=210000,
+                playable=True,
+                popularity=55.0,
+                comment_count=100,
+                hot_comment_liked_count=25,
+                score=77.0,
+                evidence=["candidate evidence"],
+            )
+        },
+        candidate_queries={"netease-song-candidate": "candidate query"},
+    )
+
+    _, add_action, _ = assert_successful_playlist_action(
+        context,
+        "add_music_to_playlist",
+        {
+            "playlist_id_or_name": "playlist-empty",
+            "item_id": "netease-song-candidate",
+        },
+    )
+    assert add_action.type == "add_music_to_playlist"
+
+    _, play_action, _ = assert_successful_playlist_action(
+        context,
+        "play_music_playlist",
+        {"playlist_id_or_name": "playlist-empty"},
+    )
+    assert play_action.type == "play_music_playlist"
+    assert [action.type for action in context.client_actions[-2:]] == [
+        "add_music_to_playlist",
+        "play_music_playlist",
+    ]
+
+
+def test_playlist_mutations_refresh_updated_at_for_same_turn_reads(monkeypatch) -> None:
+    state = music_state_fixture()
+    state["playlists"].append(
+        {
+            "id": "playlist-empty",
+            "name": "Empty",
+            "description": None,
+            "item_count": 0,
+            "updated_at": "2026-06-15T00:03:00.000Z",
+            "items": [],
+        }
+    )
+    payload = ChatIn(message="playlist timestamps", music_state=state)
+    context = RoomAgentToolContext(
+        music_state=payload.music_state,
+        candidates={
+            "netease-song-candidate": NeteaseSongSearchResult(
+                id="netease-song-candidate",
+                song_id="candidate",
+                title="Candidate Song",
+                creator="Fixture Artist",
+                duration_ms=210000,
+                playable=True,
+                popularity=55.0,
+                comment_count=100,
+                hot_comment_liked_count=25,
+                score=77.0,
+                evidence=["candidate evidence"],
+            )
+        },
+        candidate_queries={"netease-song-candidate": "candidate query"},
+    )
+    times = iter(
+        [
+            "2026-06-15T00:04:00.000Z",
+            "2026-06-15T00:05:00.000Z",
+            "2026-06-15T00:06:00.000Z",
+        ]
+    )
+    monkeypatch.setattr(agent_tools, "_current_iso_time", lambda: next(times))
+
+    assert_successful_playlist_action(
+        context,
+        "rename_music_playlist",
+        {"playlist_id_or_name": "playlist-night-writing", "name": "Late Desk"},
+    )
+    get_result = dispatch_room_agent_tool(
+        LLMToolCall(
+            id="get-renamed",
+            name="get_music_playlist",
+            arguments={"playlist_id_or_name": "playlist-night-writing"},
+        ),
+        context,
+    )
+    renamed_payload = json.loads(get_result.content)
+    assert renamed_payload["playlist"]["updated_at"] == "2026-06-15T00:04:00.000Z"
+    assert renamed_payload["playlist"]["item_count"] == 1
+    assert len(renamed_payload["playlist"]["items"]) == 1
+
+    assert_successful_playlist_action(
+        context,
+        "add_music_to_playlist",
+        {
+            "playlist_id_or_name": "playlist-empty",
+            "item_id": "netease-song-candidate",
+        },
+    )
+    list_result = dispatch_room_agent_tool(
+        LLMToolCall(id="list-added", name="list_music_playlists", arguments={}),
+        context,
+    )
+    list_payload = json.loads(list_result.content)
+    added_summary = next(
+        playlist
+        for playlist in list_payload["playlists"]
+        if playlist["id"] == "playlist-empty"
+    )
+    assert added_summary["updated_at"] == "2026-06-15T00:05:00.000Z"
+    assert added_summary["item_count"] == 1
+
+    assert_successful_playlist_action(
+        context,
+        "remove_music_from_playlist",
+        {
+            "playlist_id_or_name": "playlist-empty",
+            "item_id": "netease-song-candidate",
+        },
+    )
+    removed_result = dispatch_room_agent_tool(
+        LLMToolCall(
+            id="get-removed",
+            name="get_music_playlist",
+            arguments={"playlist_id_or_name": "playlist-empty"},
+        ),
+        context,
+    )
+    removed_payload = json.loads(removed_result.content)
+    assert removed_payload["playlist"]["updated_at"] == "2026-06-15T00:06:00.000Z"
+    assert removed_payload["playlist"]["item_count"] == 0
+    assert removed_payload["playlist"]["items"] == []
 
 
 def test_add_music_to_queue_supports_search_candidates() -> None:

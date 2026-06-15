@@ -1614,7 +1614,7 @@ p {
   right: 24px;
   bottom: 24px;
   z-index: 34;
-  width: min(360px, calc(100vw - 32px));
+  width: min(380px, calc(100vw - 32px));
   max-width: calc(100vw - 32px);
   max-height: min(520px, calc(100vh - 48px));
   display: grid;
@@ -1663,7 +1663,7 @@ p {
 
 .music-queue-tabs {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
   padding: 10px 14px;
 }
@@ -1755,6 +1755,7 @@ p {
 .music-queue-row-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
 }
 
@@ -1774,6 +1775,143 @@ p {
   color: #8ea09f;
   font-size: 12px;
   text-align: center;
+}
+
+.music-playlist-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.music-library-create,
+.music-playlist-rename {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.music-library-create {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+}
+
+.music-library-create label,
+.music-playlist-rename label {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  color: #8ea09f;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.music-library-create input,
+.music-playlist-rename input,
+.music-add-to-playlist select {
+  min-width: 0;
+  height: 30px;
+  border: 1px solid rgba(195, 213, 211, 0.72);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #34484a;
+  font-size: 12px;
+  font-weight: 700;
+  outline: none;
+}
+
+.music-library-create input,
+.music-playlist-rename input {
+  padding: 0 10px;
+}
+
+.music-library-create button,
+.music-playlist-rename button,
+.music-playlist-row-actions button,
+.music-playlist-detail-actions button,
+.music-add-to-playlist button {
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid rgba(195, 213, 211, 0.72);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.66);
+  color: #687a7b;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.music-playlist-list {
+  display: grid;
+  gap: 8px;
+}
+
+.music-playlist-row {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(216, 226, 221, 0.72);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.music-playlist-row[data-selected="true"] {
+  border-color: rgba(47, 126, 186, 0.28);
+  background: rgba(219, 239, 248, 0.5);
+}
+
+.music-playlist-row > button {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+
+.music-playlist-row strong,
+.music-playlist-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.music-playlist-row strong {
+  color: #34484a;
+  font-size: 13px;
+}
+
+.music-playlist-row span {
+  color: #8ea09f;
+  font-size: 11px;
+}
+
+.music-playlist-row-actions,
+.music-playlist-detail-actions,
+.music-add-to-playlist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.music-playlist-detail {
+  display: grid;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.music-add-to-playlist {
+  align-items: center;
+}
+
+.music-add-to-playlist select {
+  max-width: 132px;
+  padding: 0 8px;
+}
+
+.music-add-to-playlist-empty {
+  color: #8ea09f;
+  font-size: 11px;
+  font-weight: 800;
 }
 
 .video-mini-window {

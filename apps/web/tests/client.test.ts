@@ -646,10 +646,32 @@ describe("room API client", () => {
             },
             { type: "remove_music_from_queue", item_id: "next" },
             { type: "unsave_music_item", item_id: "saved" },
-            { type: "clear_music_queue" },
+            { type: "clear_music_queue", item: null, item_id: null },
+            {
+              type: "create_music_playlist",
+              playlist_id: "playlist-night-writing",
+              playlist_name: "Night Writing",
+              description: "quiet"
+            },
+            { type: "rename_music_playlist", playlist_id: "playlist-night-writing", playlist_name: "Late Night" },
+            { type: "delete_music_playlist", playlist_id: "playlist-old" },
+            {
+              type: "add_music_to_playlist",
+              playlist_id: "playlist-night-writing",
+              item: clientMusicItemApi({ id: "playlist-song", title: "Playlist Song" })
+            },
+            { type: "remove_music_from_playlist", playlist_id: "playlist-night-writing", item_id: "playlist-song" },
+            { type: "play_music_playlist", playlist_id: "playlist-night-writing" },
+            { type: "add_playlist_to_queue", playlist_id: "playlist-night-writing" },
             { type: "play_music_item" },
             { type: "remove_music_from_queue", item_id: "" },
             { type: "clear_music_queue", item: clientMusicItemApi({ id: "extra" }) },
+            { type: "create_music_playlist", playlist_name: "" },
+            { type: "create_music_playlist", playlist_name: "Missing id" },
+            { type: "rename_music_playlist", playlist_id: "", playlist_name: "Bad" },
+            { type: "add_music_to_playlist", playlist_id: "playlist-night-writing" },
+            { type: "remove_music_from_playlist", playlist_id: "playlist-night-writing", item_id: "" },
+            { type: "play_music_playlist", playlist_id: "" },
             { type: "unknown_action", item: clientMusicItemApi({ id: "unknown" }) }
           ]
         })
@@ -684,7 +706,23 @@ describe("room API client", () => {
         },
         { type: "remove_music_from_queue", itemId: "next" },
         { type: "unsave_music_item", itemId: "saved" },
-        { type: "clear_music_queue" }
+        { type: "clear_music_queue" },
+        {
+          type: "create_music_playlist",
+          playlistId: "playlist-night-writing",
+          playlistName: "Night Writing",
+          description: "quiet"
+        },
+        { type: "rename_music_playlist", playlistId: "playlist-night-writing", playlistName: "Late Night" },
+        { type: "delete_music_playlist", playlistId: "playlist-old" },
+        {
+          type: "add_music_to_playlist",
+          playlistId: "playlist-night-writing",
+          item: clientMusicItem({ id: "playlist-song", title: "Playlist Song" })
+        },
+        { type: "remove_music_from_playlist", playlistId: "playlist-night-writing", itemId: "playlist-song" },
+        { type: "play_music_playlist", playlistId: "playlist-night-writing" },
+        { type: "add_playlist_to_queue", playlistId: "playlist-night-writing" }
       ]
     });
   });

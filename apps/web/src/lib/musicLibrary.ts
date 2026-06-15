@@ -41,7 +41,7 @@ export function createInitialMusicLibrary(): MusicLibraryState {
 
 export function createMusicPlaylist(
   state: MusicLibraryState,
-  input: { name: string; description?: string },
+  input: { id?: string; name: string; description?: string },
   now = currentIsoTime()
 ): MusicLibraryState {
   const name = input.name.trim();
@@ -50,8 +50,12 @@ export function createMusicPlaylist(
     return state;
   }
 
+  const requestedId = input.id?.trim();
+
   const playlist: MusicPlaylist = {
-    id: createUniquePlaylistId(name, state.playlists.map((candidate) => candidate.id)),
+    id: requestedId
+      ? createUniquePlaylistIdFromBase(requestedId, state.playlists.map((candidate) => candidate.id))
+      : createUniquePlaylistId(name, state.playlists.map((candidate) => candidate.id)),
     name,
     items: [],
     createdAt: now,
@@ -68,6 +72,12 @@ export function createMusicPlaylist(
       playlist,
     ],
   };
+}
+
+export function getAvailableMusicPlaylistId(state: MusicLibraryState, preferredId: string): string {
+  const trimmedId = preferredId.trim();
+  const baseId = trimmedId || "playlist";
+  return createUniquePlaylistIdFromBase(baseId, state.playlists.map((playlist) => playlist.id));
 }
 
 export function renameMusicPlaylist(
@@ -226,9 +236,11 @@ function findPlaylist(state: MusicLibraryState, playlistIdOrName: string): Music
 }
 
 function createUniquePlaylistId(name: string, existingIds: string[]): string {
-  const existing = new Set(existingIds);
-  const baseId = `playlist-${slugPlaylistName(name)}`;
+  return createUniquePlaylistIdFromBase(`playlist-${slugPlaylistName(name)}`, existingIds);
+}
 
+function createUniquePlaylistIdFromBase(baseId: string, existingIds: string[]): string {
+  const existing = new Set(existingIds);
   if (!existing.has(baseId)) {
     return baseId;
   }

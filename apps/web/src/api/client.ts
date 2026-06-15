@@ -243,6 +243,9 @@ interface RoomClientActionApi {
   type: string;
   item?: ClientMusicItemApi | null;
   item_id?: string | null;
+  playlist_id?: string | null;
+  playlist_name?: string | null;
+  description?: string | null;
 }
 
 interface AgentTraceApi {
@@ -454,8 +457,63 @@ function mapRoomClientAction(value: RoomClientActionApi): RoomClientAction | nul
   }
 
   if (value.type === "clear_music_queue") {
-    if ("item" in value || "item_id" in value) return null;
+    if (Object.entries(value).some(([key, fieldValue]) => key !== "type" && fieldValue != null)) {
+      return null;
+    }
     return { type: "clear_music_queue" };
+  }
+
+  if (value.type === "create_music_playlist") {
+    const playlistId = typeof value.playlist_id === "string" ? value.playlist_id.trim() : "";
+    const playlistName = typeof value.playlist_name === "string" ? value.playlist_name.trim() : "";
+    if (!playlistId || !playlistName) return null;
+    return {
+      type: "create_music_playlist",
+      playlistId,
+      playlistName,
+      description: typeof value.description === "string" ? value.description : null
+    };
+  }
+
+  if (value.type === "rename_music_playlist") {
+    const playlistId = typeof value.playlist_id === "string" ? value.playlist_id.trim() : "";
+    const playlistName = typeof value.playlist_name === "string" ? value.playlist_name.trim() : "";
+    if (!playlistId || !playlistName) return null;
+    return {
+      type: "rename_music_playlist",
+      playlistId,
+      playlistName
+    };
+  }
+
+  if (value.type === "delete_music_playlist" || value.type === "play_music_playlist" || value.type === "add_playlist_to_queue") {
+    const playlistId = typeof value.playlist_id === "string" ? value.playlist_id.trim() : "";
+    if (!playlistId) return null;
+    return {
+      type: value.type,
+      playlistId
+    };
+  }
+
+  if (value.type === "add_music_to_playlist") {
+    const playlistId = typeof value.playlist_id === "string" ? value.playlist_id.trim() : "";
+    if (!playlistId || !isClientMusicItemApi(value.item)) return null;
+    return {
+      type: "add_music_to_playlist",
+      playlistId,
+      item: mapClientMusicItem(value.item)
+    };
+  }
+
+  if (value.type === "remove_music_from_playlist") {
+    const playlistId = typeof value.playlist_id === "string" ? value.playlist_id.trim() : "";
+    const itemId = typeof value.item_id === "string" ? value.item_id.trim() : "";
+    if (!playlistId || !itemId) return null;
+    return {
+      type: "remove_music_from_playlist",
+      playlistId,
+      itemId
+    };
   }
 
   return null;

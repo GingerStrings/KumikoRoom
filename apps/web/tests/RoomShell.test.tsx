@@ -230,6 +230,254 @@ describe("RoomShell", () => {
     );
   });
 
+  it("sends stored music library playlists with chat messages", async () => {
+    localStorage.setItem(
+      "kumikoroom.musicLibrary",
+      JSON.stringify({
+        playlists: [
+          {
+            id: "playlist-night-writing",
+            name: "Night Writing",
+            description: "quiet songs",
+            createdAt: "2026-06-15T00:00:00.000Z",
+            updatedAt: "2026-06-15T00:01:00.000Z",
+            items: [
+              {
+                id: PLAYER_TRACKS[0].id,
+                item: PLAYER_TRACKS[0],
+                addedAt: "2026-06-15T00:01:00.000Z",
+                addedBy: "user"
+              }
+            ]
+          }
+        ]
+      })
+    );
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), { target: { value: "What is in my playlists?" } });
+    fireEvent.click(getComposerSubmit());
+
+    await waitFor(() => expect(apiMocks.postChat).toHaveBeenCalledTimes(1));
+    expect(apiMocks.postChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        musicState: expect.objectContaining({
+          playlists: [
+            expect.objectContaining({
+              id: "playlist-night-writing",
+              name: "Night Writing",
+              description: "quiet songs",
+              itemCount: 1,
+              updatedAt: "2026-06-15T00:01:00.000Z",
+              items: [
+                expect.objectContaining({
+                  id: PLAYER_TRACKS[0].id,
+                  title: PLAYER_TRACKS[0].title,
+                  tags: PLAYER_TRACKS[0].tags
+                })
+              ]
+            })
+          ]
+        })
+      })
+    );
+  });
+
+  it("creates and persists a manual playlist from the management panel", async () => {
+    const firstRender = render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(getQueueManageButton());
+    let panel = getMusicQueuePanel();
+    fireEvent.click(within(panel).getByRole("tab", { name: "我的歌单" }));
+    fireEvent.change(within(panel).getByLabelText("歌单名称"), { target: { value: "夜晚写作" } });
+    fireEvent.click(within(panel).getByRole("button", { name: "新建歌单" }));
+
+    expect(within(panel).getByText("夜晚写作")).toBeTruthy();
+    expect(localStorage.getItem("kumikoroom.musicLibrary")).toContain("夜晚写作");
+
+    firstRender.unmount();
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(getQueueManageButton());
+    panel = getMusicQueuePanel();
+    fireEvent.click(within(panel).getByRole("tab", { name: "我的歌单" }));
+    expect(within(panel).getByText("夜晚写作")).toBeTruthy();
+  });
+
+  it("applies agent playlist client actions and plays the playlist", async () => {
+    apiMocks.postChat.mockResolvedValueOnce(
+      makeChatResponse({
+        reply: { id: "reply-playlist", role: "kumiko", content: "我建好歌单并开始播放了。" },
+        clientActions: [
+          {
+            type: "create_music_playlist",
+            playlistId: "playlist-agent-list",
+            playlistName: "Agent List",
+            description: "from agent"
+          },
+          {
+            type: "add_music_to_playlist",
+            playlistId: "playlist-agent-list",
+            item: {
+              id: "netease-agent-playlist-song",
+              source: "netease",
+              title: "Agent Playlist Song",
+              creator: "Agent Curator",
+              durationMs: 201000,
+              pageUrl: "https://music.163.com/#/song?id=201",
+              platformAudioUrl: "https://music.163.com/song/media/outer/url?id=201.mp3",
+              tags: ["netease", "agent-selected"],
+              canOpenVideo: false
+            }
+          },
+          { type: "play_music_playlist", playlistId: "playlist-agent-list" }
+        ]
+      })
+    );
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), { target: { value: "建一个歌单然后播放" } });
+    fireEvent.click(getComposerSubmit());
+
+    expect(await within(getTimeline()).findByText("我建好歌单并开始播放了。")).toBeTruthy();
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe("Agent Playlist Song");
+    fireEvent.click(getQueueManageButton());
+    const panel = getMusicQueuePanel();
+    fireEvent.click(within(panel).getByRole("tab", { name: "我的歌单" }));
+    expect(within(panel).getByText("Agent List")).toBeTruthy();
+    expect(within(panel).getByText("Agent Playlist Song")).toBeTruthy();
+  });
+
+  it("uses the backend playlist id when delayed agent playlist actions race with a same-name manual playlist", async () => {
+    const pendingChat = deferred<Awaited<ReturnType<typeof apiMocks.postChat>>>();
+    const agentPlaylistTrack = {
+      id: "netease-agent-race-song",
+      source: "netease" as const,
+      title: "Agent Race Song",
+      creator: "Agent Curator",
+      durationMs: 201000,
+      pageUrl: "https://music.163.com/#/song?id=301",
+      platformAudioUrl: "https://music.163.com/song/media/outer/url?id=301.mp3",
+      tags: ["netease", "agent-selected"],
+      canOpenVideo: false
+    };
+    apiMocks.postChat.mockReturnValueOnce(pendingChat.promise);
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), { target: { value: "Build the focus playlist" } });
+    fireEvent.click(getComposerSubmit());
+
+    await waitFor(() => expect(apiMocks.postChat).toHaveBeenCalledTimes(1));
+    fireEvent.click(getQueueManageButton());
+    let panel = getMusicQueuePanel();
+    fireEvent.click(within(panel).getByRole("tab", { name: "我的歌单" }));
+    fireEvent.change(within(panel).getByLabelText("歌单名称"), { target: { value: "Agent Focus" } });
+    fireEvent.click(within(panel).getByRole("button", { name: "新建歌单" }));
+    expect(within(panel).getByText("Agent Focus")).toBeTruthy();
+
+    pendingChat.resolve(
+      makeChatResponse({
+        reply: { id: "reply-race-playlist", role: "kumiko", content: "I used the playlist I created." },
+        clientActions: [
+          {
+            type: "create_music_playlist",
+            playlistId: "playlist-agent-focus",
+            playlistName: "Agent Focus",
+            description: "from agent"
+          },
+          {
+            type: "add_music_to_playlist",
+            playlistId: "playlist-agent-focus",
+            item: agentPlaylistTrack
+          },
+          { type: "play_music_playlist", playlistId: "playlist-agent-focus" }
+        ]
+      })
+    );
+
+    expect(await within(getTimeline()).findByText("I used the playlist I created.")).toBeTruthy();
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe("Agent Race Song");
+
+    panel = getMusicQueuePanel();
+    expect(within(panel).getAllByText("Agent Focus")).toHaveLength(2);
+    const storedLibrary = JSON.parse(localStorage.getItem("kumikoroom.musicLibrary") ?? "{\"playlists\":[]}") as {
+      playlists: Array<{
+        id: string;
+        name: string;
+        items: Array<{ item: { title: string } }>;
+      }>;
+    };
+    const matchingPlaylists = storedLibrary.playlists.filter((playlist) => playlist.name === "Agent Focus");
+    expect(matchingPlaylists.map((playlist) => playlist.id).sort()).toEqual([
+      "playlist-agent-focus",
+      "playlist-agent-focus-2"
+    ]);
+    expect(matchingPlaylists.find((playlist) => playlist.id === "playlist-agent-focus")?.items).toEqual([]);
+    expect(
+      matchingPlaylists
+        .find((playlist) => playlist.id === "playlist-agent-focus-2")
+        ?.items.map((entry) => entry.item.title)
+    ).toEqual(["Agent Race Song"]);
+  });
+
+  it("appends a stored playlist to the queue without interrupting playback", async () => {
+    const queuedPlaylistTrack = {
+      id: "netease-night-queue-song",
+      source: "netease" as const,
+      title: "Night Queue Song",
+      creator: "Queue Curator",
+      durationMs: 203000,
+      pageUrl: "https://music.163.com/#/song?id=203",
+      platformAudioUrl: "https://music.163.com/song/media/outer/url?id=203.mp3",
+      tags: ["netease"],
+      canOpenVideo: false
+    };
+    localStorage.setItem(
+      "kumikoroom.musicLibrary",
+      JSON.stringify({
+        playlists: [
+          {
+            id: "playlist-night-queue",
+            name: "Night Queue",
+            description: "queued by agent",
+            createdAt: "2026-06-15T00:00:00.000Z",
+            updatedAt: "2026-06-15T00:01:00.000Z",
+            items: [
+              {
+                id: queuedPlaylistTrack.id,
+                item: queuedPlaylistTrack,
+                addedAt: "2026-06-15T00:01:00.000Z",
+                addedBy: "user"
+              }
+            ]
+          }
+        ]
+      })
+    );
+    apiMocks.postChat.mockResolvedValueOnce(
+      makeChatResponse({
+        reply: { id: "reply-enqueue-playlist", role: "kumiko", content: "我把这张歌单排到后面了。" },
+        clientActions: [{ type: "add_playlist_to_queue", playlistId: "playlist-night-queue" }]
+      })
+    );
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), { target: { value: "把 Night Queue 加到接下来" } });
+    fireEvent.click(getComposerSubmit());
+
+    expect(await within(getTimeline()).findByText("我把这张歌单排到后面了。")).toBeTruthy();
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe(PLAYER_TRACKS[0].title);
+    fireEvent.click(getQueueManageButton());
+    const panel = getMusicQueuePanel();
+    expect(within(panel).getByText(queuedPlaylistTrack.title)).toBeTruthy();
+  });
+
   it("adds an agent-selected track to upcoming without interrupting the current track", async () => {
     apiMocks.postChat.mockResolvedValueOnce(
       makeChatResponse({
