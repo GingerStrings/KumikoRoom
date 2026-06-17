@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
 import httpx
 
-from kumikoroom.config import ApiSettings
+from kumikoroom.config import (
+    ApiSettings,
+    LlmProvider,
+    LlmRuntimeConfig,
+    runtime_config_from_llm_config,
+    runtime_config_from_settings,
+)
 
 
 class LLMMessage(TypedDict, total=False):
@@ -19,7 +26,7 @@ class LLMMessage(TypedDict, total=False):
 
 @dataclass(frozen=True)
 class ProviderStatus:
-    provider: Literal["mock", "deepseek"]
+    provider: LlmProvider
     model: str | None
     configured: bool
     label: str
@@ -39,6 +46,14 @@ class LLMResult:
     tool_calls: list[LLMToolCall] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class LLMTestResult:
+    ok: bool
+    error: str | None
+    model: str | None
+    latency_ms: int | None
+
+
 class LLMProvider(Protocol):
     def generate(
         self,
@@ -53,7 +68,23 @@ class ProviderUnavailable(RuntimeError):
     pass
 
 
+def _provider_label(provider: LlmProvider, model: str) -> str:
+    if provider == "openai_compatible":
+        return f"OpenAI 兼容 {model}"
+    if provider == "deepseek":
+        return f"DeepSeek {model}"
+    return "本地 Mock API"
+
+
 class MockLLMProvider:
+    def __init__(self, runtime_config: LlmRuntimeConfig | None = None) -> None:
+        self.runtime_config = runtime_config or LlmRuntimeConfig(
+            provider="mock",
+            base_url="",
+            api_key=None,
+            model="mock",
+        )
+
     def generate(
         self,
         messages: list[LLMMessage],
@@ -76,12 +107,27 @@ class MockLLMProvider:
 
 
 class DeepSeekLLMProvider:
+    """OpenAI-compatible chat completions client.
+
+    Historically named after DeepSeek; now serves any OpenAI-compatible
+    endpoint (OpenAI, Moonshot, SiliconFlow, Volcengine Ark, local Ollama,
+    etc.) via runtime config.
+    """
+
     def __init__(
         self,
-        settings: ApiSettings,
+        runtime_config: LlmRuntimeConfig | None = None,
         transport: httpx.BaseTransport | None = None,
+        *,
+        settings: ApiSettings | None = None,
     ) -> None:
-        self.settings = settings
+        if runtime_config is None and settings is None:
+            raise ValueError(
+                "DeepSeekLLMProvider requires either runtime_config or settings"
+            )
+        if runtime_config is None:
+            runtime_config = runtime_config_from_settings(settings)  # type: ignore[arg-type]
+        self.runtime_config = runtime_config
         self.transport = transport
 
     def generate(
@@ -90,13 +136,15 @@ class DeepSeekLLMProvider:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | None = None,
     ) -> LLMResult:
-        api_key = self.settings.deepseek_api_key
-        if not api_key or not api_key.strip():
+        runtime = self.runtime_config
+        api_key = runtime.api_key
+        has_key = bool(api_key and api_key.strip())
+
+        if runtime.provider != "openai_compatible" and not has_key:
             raise ProviderUnavailable("DEEPSEEK_API_KEY is not configured")
 
-        api_key = api_key.strip()
         request_body: dict[str, Any] = {
-            "model": self.settings.deepseek_model,
+            "model": runtime.model,
             "messages": messages,
             "temperature": 0.8,
         }
@@ -105,14 +153,15 @@ class DeepSeekLLMProvider:
         if tool_choice is not None:
             request_body["tool_choice"] = tool_choice
 
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if has_key:
+            headers["Authorization"] = f"Bearer {api_key.strip()}"
+
         try:
             with httpx.Client(timeout=45.0, transport=self.transport) as client:
                 response = client.post(
-                    f"{self.settings.deepseek_base_url.rstrip('/')}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
+                    f"{runtime.base_url.rstrip('/')}/chat/completions",
+                    headers=headers,
                     json=request_body,
                 )
                 response.raise_for_status()
@@ -138,29 +187,108 @@ class DeepSeekLLMProvider:
         return LLMResult(
             content=content,
             provider_status=ProviderStatus(
-                provider="deepseek",
-                model=self.settings.deepseek_model,
+                provider=runtime.provider,
+                model=runtime.model,
                 configured=True,
-                label=f"DeepSeek {self.settings.deepseek_model}",
+                label=_provider_label(runtime.provider, runtime.model),
             ),
             tool_calls=tool_calls,
         )
 
 
-def build_provider(settings: ApiSettings) -> LLMProvider:
-    if settings.llm_provider == "deepseek":
-        return DeepSeekLLMProvider(settings)
+def build_provider(
+    settings: ApiSettings | None = None,
+    runtime_config: LlmRuntimeConfig | None = None,
+    transport: httpx.BaseTransport | None = None,
+) -> LLMProvider:
+    if runtime_config is None:
+        if settings is None:
+            raise ValueError("build_provider requires either settings or runtime_config")
+        runtime_config = runtime_config_from_settings(settings)
 
-    return MockLLMProvider()
+    if runtime_config.provider == "mock":
+        return MockLLMProvider(runtime_config)
+
+    return DeepSeekLLMProvider(runtime_config=runtime_config, transport=transport)
 
 
 def unconfigured_deepseek_status(settings: ApiSettings) -> ProviderStatus:
     return ProviderStatus(
-        provider="deepseek",
+        provider=settings.llm_provider,
         model=settings.deepseek_model,
         configured=False,
         label="DeepSeek 未配置",
     )
+
+
+def unconfigured_runtime_status(runtime_config: LlmRuntimeConfig) -> ProviderStatus:
+    return ProviderStatus(
+        provider=runtime_config.provider,
+        model=runtime_config.model,
+        configured=False,
+        label=_provider_label(runtime_config.provider, runtime_config.model),
+    )
+
+
+def test_llm_connection(
+    runtime_config: LlmRuntimeConfig,
+    transport: httpx.BaseTransport | None = None,
+) -> LLMTestResult:
+    if runtime_config.provider == "mock":
+        return LLMTestResult(ok=True, error=None, model=None, latency_ms=0)
+
+    base_url = runtime_config.base_url.rstrip("/")
+    request_body: dict[str, Any] = {
+        "model": runtime_config.model,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 1,
+    }
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if runtime_config.api_key:
+        headers["Authorization"] = f"Bearer {runtime_config.api_key.strip()}"
+
+    started = time.perf_counter()
+    try:
+        with httpx.Client(timeout=10.0, transport=transport) as client:
+            response = client.post(
+                f"{base_url}/chat/completions",
+                headers=headers,
+                json=request_body,
+            )
+            response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        status_code = exc.response.status_code if exc.response is not None else None
+        return LLMTestResult(
+            ok=False,
+            error=f"HTTP {status_code}" if status_code is not None else "HTTP error",
+            model=runtime_config.model,
+            latency_ms=latency_ms,
+        )
+    except httpx.HTTPError as exc:
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        reason = _scrub_error_message(str(exc))
+        return LLMTestResult(
+            ok=False,
+            error=reason,
+            model=runtime_config.model,
+            latency_ms=latency_ms,
+        )
+
+    latency_ms = int((time.perf_counter() - started) * 1000)
+    return LLMTestResult(
+        ok=True,
+        error=None,
+        model=runtime_config.model,
+        latency_ms=latency_ms,
+    )
+
+
+def _scrub_error_message(message: str) -> str:
+    scrubbed = message
+    for needle in ("Bearer ", "authorization", "Authorization"):
+        scrubbed = scrubbed.replace(needle, "[redacted]")
+    return scrubbed[:200]
 
 
 def _last_user_message(messages: list[LLMMessage]) -> str | None:

@@ -1,8 +1,25 @@
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from kumikoroom.config import load_settings
+from kumikoroom.config import (
+    LlmRuntimeConfig,
+    load_settings,
+    runtime_config_from_llm_config,
+    runtime_config_from_settings,
+)
+
+
+def _llm_config(provider: str, base_url=None, api_key=None, model=None):
+    @dataclass
+    class _Cfg:
+        provider: str
+        base_url: str | None
+        api_key: str | None
+        model: str | None
+
+    return _Cfg(provider=provider, base_url=base_url, api_key=api_key, model=model)
 
 
 def test_defaults_to_mock_provider_without_deepseek_key(monkeypatch) -> None:
@@ -82,3 +99,142 @@ def test_memory_db_path_can_be_overridden(monkeypatch, tmp_path: Path) -> None:
 
     assert settings.memory_db_path == memory_path
     assert isinstance(settings.memory_db_path, Path)
+
+
+def test_runtime_config_from_settings_uses_deepseek_defaults(monkeypatch) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "env-key")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "env-model")
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://env.example.com/")
+
+    settings = load_settings()
+
+    runtime = runtime_config_from_settings(settings)
+
+    assert isinstance(runtime, LlmRuntimeConfig)
+    assert runtime.provider == "deepseek"
+    assert runtime.api_key == "env-key"
+    assert runtime.model == "env-model"
+    assert runtime.base_url == "https://env.example.com"
+
+
+def test_runtime_config_from_llm_config_openai_compatible_overrides_env(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "env-key")
+    settings = load_settings()
+
+    llm_config = _llm_config(
+        provider="openai_compatible",
+        base_url="https://api.openai.com/v1/",
+        api_key="user-key",
+        model="gpt-4o-mini",
+    )
+
+    runtime = runtime_config_from_llm_config(settings, llm_config)
+
+    assert runtime.provider == "openai_compatible"
+    assert runtime.base_url == "https://api.openai.com/v1"
+    assert runtime.api_key == "user-key"
+    assert runtime.model == "gpt-4o-mini"
+
+
+def test_runtime_config_from_llm_config_openai_compatible_does_not_borrow_env_credentials(
+    monkeypatch,
+) -> None:
+    """openai_compatible must NEVER fall back to DEEPSEEK_* env values.
+
+    Borrowing DEEPSEEK_API_KEY for an arbitrary endpoint would forward
+    credentials to a third-party URL the user did not authorize.
+    """
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-secret")
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+    settings = load_settings()
+
+    llm_config = _llm_config(
+        provider="openai_compatible",
+        base_url="http://localhost:11434/v1",
+        api_key=None,
+        model="qwen2.5:7b",
+    )
+
+    runtime = runtime_config_from_llm_config(settings, llm_config)
+
+    assert runtime.provider == "openai_compatible"
+    assert runtime.base_url == "http://localhost:11434/v1"
+    assert runtime.api_key is None
+    assert runtime.model == "qwen2.5:7b"
+
+
+def test_runtime_config_from_llm_config_openai_compatible_uses_only_explicit_fields(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-secret")
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+    settings = load_settings()
+
+    llm_config = _llm_config(
+        provider="openai_compatible",
+        base_url="https://api.openai.com/v1",
+        api_key="sk-explicit",
+        model="gpt-4o-mini",
+    )
+
+    runtime = runtime_config_from_llm_config(settings, llm_config)
+
+    assert runtime.provider == "openai_compatible"
+    assert runtime.base_url == "https://api.openai.com/v1"
+    assert runtime.api_key == "sk-explicit"
+    assert runtime.model == "gpt-4o-mini"
+
+
+def test_runtime_config_from_llm_config_deepseek_uses_defaults_when_missing(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+    monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
+    settings = load_settings()
+
+    llm_config = _llm_config(provider="deepseek", api_key="user-key")
+
+    runtime = runtime_config_from_llm_config(settings, llm_config)
+
+    assert runtime.provider == "deepseek"
+    assert runtime.base_url == "https://api.deepseek.com"
+    assert runtime.model == "deepseek-v4-flash"
+    assert runtime.api_key == "user-key"
+
+
+def test_runtime_config_from_llm_config_mock_ignores_other_fields() -> None:
+    settings = load_settings()
+
+    llm_config = _llm_config(
+        provider="mock",
+        base_url="https://should-be-ignored.example.com",
+        api_key="should-be-ignored",
+        model="should-be-ignored",
+    )
+
+    runtime = runtime_config_from_llm_config(settings, llm_config)
+
+    assert runtime.provider == "mock"
+    assert runtime.base_url == ""
+    assert runtime.api_key is None
+    assert runtime.model == "mock"
+
+
+def test_runtime_config_strips_trailing_slash_in_base_url(monkeypatch) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "env-key")
+    settings = load_settings()
+
+    llm_config = _llm_config(
+        provider="openai_compatible",
+        base_url="https://api.siliconflow.cn/v1//",
+        api_key="user-key",
+        model="Qwen/Qwen2.5-7B-Instruct",
+    )
+
+    runtime = runtime_config_from_llm_config(settings, llm_config)
+
+    assert runtime.base_url == "https://api.siliconflow.cn/v1"

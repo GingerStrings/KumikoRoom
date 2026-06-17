@@ -7,7 +7,13 @@ from kumikoroom.agent_tools import (
     dispatch_room_agent_tool,
     room_agent_tool_specs,
 )
-from kumikoroom.config import ApiSettings, load_settings
+from kumikoroom.config import (
+    ApiSettings,
+    LlmRuntimeConfig,
+    load_settings,
+    runtime_config_from_llm_config,
+    runtime_config_from_settings,
+)
 from kumikoroom.llm import (
     LLMMessage,
     LLMProvider,
@@ -17,6 +23,7 @@ from kumikoroom.llm import (
     ProviderStatus,
     build_provider,
     unconfigured_deepseek_status,
+    unconfigured_runtime_status,
 )
 from kumikoroom.memory import MemoryStore, extract_memories
 from kumikoroom.persona import build_persona_prompt
@@ -54,9 +61,19 @@ class ConversationManager:
         provider: LLMProvider | None = None,
         memory_store: MemoryStore | None = None,
         session_store: SessionStore | None = None,
+        llm_config=None,
     ) -> None:
         self.settings = settings or load_settings()
-        self.provider = provider or build_provider(self.settings)
+        if llm_config is not None:
+            normalized = llm_config.normalized() if hasattr(llm_config, "normalized") else llm_config
+            self.runtime_config = runtime_config_from_llm_config(
+                self.settings, normalized
+            )
+        else:
+            self.runtime_config = runtime_config_from_settings(self.settings)
+        self.provider = provider or build_provider(
+            runtime_config=self.runtime_config
+        )
         self.memory_store = memory_store or MemoryStore(self.settings.memory_db_path)
         self.session_store = session_store or SessionStore(self.settings.memory_db_path)
 
@@ -197,7 +214,7 @@ class ConversationManager:
         provider_status = (
             last_result.provider_status
             if last_result is not None
-            else _provider_status_from_settings(self.settings)
+            else _provider_status_from_runtime(self.runtime_config)
         )
         return AgentTurnResult(
             content=(
@@ -210,11 +227,11 @@ class ConversationManager:
         )
 
     def _provider_unavailable_response(self, session: ChatSession) -> ChatOut:
-        provider_status = _fallback_provider_status(self.settings)
+        provider_status = _fallback_provider_status(self.runtime_config)
         saved_reply = self.session_store.append_message(
             session_id=session.id,
             role="kumiko",
-            content=_fallback_content(self.settings),
+            content=_fallback_content(self.runtime_config),
             provider=provider_status.provider,
             provider_model=provider_status.model,
             provider_configured=provider_status.configured,
@@ -237,8 +254,13 @@ class ConversationManager:
         )
 
 
-def _fallback_content(settings: ApiSettings) -> str:
-    if settings.llm_provider == "deepseek" and not settings.is_deepseek_configured:
+def _fallback_content(runtime_config: LlmRuntimeConfig) -> str:
+    if runtime_config.provider == "openai_compatible":
+        return (
+            f"你配置的 {runtime_config.model} 暂时没有接上。"
+            "我先留在本地，陪你把这句话安静地接住；检查一下设置里的 URL 和 API Key。"
+        )
+    if runtime_config.provider == "deepseek" and not runtime_config.api_key:
         return (
             "DeepSeek 还没有配置好；这里还没有配置 DeepSeek API key。"
             "先用本地的安静版本陪你聊，等配置完成后再接上正式回复。"
@@ -246,40 +268,54 @@ def _fallback_content(settings: ApiSettings) -> str:
     return "DeepSeek 现在暂时没有接上。我先留在本地，陪你把这句话安静地接住。"
 
 
-def _fallback_provider_status(settings: ApiSettings) -> ProviderStatusOut:
-    if settings.llm_provider == "deepseek":
-        if not settings.is_deepseek_configured:
-            return ProviderStatusOut(**asdict(unconfigured_deepseek_status(settings)))
+def _fallback_provider_status(runtime_config: LlmRuntimeConfig) -> ProviderStatusOut:
+    if runtime_config.provider == "mock":
         return ProviderStatusOut(
-            provider="deepseek",
-            model=settings.deepseek_model,
-            configured=True,
-            label=f"DeepSeek {settings.deepseek_model}",
+            provider="mock",
+            model=None,
+            configured=False,
+            label="本地 Mock API 暂不可用",
         )
+    if runtime_config.provider == "deepseek" and not runtime_config.api_key:
+        return ProviderStatusOut(**asdict(unconfigured_runtime_status(runtime_config)))
+    if not runtime_config.api_key and runtime_config.provider != "openai_compatible":
+        return ProviderStatusOut(**asdict(unconfigured_runtime_status(runtime_config)))
     return ProviderStatusOut(
-        provider="mock",
-        model=None,
-        configured=False,
-        label="本地 Mock API 暂不可用",
+        provider=runtime_config.provider,
+        model=runtime_config.model,
+        configured=True,
+        label=_runtime_label(runtime_config),
     )
 
 
-def _provider_status_from_settings(settings: ApiSettings) -> ProviderStatus:
-    if settings.llm_provider == "deepseek":
-        if not settings.is_deepseek_configured:
-            return unconfigured_deepseek_status(settings)
+def _provider_status_from_runtime(
+    runtime_config: LlmRuntimeConfig,
+) -> ProviderStatus:
+    if runtime_config.provider == "mock":
         return ProviderStatus(
-            provider="deepseek",
-            model=settings.deepseek_model,
-            configured=True,
-            label=f"DeepSeek {settings.deepseek_model}",
+            provider="mock",
+            model=None,
+            configured=False,
+            label="Local Mock API unavailable",
         )
+    if runtime_config.provider == "deepseek" and not runtime_config.api_key:
+        return unconfigured_runtime_status(runtime_config)
+    if not runtime_config.api_key and runtime_config.provider != "openai_compatible":
+        return unconfigured_runtime_status(runtime_config)
     return ProviderStatus(
-        provider="mock",
-        model=None,
-        configured=False,
-        label="Local Mock API unavailable",
+        provider=runtime_config.provider,
+        model=runtime_config.model,
+        configured=True,
+        label=_runtime_label(runtime_config),
     )
+
+
+def _runtime_label(runtime_config: LlmRuntimeConfig) -> str:
+    if runtime_config.provider == "openai_compatible":
+        return f"OpenAI 兼容 {runtime_config.model}"
+    if runtime_config.provider == "deepseek":
+        return f"DeepSeek {runtime_config.model}"
+    return "本地 Mock API"
 
 
 def _assistant_tool_call_message(result: LLMResult) -> LLMMessage:

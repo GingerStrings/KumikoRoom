@@ -47,11 +47,27 @@ export type PersonaStrength = "medium" | "strong";
 
 export type MemoryCategory = "preference" | "diary" | "creative_note" | "profile_fact";
 
+export type LlmProvider = "mock" | "deepseek" | "openai_compatible";
+
 export interface ProviderStatus {
-  provider: "mock" | "deepseek";
+  provider: LlmProvider;
   model: string | null;
   configured: boolean;
   label: string;
+}
+
+export interface LLMConfig {
+  provider: LlmProvider;
+  baseUrl: string | null;
+  apiKey: string | null;
+  model: string | null;
+}
+
+export interface LLMTestResult {
+  ok: boolean;
+  error: string | null;
+  model: string | null;
+  latencyMs: number | null;
 }
 
 export interface StoredChatMessage extends ChatMessage {
@@ -80,6 +96,7 @@ export interface ChatRequest {
   memoryEnabled?: boolean;
   listeningContext?: ListeningContext;
   musicState?: MusicAgentState;
+  llmConfig?: LLMConfig | null;
 }
 
 export interface MusicSearchResult {

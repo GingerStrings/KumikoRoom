@@ -3,6 +3,8 @@ import type {
   ChatResponse,
   ChatSession,
   ClientMusicItem,
+  LLMConfig,
+  LLMTestResult,
   MusicAgentState,
   MemoryEvent,
   MusicSearchResult,
@@ -91,9 +93,49 @@ export function postChat(payload: ChatRequest): Promise<ChatResponse> {
       recent_messages: payload.recentMessages ?? [],
       persona_strength: payload.personaStrength ?? "medium",
       memory_enabled: payload.memoryEnabled ?? true,
-      session_id: payload.sessionId ?? null
+      session_id: payload.sessionId ?? null,
+      ...(payload.llmConfig ? { llm_config: mapLLMConfigRequest(payload.llmConfig) } : {})
     })
   }).then(mapChatResponse);
+}
+
+export function testLLMConnection(config: LLMConfig): Promise<LLMTestResult> {
+  return request<LLMTestResultApi>("/api/room/llm/test", {
+    method: "POST",
+    body: JSON.stringify(mapLLMConfigRequest(config))
+  }).then(mapLLMTestResult);
+}
+
+function mapLLMConfigRequest(config: LLMConfig): LLMConfigApi {
+  return {
+    provider: config.provider,
+    base_url: config.baseUrl,
+    api_key: config.apiKey,
+    model: config.model
+  };
+}
+
+function mapLLMTestResult(value: LLMTestResultApi): LLMTestResult {
+  return {
+    ok: value.ok,
+    error: value.error,
+    model: value.model,
+    latencyMs: value.latency_ms
+  };
+}
+
+interface LLMConfigApi {
+  provider: LLMConfig["provider"];
+  base_url: string | null;
+  api_key: string | null;
+  model: string | null;
+}
+
+interface LLMTestResultApi {
+  ok: boolean;
+  error: string | null;
+  model: string | null;
+  latency_ms: number | null;
 }
 
 export function searchMusic(query: string, limit = 5): Promise<MusicSearchResult[]> {

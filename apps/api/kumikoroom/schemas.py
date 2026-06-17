@@ -1,11 +1,12 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 PersonaStrength = Literal["medium", "strong"]
 MemoryCategory = Literal["preference", "diary", "creative_note", "profile_fact"]
 MusicSourceKind = Literal["bilibili", "netease"]
+LlmProviderKind = Literal["mock", "deepseek", "openai_compatible"]
 
 
 class CharacterStateOut(BaseModel):
@@ -149,6 +150,60 @@ class AgentTraceOut(BaseModel):
     tool_calls: list[dict[str, str | bool]] = Field(default_factory=list)
 
 
+class LLMConfigIn(BaseModel):
+    provider: LlmProviderKind
+    base_url: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_provider_fields(self) -> "LLMConfigIn":
+        if self.provider == "mock":
+            return self
+
+        if self.provider == "openai_compatible":
+            if not (self.base_url and self.base_url.strip()):
+                raise ValueError(
+                    "openai_compatible provider requires a base_url"
+                )
+            if not (self.model and self.model.strip()):
+                raise ValueError(
+                    "openai_compatible provider requires a model"
+                )
+            self._assert_http_scheme(self.base_url)
+            return self
+
+        if self.provider == "deepseek":
+            if not (self.api_key and self.api_key.strip()):
+                raise ValueError("deepseek provider requires an api_key")
+            if self.base_url:
+                self._assert_http_scheme(self.base_url)
+            return self
+
+        return self
+
+    @staticmethod
+    def _assert_http_scheme(base_url: str) -> None:
+        stripped = base_url.strip().lower()
+        if not (stripped.startswith("http://") or stripped.startswith("https://")):
+            raise ValueError("base_url must use http or https scheme")
+
+    def normalized(self) -> "LLMConfigIn":
+        return LLMConfigIn(
+            provider=self.provider,
+            base_url=self.base_url.strip() if self.base_url else None,
+            api_key=self.api_key.strip() if self.api_key else None,
+            model=self.model.strip() if self.model else None,
+        )
+
+
+class LLMTestOut(BaseModel):
+    ok: bool
+    error: str | None = None
+    model: str | None = None
+    latency_ms: int | None = None
+
+
 class ChatIn(BaseModel):
     message: str
     session_id: str | None = None
@@ -158,10 +213,11 @@ class ChatIn(BaseModel):
     recent_messages: list[ChatMessageOut] = Field(default_factory=list)
     persona_strength: PersonaStrength = "medium"
     memory_enabled: bool = True
+    llm_config: LLMConfigIn | None = None
 
 
 class ProviderStatusOut(BaseModel):
-    provider: Literal["mock", "deepseek"]
+    provider: LlmProviderKind
     model: str | None
     configured: bool
     label: str

@@ -14,7 +14,8 @@ const apiMocks = vi.hoisted(() => ({
   getSessions: vi.fn(),
   renameSession: vi.fn(),
   postChat: vi.fn(),
-  searchMusic: vi.fn()
+  searchMusic: vi.fn(),
+  testLLMConnection: vi.fn()
 }));
 
 vi.mock("../src/api/client", () => ({
@@ -24,7 +25,8 @@ vi.mock("../src/api/client", () => ({
   getSessions: apiMocks.getSessions,
   renameSession: apiMocks.renameSession,
   postChat: apiMocks.postChat,
-  searchMusic: apiMocks.searchMusic
+  searchMusic: apiMocks.searchMusic,
+  testLLMConnection: apiMocks.testLLMConnection
 }));
 
 const connectionStatus = getConnectionStatus("http://127.0.0.1:8000");
@@ -1718,6 +1720,78 @@ describe("RoomShell", () => {
     const settings = openModelPreferences();
     expect(within(settings).getByRole("button", { name: "中" }).getAttribute("aria-pressed")).toBe("true");
     expect(within(settings).getByRole("button", { name: "强" }).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("persists llmConfig to localStorage when a preset is applied", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: "默认会话" })).toBeTruthy();
+    const settings = openModelPreferences();
+    fireEvent.click(within(settings).getByText("Moonshot Kimi"));
+
+    expect(localStorage.getItem("kumikoroom.llmConfig")).toContain("moonshot.cn");
+    expect(localStorage.getItem("kumikoroom.llmConfig")).toContain("moonshot-v1-8k");
+  });
+
+  it("clears llmConfig from localStorage on restore default", async () => {
+    localStorage.setItem(
+      "kumikoroom.llmConfig",
+      JSON.stringify({
+        provider: "openai_compatible",
+        baseUrl: "https://api.openai.com/v1",
+        apiKey: "sk-test",
+        model: "gpt-4o-mini"
+      })
+    );
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: "默认会话" })).toBeTruthy();
+    const settings = openModelPreferences();
+    fireEvent.click(within(settings).getByText("恢复默认"));
+
+    expect(localStorage.getItem("kumikoroom.llmConfig")).toBeNull();
+  });
+
+  it("hydrates llmConfig from localStorage and passes it to postChat", async () => {
+    const storedConfig = {
+      provider: "openai_compatible" as const,
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-hydrated",
+      model: "gpt-4o-mini"
+    };
+    localStorage.setItem("kumikoroom.llmConfig", JSON.stringify(storedConfig));
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: "默认会话" })).toBeTruthy();
+    fireEvent.change(getComposerInput(), { target: { value: "hello" } });
+    fireEvent.click(getComposerSubmit());
+
+    await waitFor(() => expect(apiMocks.postChat).toHaveBeenCalled());
+    const callArgs = apiMocks.postChat.mock.calls[0][0];
+    expect(callArgs.llmConfig).toEqual(storedConfig);
+  });
+
+  it("calls testLLMConnection when test button is clicked", async () => {
+    apiMocks.testLLMConnection.mockResolvedValue({
+      ok: true,
+      error: null,
+      model: "moonshot-v1-8k",
+      latencyMs: 200
+    });
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: "默认会话" })).toBeTruthy();
+    const settings = openModelPreferences();
+    fireEvent.click(within(settings).getByText("Moonshot Kimi"));
+    fireEvent.click(within(settings).getByText("测试连接"));
+
+    await waitFor(() => expect(apiMocks.testLLMConnection).toHaveBeenCalled());
+    const config = apiMocks.testLLMConnection.mock.calls[0][0];
+    expect(config.baseUrl).toBe("https://api.moonshot.cn/v1");
+    expect(config.model).toBe("moonshot-v1-8k");
   });
 });
 

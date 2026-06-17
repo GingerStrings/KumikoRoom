@@ -1,11 +1,12 @@
 from fastapi.testclient import TestClient
+import pytest
 
 from kumikoroom.music_search import (
     parse_bilibili_video_results,
     NeteaseSongSearchResult,
     parse_netease_song_results,
 )
-from kumikoroom.schemas import MemoryEventOut
+from kumikoroom.schemas import LLMConfigIn, MemoryEventOut
 
 
 def test_room_state_uses_kumikoroom_identity(client: TestClient):
@@ -384,3 +385,166 @@ def test_chat_with_missing_session_returns_404(client: TestClient):
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Session not found"
+
+
+def test_llm_config_openai_compatible_requires_base_url():
+    with pytest.raises(ValueError, match="base_url"):
+        LLMConfigIn(
+            provider="openai_compatible",
+            model="gpt-4o-mini",
+            api_key="sk-test",
+        )
+
+
+def test_llm_config_openai_compatible_requires_model():
+    with pytest.raises(ValueError, match="model"):
+        LLMConfigIn(
+            provider="openai_compatible",
+            base_url="https://api.openai.com/v1",
+            api_key="sk-test",
+        )
+
+
+def test_llm_config_openai_compatible_allows_missing_api_key():
+    config = LLMConfigIn(
+        provider="openai_compatible",
+        base_url="http://localhost:11434/v1",
+        model="qwen2.5:7b",
+    )
+
+    assert config.api_key is None
+    assert config.provider == "openai_compatible"
+
+
+def test_llm_config_deepseek_requires_api_key():
+    with pytest.raises(ValueError, match="api_key"):
+        LLMConfigIn(provider="deepseek")
+
+
+def test_llm_config_rejects_non_http_base_url():
+    with pytest.raises(ValueError, match="http"):
+        LLMConfigIn(
+            provider="openai_compatible",
+            base_url="ftp://example.com/v1",
+            model="gpt-4o-mini",
+        )
+
+
+def test_llm_config_allows_localhost_http():
+    config = LLMConfigIn(
+        provider="openai_compatible",
+        base_url="http://localhost:11434/v1",
+        model="qwen2.5:7b",
+    )
+
+    assert config.base_url == "http://localhost:11434/v1"
+
+
+def test_llm_config_mock_accepts_no_other_fields():
+    config = LLMConfigIn(provider="mock")
+
+    assert config.provider == "mock"
+    assert config.base_url is None
+
+
+def test_llm_config_normalized_strips_whitespace():
+    config = LLMConfigIn(
+        provider="openai_compatible",
+        base_url="  https://api.openai.com/v1  ",
+        api_key="  sk-test  ",
+        model="  gpt-4o-mini  ",
+    )
+
+    normalized = config.normalized()
+
+    assert normalized.base_url == "https://api.openai.com/v1"
+    assert normalized.api_key == "sk-test"
+    assert normalized.model == "gpt-4o-mini"
+
+
+def test_chat_in_accepts_llm_config(client: TestClient):
+    response = client.post(
+        "/api/room/chat",
+        json={
+            "message": "hello",
+            "memory_enabled": False,
+            "llm_config": {
+                "provider": "mock",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["provider_status"]["provider"] == "mock"
+
+
+def test_chat_in_rejects_invalid_llm_config(client: TestClient):
+    response = client.post(
+        "/api/room/chat",
+        json={
+            "message": "hello",
+            "memory_enabled": False,
+            "llm_config": {
+                "provider": "openai_compatible",
+            },
+        },
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    detail = str(body)
+    assert "base_url" in detail or "model" in detail
+
+
+def test_llm_test_endpoint_returns_ok_for_mock(client: TestClient):
+    response = client.post(
+        "/api/room/llm/test",
+        json={"provider": "mock"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["error"] is None
+    assert body["model"] is None
+    assert body["latency_ms"] == 0
+
+
+def test_llm_test_endpoint_reports_http_error(client: TestClient, monkeypatch):
+    from kumikoroom.llm import LLMTestResult
+
+    monkeypatch.setattr(
+        "kumikoroom.routers.room.test_llm_connection",
+        lambda runtime_config, transport=None: LLMTestResult(
+            ok=False,
+            error="HTTP 401",
+            model="gpt-4o-mini",
+            latency_ms=42,
+        ),
+    )
+
+    response = client.post(
+        "/api/room/llm/test",
+        json={
+            "provider": "openai_compatible",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "sk-test",
+            "model": "gpt-4o-mini",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"] == "HTTP 401"
+    assert body["model"] == "gpt-4o-mini"
+    assert body["latency_ms"] == 42
+
+
+def test_llm_test_endpoint_rejects_invalid_config(client: TestClient):
+    response = client.post(
+        "/api/room/llm/test",
+        json={"provider": "openai_compatible"},
+    )
+
+    assert response.status_code == 422

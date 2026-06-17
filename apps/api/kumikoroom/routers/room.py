@@ -2,14 +2,17 @@ from dataclasses import asdict
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
 
-from kumikoroom.config import load_settings
+from kumikoroom.config import load_settings, runtime_config_from_llm_config
 from kumikoroom.conversation import ConversationManager
+from kumikoroom.llm import test_llm_connection
 from kumikoroom.memory import MemoryStore
 from kumikoroom.music_search import MusicSearchError, search_netease_songs
 from kumikoroom.schemas import (
     ChatIn,
     ChatOut,
     ChatSessionOut,
+    LLMConfigIn,
+    LLMTestOut,
     MemoryEventOut,
     MusicSearchResultOut,
     RoomStateOut,
@@ -89,9 +92,26 @@ def search_music(
 @router.post("/chat", response_model=ChatOut)
 def post_chat(payload: ChatIn) -> ChatOut:
     try:
-        return ConversationManager(settings=load_settings()).chat(payload)
+        return ConversationManager(
+            settings=load_settings(), llm_config=payload.llm_config
+        ).chat(payload)
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
+
+
+@router.post("/llm/test", response_model=LLMTestOut)
+def test_llm(payload: LLMConfigIn) -> LLMTestOut:
+    settings = load_settings()
+    runtime_config = runtime_config_from_llm_config(
+        settings, payload.normalized()
+    )
+    result = test_llm_connection(runtime_config)
+    return LLMTestOut(
+        ok=result.ok,
+        error=result.error,
+        model=result.model,
+        latency_ms=result.latency_ms,
+    )
 
 
 def memory_store() -> MemoryStore:

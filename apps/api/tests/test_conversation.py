@@ -19,7 +19,7 @@ from kumikoroom.music_search import (
     BilibiliVideoSearchResult,
     NeteaseSongSearchResult,
 )
-from kumikoroom.schemas import ChatIn, ChatMessageOut
+from kumikoroom.schemas import ChatIn, ChatMessageOut, LLMConfigIn
 from kumikoroom.sessions import ChatSession, StoredChatMessage
 
 
@@ -825,8 +825,8 @@ def test_manager_builds_default_provider_with_build_provider(
     provider = FakeProvider()
     calls = []
 
-    def fake_build_provider(received_settings):
-        calls.append(received_settings)
+    def fake_build_provider(*, runtime_config):
+        calls.append(runtime_config)
         return provider
 
     monkeypatch.setattr("kumikoroom.conversation.build_provider", fake_build_provider)
@@ -835,7 +835,8 @@ def test_manager_builds_default_provider_with_build_provider(
         ChatIn(message="hello", memory_enabled=False)
     )
 
-    assert calls == [settings]
+    assert len(calls) == 1
+    assert calls[0].provider == "mock"
     assert provider.messages[-1] == {"role": "user", "content": "hello"}
     assert response.reply.role == "kumiko"
 
@@ -1222,3 +1223,90 @@ def test_manager_omits_empty_listening_context_fields_from_system_prompt(
     assert "Playing: no" in system_text
     assert "Page:" not in system_text
     assert "Tags:" not in system_text
+
+
+def test_manager_uses_llm_config_override_to_build_runtime_config(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("KUMIKOROOM_LLM_PROVIDER", "mock")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("KUMIKOROOM_MEMORY_DB_PATH", str(tmp_path / "memory.sqlite3"))
+    settings = load_settings()
+    provider = FakeProvider()
+    received_runtime_configs = []
+
+    def fake_build_provider(*, runtime_config):
+        received_runtime_configs.append(runtime_config)
+        return provider
+
+    monkeypatch.setattr("kumikoroom.conversation.build_provider", fake_build_provider)
+
+    llm_config = LLMConfigIn(
+        provider="openai_compatible",
+        base_url="https://api.openai.com/v1",
+        api_key="sk-override",
+        model="gpt-4o-mini",
+    )
+
+    ConversationManager(settings=settings, llm_config=llm_config).chat(
+        ChatIn(message="hello", memory_enabled=False)
+    )
+
+    assert len(received_runtime_configs) == 1
+    runtime = received_runtime_configs[0]
+    assert runtime.provider == "openai_compatible"
+    assert runtime.base_url == "https://api.openai.com/v1"
+    assert runtime.api_key == "sk-override"
+    assert runtime.model == "gpt-4o-mini"
+
+
+def test_manager_fallback_for_openai_compatible_mentions_configured_model(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("KUMIKOROOM_LLM_PROVIDER", "mock")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("KUMIKOROOM_MEMORY_DB_PATH", str(tmp_path / "memory.sqlite3"))
+    settings = load_settings()
+    session_store = FakeSessionStore()
+
+    llm_config = LLMConfigIn(
+        provider="openai_compatible",
+        base_url="https://api.openai.com/v1",
+        api_key="sk-test",
+        model="gpt-4o-mini",
+    )
+
+    response = ConversationManager(
+        settings=settings,
+        provider=UnavailableProvider(),
+        session_store=session_store,
+        llm_config=llm_config,
+    ).chat(ChatIn(message="hello"))
+
+    assert response.provider_status.provider == "openai_compatible"
+    assert response.provider_status.model == "gpt-4o-mini"
+    assert response.provider_status.configured is True
+    assert "gpt-4o-mini" in response.reply.content
+    assert "sk-test" not in response.reply.content
+
+
+def test_manager_fallback_for_mock_remains_mock(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("KUMIKOROOM_LLM_PROVIDER", "mock")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("KUMIKOROOM_MEMORY_DB_PATH", str(tmp_path / "memory.sqlite3"))
+    settings = load_settings()
+    session_store = FakeSessionStore()
+
+    response = ConversationManager(
+        settings=settings,
+        provider=UnavailableProvider(),
+        session_store=session_store,
+    ).chat(ChatIn(message="hello"))
+
+    assert response.provider_status.provider == "mock"
+    assert response.provider_status.configured is False

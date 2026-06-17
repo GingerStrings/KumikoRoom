@@ -8,12 +8,15 @@ import {
   getSessionMessages,
   getSessions,
   postChat,
-  renameSession
+  renameSession,
+  testLLMConnection
 } from "../api/client";
 import type {
   ChatMessage,
   ChatSession,
   ClientMusicItem,
+  LLMConfig,
+  LLMTestResult,
   PersonaStrength,
   ProviderStatus,
   RoomClientAction,
@@ -60,6 +63,7 @@ import {
   type MusicQueueEntry,
   type MusicQueueState
 } from "../lib/musicQueue";
+import { LLMConfigForm } from "./LLMConfigForm";
 import { SessionSidebar } from "./SessionSidebar";
 import { VideoMiniWindow } from "./VideoMiniWindow";
 
@@ -97,6 +101,9 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const [memoryEnabled, setMemoryEnabled] = useState(true);
   const [settingsHydrated, setSettingsHydrated] = useState(false);
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
+  const [llmConfig, setLlmConfig] = useState<LLMConfig | null>(null);
+  const [llmTestResult, setLlmTestResult] = useState<LLMTestResult | null>(null);
+  const [isTestingLLM, setIsTestingLLM] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mobileSessionsOpen, setMobileSessionsOpen] = useState(false);
   const [mobileSessionMenuId, setMobileSessionMenuId] = useState<string | null>(null);
@@ -241,6 +248,30 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     [loadSessionMessages, setActiveSessionId, setSessionsLoadingState]
   );
 
+  const handleLLMConfigChange = useCallback((next: LLMConfig | null) => {
+    setLlmConfig(next);
+    setLlmTestResult(null);
+  }, []);
+
+  const handleLLMConfigTest = useCallback(async () => {
+    if (!llmConfig) return;
+    setIsTestingLLM(true);
+    setLlmTestResult(null);
+    try {
+      const result = await testLLMConnection(llmConfig);
+      setLlmTestResult(result);
+    } catch (error) {
+      setLlmTestResult({
+        ok: false,
+        error: error instanceof Error ? error.message : "测试连接失败",
+        model: llmConfig.model,
+        latencyMs: null
+      });
+    } finally {
+      setIsTestingLLM(false);
+    }
+  }, [llmConfig]);
+
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -252,6 +283,18 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     const savedMemoryEnabled = window.localStorage.getItem("kumikoroom.memoryEnabled");
     if (savedMemoryEnabled === "false") {
       setMemoryEnabled(false);
+    }
+
+    const savedLlmConfig = window.localStorage.getItem("kumikoroom.llmConfig");
+    if (savedLlmConfig) {
+      try {
+        const parsed = JSON.parse(savedLlmConfig) as LLMConfig;
+        if (parsed && typeof parsed === "object" && typeof parsed.provider === "string") {
+          setLlmConfig(parsed);
+        }
+      } catch {
+        // ignore malformed stored config
+      }
     }
 
     setSettingsHydrated(true);
@@ -276,6 +319,16 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
 
     window.localStorage.setItem("kumikoroom.memoryEnabled", String(memoryEnabled));
   }, [memoryEnabled, settingsHydrated]);
+
+  useEffect(() => {
+    if (!settingsHydrated || typeof window === "undefined") return;
+
+    if (llmConfig === null) {
+      window.localStorage.removeItem("kumikoroom.llmConfig");
+    } else {
+      window.localStorage.setItem("kumikoroom.llmConfig", JSON.stringify(llmConfig));
+    }
+  }, [llmConfig, settingsHydrated]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !activeSessionId) return;
@@ -404,7 +457,8 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
         personaStrength,
         memoryEnabled,
         listeningContext,
-        musicState
+        musicState,
+        llmConfig: llmConfig ?? undefined
       });
       if (activeSessionIdRef.current !== submittedSessionId) {
         return;
@@ -1221,10 +1275,13 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                     <span>当前连接</span>
                     <strong>{connectionLabel}</strong>
                   </div>
-                  <div className="settings-section">
-                    <span>模型</span>
-                    <strong>{providerStatus?.model ?? "发送后同步"}</strong>
-                  </div>
+                  <LLMConfigForm
+                    value={llmConfig}
+                    onChange={handleLLMConfigChange}
+                    onTest={handleLLMConfigTest}
+                    testResult={llmTestResult}
+                    isTesting={isTestingLLM}
+                  />
                   <div className="ai-setting-row">
                     <span>人设强度</span>
                     <div className="segmented-control" role="group" aria-label="人设强度">

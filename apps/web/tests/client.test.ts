@@ -880,4 +880,138 @@ describe("room API client", () => {
       expect.objectContaining({ method: "DELETE" })
     );
   });
+
+  it("includes llm_config in postChat body when provided", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({
+        reply: { id: "1", role: "kumiko", content: "ok" },
+        expression: "listening",
+        suggested_actions: [],
+        provider_status: {
+          provider: "openai_compatible",
+          model: "gpt-4o-mini",
+          configured: true,
+          label: "OpenAI 兼容 gpt-4o-mini"
+        },
+        memory_events: [],
+        session: null
+      })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await roomApi.postChat({
+      message: "hi",
+      roomState: DEFAULT_ROOM_STATE,
+      llmConfig: {
+        provider: "openai_compatible",
+        baseUrl: "https://api.openai.com/v1",
+        apiKey: "sk-test",
+        model: "gpt-4o-mini"
+      }
+    });
+
+    const body = requestBody(fetchMock);
+    expect(body.llm_config).toEqual({
+      provider: "openai_compatible",
+      base_url: "https://api.openai.com/v1",
+      api_key: "sk-test",
+      model: "gpt-4o-mini"
+    });
+  });
+
+  it("omits llm_config from postChat body when not provided", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({
+        reply: { id: "1", role: "kumiko", content: "ok" },
+        expression: "listening",
+        suggested_actions: [],
+        provider_status: {
+          provider: "mock",
+          model: null,
+          configured: true,
+          label: "Local Mock API"
+        },
+        memory_events: [],
+        session: null
+      })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await roomApi.postChat({ message: "hi", roomState: DEFAULT_ROOM_STATE });
+
+    const body = requestBody(fetchMock);
+    expect(body).not.toHaveProperty("llm_config");
+  });
+
+  it("testLLMConnection posts to /api/room/llm/test and maps response", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({
+        ok: true,
+        error: null,
+        model: "gpt-4o-mini",
+        latency_ms: 312
+      })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await roomApi.testLLMConnection({
+      provider: "openai_compatible",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-test",
+      model: "gpt-4o-mini"
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/room/llm/test",
+      expect.objectContaining({ method: "POST" })
+    );
+    const body = requestBody(fetchMock);
+    expect(body).toEqual({
+      provider: "openai_compatible",
+      base_url: "https://api.openai.com/v1",
+      api_key: "sk-test",
+      model: "gpt-4o-mini"
+    });
+    expect(result).toEqual({
+      ok: true,
+      error: null,
+      model: "gpt-4o-mini",
+      latencyMs: 312
+    });
+  });
+
+  it("testLLMConnection maps failure response", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify({
+        ok: false,
+        error: "HTTP 401",
+        model: "gpt-4o-mini",
+        latency_ms: 42
+      })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await roomApi.testLLMConnection({
+      provider: "openai_compatible",
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "bad",
+      model: "gpt-4o-mini"
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("HTTP 401");
+    expect(result.latencyMs).toBe(42);
+  });
 });

@@ -105,6 +105,18 @@ describe("Liz Bluebird room visual tokens", () => {
     });
   });
 
+  it("keeps the settings popover scrollable inside the visible viewport", () => {
+    const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
+
+    expectRuleToContain(css, ".room-workspace", ["overflow: hidden;"]);
+    expectRuleToContain(css, ".settings-popover", [
+      "position: fixed;",
+      "max-height: calc(100dvh - 112px);",
+      "overflow-y: auto;",
+      "scrollbar-gutter: stable;",
+    ]);
+  });
+
   it("defines the platform player and video mini-window selectors", () => {
     const css = fs.readFileSync(cssPath, "utf8");
 
