@@ -1261,7 +1261,7 @@ def test_manager_uses_llm_config_override_to_build_runtime_config(
     assert runtime.model == "gpt-4o-mini"
 
 
-def test_manager_fallback_for_openai_compatible_mentions_configured_model(
+def test_manager_fallback_for_openai_compatible_uses_plain_error_prompt(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -1288,7 +1288,10 @@ def test_manager_fallback_for_openai_compatible_mentions_configured_model(
     assert response.provider_status.provider == "openai_compatible"
     assert response.provider_status.model == "gpt-4o-mini"
     assert response.provider_status.configured is True
-    assert "gpt-4o-mini" in response.reply.content
+    assert (
+        response.reply.content
+        == "模型连接失败，请检查 Base URL、模型名称和 API Key。"
+    )
     assert "sk-test" not in response.reply.content
 
 

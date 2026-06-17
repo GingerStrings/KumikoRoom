@@ -256,10 +256,7 @@ class ConversationManager:
 
 def _fallback_content(runtime_config: LlmRuntimeConfig) -> str:
     if runtime_config.provider == "openai_compatible":
-        return (
-            f"你配置的 {runtime_config.model} 暂时没有接上。"
-            "我先留在本地，陪你把这句话安静地接住；检查一下设置里的 URL 和 API Key。"
-        )
+        return "模型连接失败，请检查 Base URL、模型名称和 API Key。"
     if runtime_config.provider == "deepseek" and not runtime_config.api_key:
         return (
             "DeepSeek 还没有配置好；这里还没有配置 DeepSeek API key。"

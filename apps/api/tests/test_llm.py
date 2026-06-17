@@ -1,5 +1,7 @@
 import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 
 import httpx
 import pytest
@@ -121,6 +123,49 @@ def test_deepseek_provider_posts_openai_compatible_payload(tmp_path) -> None:
     assert result.provider_status.provider == "deepseek"
     assert result.provider_status.model == "deepseek-v4-flash"
     assert result.provider_status.configured is True
+
+
+def test_deepseek_provider_ignores_system_proxy(monkeypatch) -> None:
+    class Handler(BaseHTTPRequestHandler):
+        seen_paths: list[str] = []
+
+        def do_POST(self) -> None:
+            type(self).seen_paths.append(self.path)
+            content_length = int(self.headers.get("content-length", "0"))
+            self.rfile.read(content_length)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"choices":[{"message":{"content":"p"}}]}')
+
+        def log_message(self, format: str, *args: object) -> None:
+            return None
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+        monkeypatch.setenv("NO_PROXY", "")
+
+        provider = DeepSeekLLMProvider(
+            runtime_config=LlmRuntimeConfig(
+                provider="openai_compatible",
+                base_url=f"http://127.0.0.1:{server.server_port}/v1",
+                api_key=None,
+                model="mimo-v2.5",
+            )
+        )
+        result = provider.generate([{"role": "user", "content": "ping"}])
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert result.content == "p"
+    assert Handler.seen_paths == ["/v1/chat/completions"]
 
 
 def test_deepseek_provider_posts_tools_and_parses_tool_calls(tmp_path) -> None:
@@ -610,6 +655,69 @@ def test_test_llm_connection_returns_connection_error_without_key() -> None:
     assert "connection refused" in (result.error or "")
     assert "Bearer" not in (result.error or "")
     assert "test-key" not in (result.error or "")
+
+
+def test_test_llm_connection_simplifies_ssl_protocol_errors() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(
+            "[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol (_ssl.c:1032)",
+            request=request,
+        )
+
+    result = run_llm_connection_test(
+        LlmRuntimeConfig(
+            provider="openai_compatible",
+            base_url="https://example.invalid/v1",
+            api_key=None,
+            model="mimo-v2.5",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert result.ok is False
+    assert result.error == "连接失败，请检查 Base URL 的协议（http/https）和地址是否正确。"
+
+
+def test_test_llm_connection_ignores_system_proxy(monkeypatch) -> None:
+    class Handler(BaseHTTPRequestHandler):
+        seen_paths: list[str] = []
+
+        def do_POST(self) -> None:
+            type(self).seen_paths.append(self.path)
+            content_length = int(self.headers.get("content-length", "0"))
+            self.rfile.read(content_length)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"choices":[{"message":{"content":"p"}}]}')
+
+        def log_message(self, format: str, *args: object) -> None:
+            return None
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+        monkeypatch.setenv("NO_PROXY", "")
+
+        result = run_llm_connection_test(
+            LlmRuntimeConfig(
+                provider="openai_compatible",
+                base_url=f"http://127.0.0.1:{server.server_port}/v1",
+                api_key=None,
+                model="mimo-v2.5",
+            )
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert result.ok is True
+    assert Handler.seen_paths == ["/v1/chat/completions"]
 
 
 def test_test_llm_connection_mock_provider_short_circuits() -> None:

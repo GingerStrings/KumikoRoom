@@ -158,7 +158,11 @@ class DeepSeekLLMProvider:
             headers["Authorization"] = f"Bearer {api_key.strip()}"
 
         try:
-            with httpx.Client(timeout=45.0, transport=self.transport) as client:
+            with httpx.Client(
+                timeout=45.0,
+                transport=self.transport,
+                trust_env=False,
+            ) as client:
                 response = client.post(
                     f"{runtime.base_url.rstrip('/')}/chat/completions",
                     headers=headers,
@@ -249,7 +253,11 @@ def test_llm_connection(
 
     started = time.perf_counter()
     try:
-        with httpx.Client(timeout=10.0, transport=transport) as client:
+        with httpx.Client(
+            timeout=10.0,
+            transport=transport,
+            trust_env=False,
+        ) as client:
             response = client.post(
                 f"{base_url}/chat/completions",
                 headers=headers,
@@ -284,7 +292,18 @@ def test_llm_connection(
     )
 
 
+SSL_PROTOCOL_ERROR_MESSAGE = "连接失败，请检查 Base URL 的协议（http/https）和地址是否正确。"
+
+
 def _scrub_error_message(message: str) -> str:
+    normalized_message = message.lower()
+    if (
+        "unexpected_eof_while_reading" in normalized_message
+        or "wrong version number" in normalized_message
+        or ("ssl" in normalized_message and "protocol" in normalized_message)
+    ):
+        return SSL_PROTOCOL_ERROR_MESSAGE
+
     scrubbed = message
     for needle in ("Bearer ", "authorization", "Authorization"):
         scrubbed = scrubbed.replace(needle, "[redacted]")
