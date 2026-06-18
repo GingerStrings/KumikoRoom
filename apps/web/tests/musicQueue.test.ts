@@ -606,4 +606,23 @@ describe("musicQueue", () => {
     expect(playMusicItemsAsQueue(state, [], "user", "2026-06-15T00:01:00.000Z")).toBe(state);
     expect(appendMusicItemsToQueue(state, [], "user", "2026-06-15T00:01:00.000Z")).toBe(state);
   });
+
+  it("preserves recommendation metadata from auto dj client items", () => {
+    const initial = createInitialMusicQueue([makeItem("current", "Current")], "2026-06-18T00:00:00.000Z");
+    const state = addQueueItem(
+      initial,
+      {
+        ...makeClientItem("auto-a", "Auto A"),
+        selectedReason: "close to the current listening context",
+        selectionEvidence: ["playable candidate", "source preference netease"],
+        selectionScore: 122.5
+      },
+      "2026-06-18T00:01:00.000Z"
+    );
+
+    const queued = getUpcomingQueueEntries(state)[0];
+    expect(queued.selectedReason).toBe("close to the current listening context");
+    expect(queued.selectionEvidence).toEqual(["playable candidate", "source preference netease"]);
+    expect(queued.selectionScore).toBe(122.5);
+  });
 });
