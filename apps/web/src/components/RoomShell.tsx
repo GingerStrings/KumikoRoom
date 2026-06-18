@@ -1281,10 +1281,10 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
           {entry.selectedReason ? (
             <button
               type="button"
-              aria-label={`Dislike recommendation ${entry.item.title}`}
+              aria-label={`不喜欢 ${entry.item.title}`}
               onClick={() => handleDislikeRecommendation(entry)}
             >
-              Dislike
+              不喜欢
             </button>
           ) : null}
           {options.removable ? (

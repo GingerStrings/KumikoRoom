@@ -1884,7 +1884,7 @@ describe("RoomShell", () => {
     fireEvent.click(getQueueManageButton());
     const panel = getMusicQueuePanel();
     expect(within(panel).getByText("close to the current listening context")).toBeTruthy();
-    fireEvent.click(within(panel).getByRole("button", { name: "Dislike recommendation Auto DJ Song" }));
+    fireEvent.click(within(panel).getByRole("button", { name: "不喜欢 Auto DJ Song" }));
 
     const storedProfile = localStorage.getItem("kumikoroom.musicRecommendationProfile") ?? "";
     expect(storedProfile).toContain("\"disliked\":true");
