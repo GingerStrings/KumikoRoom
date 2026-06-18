@@ -509,15 +509,23 @@ def _blocked_item_ids(
     return blocked
 
 
+_METADATA_TAGS = frozenset({"agent-selected", "search"})
+
+
 def _dominant_themes(
     music_state: MusicAgentState | None,
     profile: MusicRecommendationProfileIn,
 ) -> list[str]:
     weights: dict[str, float] = {}
     for tag, weight in profile.tag_weights.items():
-        weights[_normalize_text(tag)] = weights.get(_normalize_text(tag), 0.0) + weight
+        key = _normalize_text(tag)
+        if key in _METADATA_TAGS:
+            continue
+        weights[key] = weights.get(key, 0.0) + weight
     for theme in profile.recent_themes:
         key = _normalize_text(theme.key)
+        if key in _METADATA_TAGS:
+            continue
         weights[key] = weights.get(key, 0.0) + theme.weight
 
     if music_state is not None:
@@ -534,6 +542,8 @@ def _dominant_themes(
         for track in tracks:
             for tag in track.tags:
                 key = _normalize_text(tag)
+                if key in _METADATA_TAGS:
+                    continue
                 weights[key] = weights.get(key, 0.0) + 1.0
 
     ranked = [

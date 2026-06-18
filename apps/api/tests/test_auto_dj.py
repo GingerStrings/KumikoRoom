@@ -617,3 +617,44 @@ def test_auto_dj_notice_uses_singular_for_one_full_recommendation(monkeypatch) -
     )
 
     assert result.notice == "Auto DJ added 1 recommendation to the queue."
+
+
+def test_auto_dj_excludes_metadata_tags_from_search_queries(monkeypatch) -> None:
+    captured_queries: list[str] = []
+
+    def fake_netease(query: str, limit: int = 8):
+        captured_queries.append(query)
+        return [
+            NeteaseSongSearchResult(
+                id="netease-song-x",
+                song_id="x",
+                title=f"Result for {query}",
+                creator="Artist",
+                duration_ms=180000,
+                playable=True,
+                popularity=80.0,
+                comment_count=1000,
+                hot_comment_liked_count=200,
+                score=100.0,
+                evidence=["test"],
+            ),
+        ]
+
+    monkeypatch.setattr("kumikoroom.auto_dj.search_netease_songs", fake_netease)
+    monkeypatch.setattr("kumikoroom.auto_dj.search_bilibili_videos", lambda query, limit=8: [])
+
+    state = music_state_for_auto_dj()
+    state["current"]["tags"] = ["agent-selected", "search"]
+
+    result = recommend_auto_dj(
+        AutoDjRecommendIn(
+            music_state=state,
+            recommendation_profile=empty_profile(),
+            recent_messages=[],
+        )
+    )
+
+    assert result.ok is True
+    for query in captured_queries:
+        assert "agent-selected" not in query
+        assert "search" not in query
