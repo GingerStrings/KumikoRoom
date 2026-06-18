@@ -248,3 +248,94 @@ export interface ChatResponse {
   clientActions: RoomClientAction[];
   agentTrace: AgentTrace;
 }
+
+export type RecommendationIntent =
+  | "similar_theme"
+  | "similar_mood"
+  | "same_creator_or_work"
+  | "light_exploration";
+
+export interface RecommendationThemeSignal {
+  key: string;
+  weight: number;
+  lastSeenAt: string;
+}
+
+export interface RecommendationCooldown {
+  key: string;
+  kind: "item" | "artist" | "tag" | "query";
+  weight: number;
+  expiresAt: string;
+  reason: "dislike" | "recently_played" | "recently_recommended";
+}
+
+export interface RecommendationHistoryEntry {
+  itemId: string;
+  title: string;
+  creator: string;
+  source: ClientMusicItem["source"];
+  recommendedAt: string;
+  played: boolean;
+  disliked: boolean;
+  reason: string;
+}
+
+export interface RecommendationRefillHistoryEntry {
+  refillId: string;
+  createdAt: string;
+  selectedItemIds: string[];
+  dominantThemes: string[];
+  explorationCount: number;
+}
+
+export interface MusicRecommendationProfile {
+  version: 1;
+  updatedAt: string;
+  artistWeights: Record<string, number>;
+  tagWeights: Record<string, number>;
+  sourceWeights: Partial<Record<ClientMusicItem["source"], number>>;
+  queryWeights: Record<string, number>;
+  recentThemes: RecommendationThemeSignal[];
+  cooldowns: RecommendationCooldown[];
+  recommendedItems: RecommendationHistoryEntry[];
+  refillHistory: RecommendationRefillHistoryEntry[];
+}
+
+export interface AutoDjSettings {
+  count: number;
+  queueDepthTrigger: number;
+  similarCount: number;
+  explorationCount: number;
+}
+
+export interface AutoDjRecommendRequest {
+  musicState: MusicAgentState | null;
+  recommendationProfile: MusicRecommendationProfile;
+  recentMessages: ChatMessage[];
+  settings: AutoDjSettings;
+}
+
+export interface AutoDjRecommendation {
+  item: ClientMusicItem;
+  score: number;
+  intent: RecommendationIntent;
+  reason: string;
+  evidence: string[];
+}
+
+export interface RecommendationProfilePatch {
+  recommendedItems: RecommendationHistoryEntry[];
+  cooldowns: RecommendationCooldown[];
+  refillHistory: RecommendationRefillHistoryEntry[];
+}
+
+export interface AutoDjRecommendResponse {
+  ok: boolean;
+  refillId: string | null;
+  notice: string;
+  clientActions: RoomClientAction[];
+  recommendations: AutoDjRecommendation[];
+  profilePatch: RecommendationProfilePatch;
+  error: string | null;
+  sourceErrors: string[];
+}

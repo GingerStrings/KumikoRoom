@@ -1,4 +1,7 @@
 import type {
+  AutoDjRecommendRequest,
+  AutoDjRecommendation,
+  AutoDjRecommendResponse,
   ChatRequest,
   ChatResponse,
   ChatSession,
@@ -8,6 +11,11 @@ import type {
   MusicAgentState,
   MemoryEvent,
   MusicSearchResult,
+  RecommendationCooldown,
+  RecommendationHistoryEntry,
+  RecommendationProfilePatch,
+  RecommendationRefillHistoryEntry,
+  RecommendationThemeSignal,
   RoomClientAction,
   RoomState,
   StoredChatMessage
@@ -149,6 +157,23 @@ export function searchMusic(query: string, limit = 5): Promise<MusicSearchResult
   );
 }
 
+export function recommendAutoDj(payload: AutoDjRecommendRequest): Promise<AutoDjRecommendResponse> {
+  return request<AutoDjRecommendResponseApi>("/api/room/music/auto-dj/recommend", {
+    method: "POST",
+    body: JSON.stringify({
+      music_state: payload.musicState === null ? null : mapMusicAgentStateRequest(payload.musicState),
+      recommendation_profile: mapRecommendationProfileRequest(payload.recommendationProfile),
+      recent_messages: payload.recentMessages,
+      settings: {
+        count: payload.settings.count,
+        queue_depth_trigger: payload.settings.queueDepthTrigger,
+        similar_count: payload.settings.similarCount,
+        exploration_count: payload.settings.explorationCount
+      }
+    })
+  }).then(mapAutoDjRecommendResponse);
+}
+
 export function getMemories(): Promise<MemoryEvent[]> {
   return request<MemoryEventApi[]>("/api/room/memory").then((items) => items.map(mapMemoryEvent));
 }
@@ -279,6 +304,77 @@ interface ClientMusicItemApi {
   selected_reason?: string | null;
   selection_evidence?: string[];
   selection_score?: number | null;
+}
+
+interface RecommendationThemeSignalApi {
+  key: string;
+  weight: number;
+  last_seen_at: string;
+}
+
+interface RecommendationCooldownApi {
+  key: string;
+  kind: RecommendationCooldown["kind"];
+  weight: number;
+  expires_at: string;
+  reason: RecommendationCooldown["reason"];
+}
+
+interface RecommendationHistoryEntryApi {
+  item_id: string;
+  title: string;
+  creator: string;
+  source: RecommendationHistoryEntry["source"];
+  recommended_at: string;
+  played: boolean;
+  disliked: boolean;
+  reason: string;
+}
+
+interface RecommendationRefillHistoryEntryApi {
+  refill_id: string;
+  created_at: string;
+  selected_item_ids: string[];
+  dominant_themes: string[];
+  exploration_count: number;
+}
+
+interface RecommendationProfileApi {
+  version: 1;
+  updated_at: string;
+  artist_weights: Record<string, number>;
+  tag_weights: Record<string, number>;
+  source_weights: Partial<Record<ClientMusicItem["source"], number>>;
+  query_weights: Record<string, number>;
+  recent_themes: RecommendationThemeSignalApi[];
+  cooldowns: RecommendationCooldownApi[];
+  recommended_items: RecommendationHistoryEntryApi[];
+  refill_history: RecommendationRefillHistoryEntryApi[];
+}
+
+interface RecommendationProfilePatchApi {
+  recommended_items: RecommendationHistoryEntryApi[];
+  cooldowns: RecommendationCooldownApi[];
+  refill_history: RecommendationRefillHistoryEntryApi[];
+}
+
+interface AutoDjRecommendationApi {
+  item: ClientMusicItemApi;
+  score: number;
+  intent: AutoDjRecommendation["intent"];
+  reason: string;
+  evidence: string[];
+}
+
+interface AutoDjRecommendResponseApi {
+  ok: boolean;
+  refill_id: string | null;
+  notice: string;
+  client_actions?: RoomClientActionApi[];
+  recommendations: AutoDjRecommendationApi[];
+  profile_patch: RecommendationProfilePatchApi;
+  error: string | null;
+  source_errors: string[];
 }
 
 interface RoomClientActionApi {
@@ -576,6 +672,144 @@ function mapClientMusicItem(value: ClientMusicItemApi): ClientMusicItem {
     selectedReason: value.selected_reason ?? null,
     selectionEvidence: value.selection_evidence ?? [],
     selectionScore: value.selection_score ?? null
+  };
+}
+
+function mapRecommendationProfileRequest(
+  value: AutoDjRecommendRequest["recommendationProfile"]
+): RecommendationProfileApi {
+  return {
+    version: value.version,
+    updated_at: value.updatedAt,
+    artist_weights: value.artistWeights,
+    tag_weights: value.tagWeights,
+    source_weights: value.sourceWeights,
+    query_weights: value.queryWeights,
+    recent_themes: value.recentThemes.map(mapRecommendationThemeRequest),
+    cooldowns: value.cooldowns.map(mapRecommendationCooldownRequest),
+    recommended_items: value.recommendedItems.map(mapRecommendationHistoryRequest),
+    refill_history: value.refillHistory.map(mapRecommendationRefillHistoryRequest)
+  };
+}
+
+function mapRecommendationThemeRequest(
+  value: RecommendationThemeSignal
+): RecommendationThemeSignalApi {
+  return {
+    key: value.key,
+    weight: value.weight,
+    last_seen_at: value.lastSeenAt
+  };
+}
+
+function mapRecommendationCooldownRequest(
+  value: RecommendationCooldown
+): RecommendationCooldownApi {
+  return {
+    key: value.key,
+    kind: value.kind,
+    weight: value.weight,
+    expires_at: value.expiresAt,
+    reason: value.reason
+  };
+}
+
+function mapRecommendationHistoryRequest(
+  value: RecommendationHistoryEntry
+): RecommendationHistoryEntryApi {
+  return {
+    item_id: value.itemId,
+    title: value.title,
+    creator: value.creator,
+    source: value.source,
+    recommended_at: value.recommendedAt,
+    played: value.played,
+    disliked: value.disliked,
+    reason: value.reason
+  };
+}
+
+function mapRecommendationRefillHistoryRequest(
+  value: RecommendationRefillHistoryEntry
+): RecommendationRefillHistoryEntryApi {
+  return {
+    refill_id: value.refillId,
+    created_at: value.createdAt,
+    selected_item_ids: value.selectedItemIds,
+    dominant_themes: value.dominantThemes,
+    exploration_count: value.explorationCount
+  };
+}
+
+function mapAutoDjRecommendResponse(
+  value: AutoDjRecommendResponseApi
+): AutoDjRecommendResponse {
+  return {
+    ok: value.ok,
+    refillId: value.refill_id,
+    notice: value.notice,
+    clientActions: (value.client_actions ?? []).map(mapRoomClientAction).filter(isRoomClientAction),
+    recommendations: value.recommendations.map(mapAutoDjRecommendation),
+    profilePatch: mapRecommendationProfilePatch(value.profile_patch),
+    error: value.error,
+    sourceErrors: value.source_errors
+  };
+}
+
+function mapAutoDjRecommendation(value: AutoDjRecommendationApi): AutoDjRecommendation {
+  return {
+    item: mapClientMusicItem(value.item),
+    score: value.score,
+    intent: value.intent,
+    reason: value.reason,
+    evidence: value.evidence
+  };
+}
+
+function mapRecommendationProfilePatch(
+  value: RecommendationProfilePatchApi
+): RecommendationProfilePatch {
+  return {
+    recommendedItems: value.recommended_items.map(mapRecommendationHistory),
+    cooldowns: value.cooldowns.map(mapRecommendationCooldown),
+    refillHistory: value.refill_history.map(mapRecommendationRefillHistory)
+  };
+}
+
+function mapRecommendationHistory(
+  value: RecommendationHistoryEntryApi
+): RecommendationHistoryEntry {
+  return {
+    itemId: value.item_id,
+    title: value.title,
+    creator: value.creator,
+    source: value.source,
+    recommendedAt: value.recommended_at,
+    played: value.played,
+    disliked: value.disliked,
+    reason: value.reason
+  };
+}
+
+function mapRecommendationCooldown(value: RecommendationCooldownApi): RecommendationCooldown {
+  return {
+    key: value.key,
+    kind: value.kind,
+    weight: value.weight,
+    expiresAt: value.expires_at,
+    reason: value.reason
+  };
+}
+
+function mapRecommendationRefillHistory(
+  value: RecommendationRefillHistoryEntryApi
+): RecommendationRefillHistoryEntry {
+  return {
+    refillId: value.refill_id,
+    createdAt: value.created_at,
+    selectedItemIds: value.selected_item_ids,
+    dominantThemes: value.dominant_themes,
+    explorationCount: value.exploration_count
   };
 }
 

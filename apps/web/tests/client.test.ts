@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as roomApi from "../src/api/client";
+import type { AutoDjRecommendRequest } from "../src/api/types";
 import { DEFAULT_ROOM_STATE } from "../src/lib/roomState";
 
 afterEach(() => {
@@ -825,6 +826,306 @@ describe("room API client", () => {
       "/api/room/music/search?q=%E6%99%B4%E5%A4%A9&limit=1",
       expect.any(Object)
     );
+  });
+
+  it("posts auto dj recommendation requests and maps recommendations", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({
+          ok: true,
+          refill_id: "auto-dj-test",
+          notice: "Auto DJ added 1 track to the queue.",
+          client_actions: [
+            {
+              type: "add_music_to_queue",
+              item: clientMusicItemApi({
+                id: "netease-song-a",
+                title: "Auto Song",
+                creator: "Auto Artist",
+                duration_ms: 180000,
+                selected_reason: "close to the current listening context",
+                selection_evidence: ["playable candidate"],
+                selection_score: 122.5
+              })
+            },
+            { type: "add_music_to_queue" }
+          ],
+          recommendations: [
+            {
+              item: clientMusicItemApi({
+                id: "netease-song-a",
+                title: "Auto Song",
+                creator: "Auto Artist",
+                duration_ms: 180000,
+                selected_reason: "close to the current listening context",
+                selection_evidence: ["playable candidate"],
+                selection_score: 122.5
+              }),
+              score: 122.5,
+              intent: "similar_theme",
+              reason: "close to the current listening context",
+              evidence: ["playable candidate"]
+            }
+          ],
+          profile_patch: {
+            recommended_items: [
+              {
+                item_id: "netease-song-a",
+                title: "Auto Song",
+                creator: "Auto Artist",
+                source: "netease",
+                recommended_at: "2026-06-18T00:01:00.000Z",
+                played: false,
+                disliked: false,
+                reason: "close to the current listening context"
+              }
+            ],
+            cooldowns: [
+              {
+                key: "artist:Auto Artist",
+                kind: "artist",
+                weight: 0.5,
+                expires_at: "2026-06-19T00:00:00.000Z",
+                reason: "recently_recommended"
+              }
+            ],
+            refill_history: [
+              {
+                refill_id: "auto-dj-test",
+                created_at: "2026-06-18T00:01:00.000Z",
+                selected_item_ids: ["netease-song-a"],
+                dominant_themes: ["brass"],
+                exploration_count: 0
+              }
+            ]
+          },
+          error: null,
+          source_errors: ["bilibili unavailable"]
+        })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const payload: AutoDjRecommendRequest = {
+      musicState: {
+        isPlaying: true,
+        currentTimeMs: 42000,
+        durationMs: 180000,
+        current: musicAgentTrack({
+          id: "current",
+          title: "Current",
+          tags: ["brass"],
+          saved: false
+        }),
+        previous: null,
+        next: null,
+        upcoming: [],
+        recent: [],
+        saved: [],
+        playlists: []
+      },
+      recommendationProfile: {
+        version: 1,
+        updatedAt: "2026-06-18T00:00:00.000Z",
+        artistWeights: { "Current Artist": 1.2 },
+        tagWeights: { brass: 0.8 },
+        sourceWeights: { netease: 1 },
+        queryWeights: { "warm brass": 0.7 },
+        recentThemes: [
+          {
+            key: "brass",
+            weight: 0.9,
+            lastSeenAt: "2026-06-18T00:00:00.000Z"
+          }
+        ],
+        cooldowns: [
+          {
+            key: "item:recent",
+            kind: "item",
+            weight: 1,
+            expiresAt: "2026-06-19T00:00:00.000Z",
+            reason: "recently_played"
+          }
+        ],
+        recommendedItems: [
+          {
+            itemId: "old-item",
+            title: "Old Song",
+            creator: "Old Artist",
+            source: "netease",
+            recommendedAt: "2026-06-17T00:00:00.000Z",
+            played: true,
+            disliked: false,
+            reason: "previously recommended"
+          }
+        ],
+        refillHistory: [
+          {
+            refillId: "auto-dj-old",
+            createdAt: "2026-06-17T00:00:00.000Z",
+            selectedItemIds: ["old-item"],
+            dominantThemes: ["warm"],
+            explorationCount: 1
+          }
+        ]
+      },
+      recentMessages: [{ id: "recent-1", role: "user", content: "More brass, please." }],
+      settings: {
+        count: 3,
+        queueDepthTrigger: 2,
+        similarCount: 2,
+        explorationCount: 1
+      }
+    };
+
+    await expect(roomApi.recommendAutoDj(payload)).resolves.toEqual({
+      ok: true,
+      refillId: "auto-dj-test",
+      notice: "Auto DJ added 1 track to the queue.",
+      clientActions: [
+        {
+          type: "add_music_to_queue",
+          item: clientMusicItem({
+            id: "netease-song-a",
+            title: "Auto Song",
+            creator: "Auto Artist",
+            durationMs: 180000,
+            selectedReason: "close to the current listening context",
+            selectionEvidence: ["playable candidate"],
+            selectionScore: 122.5
+          })
+        }
+      ],
+      recommendations: [
+        {
+          item: clientMusicItem({
+            id: "netease-song-a",
+            title: "Auto Song",
+            creator: "Auto Artist",
+            durationMs: 180000,
+            selectedReason: "close to the current listening context",
+            selectionEvidence: ["playable candidate"],
+            selectionScore: 122.5
+          }),
+          score: 122.5,
+          intent: "similar_theme",
+          reason: "close to the current listening context",
+          evidence: ["playable candidate"]
+        }
+      ],
+      profilePatch: {
+        recommendedItems: [
+          {
+            itemId: "netease-song-a",
+            title: "Auto Song",
+            creator: "Auto Artist",
+            source: "netease",
+            recommendedAt: "2026-06-18T00:01:00.000Z",
+            played: false,
+            disliked: false,
+            reason: "close to the current listening context"
+          }
+        ],
+        cooldowns: [
+          {
+            key: "artist:Auto Artist",
+            kind: "artist",
+            weight: 0.5,
+            expiresAt: "2026-06-19T00:00:00.000Z",
+            reason: "recently_recommended"
+          }
+        ],
+        refillHistory: [
+          {
+            refillId: "auto-dj-test",
+            createdAt: "2026-06-18T00:01:00.000Z",
+            selectedItemIds: ["netease-song-a"],
+            dominantThemes: ["brass"],
+            explorationCount: 0
+          }
+        ]
+      },
+      error: null,
+      sourceErrors: ["bilibili unavailable"]
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/room/music/auto-dj/recommend",
+      expect.objectContaining({ method: "POST" })
+    );
+    expect(requestBody(fetchMock)).toEqual({
+      music_state: {
+        is_playing: true,
+        current_time_ms: 42000,
+        duration_ms: 180000,
+        current: musicAgentTrackApi({
+          id: "current",
+          title: "Current",
+          tags: ["brass"],
+          saved: false
+        }),
+        previous: null,
+        next: null,
+        upcoming: [],
+        recent: [],
+        saved: [],
+        playlists: []
+      },
+      recommendation_profile: {
+        version: 1,
+        updated_at: "2026-06-18T00:00:00.000Z",
+        artist_weights: { "Current Artist": 1.2 },
+        tag_weights: { brass: 0.8 },
+        source_weights: { netease: 1 },
+        query_weights: { "warm brass": 0.7 },
+        recent_themes: [
+          {
+            key: "brass",
+            weight: 0.9,
+            last_seen_at: "2026-06-18T00:00:00.000Z"
+          }
+        ],
+        cooldowns: [
+          {
+            key: "item:recent",
+            kind: "item",
+            weight: 1,
+            expires_at: "2026-06-19T00:00:00.000Z",
+            reason: "recently_played"
+          }
+        ],
+        recommended_items: [
+          {
+            item_id: "old-item",
+            title: "Old Song",
+            creator: "Old Artist",
+            source: "netease",
+            recommended_at: "2026-06-17T00:00:00.000Z",
+            played: true,
+            disliked: false,
+            reason: "previously recommended"
+          }
+        ],
+        refill_history: [
+          {
+            refill_id: "auto-dj-old",
+            created_at: "2026-06-17T00:00:00.000Z",
+            selected_item_ids: ["old-item"],
+            dominant_themes: ["warm"],
+            exploration_count: 1
+          }
+        ]
+      },
+      recent_messages: [{ id: "recent-1", role: "user", content: "More brass, please." }],
+      settings: {
+        count: 3,
+        queue_depth_trigger: 2,
+        similar_count: 2,
+        exploration_count: 1
+      }
+    });
   });
 
   it("loads memories and maps created timestamps", async () => {
