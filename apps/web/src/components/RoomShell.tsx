@@ -70,6 +70,7 @@ import {
 import {
   applyRecommendationProfilePatch,
   createInitialMusicRecommendationProfile,
+  dislikeRecommendedItem,
   isMusicRecommendationProfile,
 } from "../lib/musicRecommendationProfile";
 import { shouldRequestAutoDjRefill } from "../lib/autoDj";
@@ -878,6 +879,27 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     setMessages((current) => [...current, notice]);
   }
 
+  function handleDislikeRecommendation(entry: MusicQueueEntry) {
+    if (!entry.selectedReason) return;
+
+    setMusicRecommendationProfile((current) =>
+      dislikeRecommendedItem(
+        current,
+        {
+          item: makeClientMusicItemFromMusicItem(entry.item),
+          score: entry.selectionScore ?? 0,
+          intent: "similar_theme",
+          reason: entry.selectedReason,
+          evidence: entry.selectionEvidence ?? []
+        },
+        new Date().toISOString()
+      )
+    );
+    if (entry.status === "queued") {
+      commitMusicQueue(removeQueueEntry(musicQueueRef.current, entry.id));
+    }
+  }
+
   function advancePlayerQueue(mode: MusicPlaybackMode = playbackMode) {
     const result = advanceQueuePlayback(musicQueueRef.current, mode);
     const nextEntry = result.currentEntry;
@@ -1235,7 +1257,9 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
             <strong>{entry.item.title}</strong>
             <span>{entry.item.creator}</span>
             {entry.sourceQuery ? <em>来自: {entry.sourceQuery}</em> : null}
-            {entry.selectedReason ? <em>{entry.selectedReason}</em> : null}
+            {entry.selectedReason ? (
+              <em className="music-recommendation-reason">{entry.selectedReason}</em>
+            ) : null}
           </div>
         </div>
         <div className="music-queue-row-actions">
@@ -1252,6 +1276,15 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
           {entry.item.canOpenVideo ? (
             <button type="button" onClick={() => handleQueueEntryVideo(entry)}>
               小窗
+            </button>
+          ) : null}
+          {entry.selectedReason ? (
+            <button
+              type="button"
+              aria-label={`Dislike recommendation ${entry.item.title}`}
+              onClick={() => handleDislikeRecommendation(entry)}
+            >
+              Dislike
             </button>
           ) : null}
           {options.removable ? (

@@ -1874,6 +1874,23 @@ describe("RoomShell", () => {
     expect(callArgs.llmConfig).toEqual(storedConfig);
   });
 
+  it("shows recommendation reasons and lets the user dislike a recommended track", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("switch", { name: "Auto DJ" }));
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(getQueueManageButton());
+    const panel = getMusicQueuePanel();
+    expect(within(panel).getByText("close to the current listening context")).toBeTruthy();
+    fireEvent.click(within(panel).getByRole("button", { name: "Dislike recommendation Auto DJ Song" }));
+
+    const storedProfile = localStorage.getItem("kumikoroom.musicRecommendationProfile") ?? "";
+    expect(storedProfile).toContain("\"disliked\":true");
+    expect(storedProfile).toContain("\"kind\":\"item\"");
+  });
+
   it("calls testLLMConnection when test button is clicked", async () => {
     apiMocks.testLLMConnection.mockResolvedValue({
       ok: true,
