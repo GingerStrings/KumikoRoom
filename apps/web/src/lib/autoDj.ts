@@ -14,7 +14,7 @@ interface ShouldRequestAutoDjRefillInput {
 }
 
 export function getPlayableQueueDepth(queue: MusicQueueState): number {
-  return getPlaybackQueueEntries(queue).filter((entry) => entry.status === "current" || entry.status === "queued").length;
+  return getPlaybackQueueEntries(queue).length;
 }
 
 export function createAutoDjQueueSignature(queue: MusicQueueState, settings: AutoDjSettings): string {

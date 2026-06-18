@@ -1,4 +1,4 @@
-import type { AutoDjRecommendResponse, AutoDjSettings } from "../src/api/types";
+import type { AutoDjSettings } from "../src/api/types";
 import { createAutoDjQueueSignature, getPlayableQueueDepth, shouldRequestAutoDjRefill } from "../src/lib/autoDj";
 import type { MusicQueueState } from "../src/lib/musicQueue";
 
