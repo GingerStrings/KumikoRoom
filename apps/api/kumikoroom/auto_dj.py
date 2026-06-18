@@ -365,13 +365,16 @@ def _select_candidates(
     similar_count: int,
     exploration_count: int,
 ) -> list[ScoredCandidate]:
+    scored = _best_scored_by_identity(scored)
     selected: list[ScoredCandidate] = []
     selected_ids: set[str] = set()
+    selected_keys: set[tuple[str, str, str]] = set()
 
     _select_for_intent(
         scored,
         selected,
         selected_ids,
+        selected_keys,
         intent_name="similar_theme",
         slots=similar_count,
     )
@@ -379,6 +382,7 @@ def _select_candidates(
         scored,
         selected,
         selected_ids,
+        selected_keys,
         intent_name="light_exploration",
         slots=exploration_count,
     )
@@ -386,18 +390,39 @@ def _select_candidates(
     for candidate in scored:
         if len(selected) >= count:
             break
-        if candidate.recalled.result.id in selected_ids:
+        candidate_key = _candidate_identity_key(candidate)
+        if (
+            candidate.recalled.result.id in selected_ids
+            or candidate_key in selected_keys
+        ):
             continue
         selected.append(candidate)
         selected_ids.add(candidate.recalled.result.id)
+        selected_keys.add(candidate_key)
 
     return selected
+
+
+def _best_scored_by_identity(scored: list[ScoredCandidate]) -> list[ScoredCandidate]:
+    by_key: dict[tuple[str, str, str], list[ScoredCandidate]] = {}
+    for candidate in scored:
+        by_key.setdefault(_candidate_identity_key(candidate), []).append(candidate)
+
+    deduped: list[ScoredCandidate] = []
+    for candidates in by_key.values():
+        item_ids = {candidate.recalled.result.id for candidate in candidates}
+        if len(item_ids) == 1:
+            deduped.extend(candidates)
+            continue
+        deduped.append(max(candidates, key=lambda item: item.score))
+    return sorted(deduped, key=lambda item: item.score, reverse=True)
 
 
 def _select_for_intent(
     scored: list[ScoredCandidate],
     selected: list[ScoredCandidate],
     selected_ids: set[str],
+    selected_keys: set[tuple[str, str, str]],
     *,
     intent_name: Literal["similar_theme", "light_exploration"],
     slots: int,
@@ -405,13 +430,16 @@ def _select_for_intent(
     for candidate in scored:
         if slots <= 0:
             break
+        candidate_key = _candidate_identity_key(candidate)
         if (
             candidate.recalled.intent.name != intent_name
             or candidate.recalled.result.id in selected_ids
+            or candidate_key in selected_keys
         ):
             continue
         selected.append(candidate)
         selected_ids.add(candidate.recalled.result.id)
+        selected_keys.add(candidate_key)
         slots -= 1
 
 
@@ -425,6 +453,15 @@ def _recommendation_from_scored(
         intent=scored_candidate.recalled.intent.name,
         reason=scored_candidate.reason,
         evidence=list(scored_candidate.evidence),
+    )
+
+
+def _candidate_identity_key(scored_candidate: ScoredCandidate) -> tuple[str, str, str]:
+    candidate = scored_candidate.recalled.result
+    return (
+        candidate.source,
+        _normalize_text(candidate.title),
+        _normalize_text(candidate.creator),
     )
 
 

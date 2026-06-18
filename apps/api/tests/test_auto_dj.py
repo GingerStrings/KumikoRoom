@@ -373,6 +373,67 @@ def test_auto_dj_preserves_recall_query_and_intent(monkeypatch) -> None:
     assert by_id["netease-song-explore"].item.source_query == exploration_query
 
 
+def test_auto_dj_selects_normalized_duplicate_song_once(monkeypatch) -> None:
+    similar_query = "Brass Theme Concert Band"
+    exploration_query = "brass explore"
+
+    def fake_netease(query: str, limit: int = 8):
+        if query == similar_query:
+            return [
+                make_netease_candidate(
+                    "netease-song-duplicate-low",
+                    "Shared Brass Song",
+                    100.0,
+                )
+            ]
+        if query == exploration_query:
+            return [
+                make_netease_candidate(
+                    "netease-song-duplicate-high",
+                    " Shared   Brass Song ",
+                    130.0,
+                ),
+                make_netease_candidate(
+                    "netease-song-fresh",
+                    "Fresh Brass Song",
+                    90.0,
+                ),
+            ]
+        return []
+
+    monkeypatch.setattr("kumikoroom.auto_dj.search_netease_songs", fake_netease)
+    monkeypatch.setattr(
+        "kumikoroom.auto_dj.search_bilibili_videos",
+        lambda query, limit=8: [],
+    )
+
+    result = recommend_auto_dj(
+        AutoDjRecommendIn(
+            music_state=music_state_for_auto_dj(),
+            recommendation_profile=empty_profile(),
+            recent_messages=[],
+            settings={"count": 3, "similar_count": 1, "exploration_count": 1},
+        )
+    )
+
+    selected_ids = [recommendation.item.id for recommendation in result.recommendations]
+    duplicate_ids = {
+        "netease-song-duplicate-low",
+        "netease-song-duplicate-high",
+    }
+    selected_duplicates = duplicate_ids & set(selected_ids)
+
+    assert selected_duplicates == {"netease-song-duplicate-high"}
+    assert selected_ids.count("netease-song-fresh") == 1
+    selected_duplicate = next(
+        recommendation
+        for recommendation in result.recommendations
+        if recommendation.item.id == "netease-song-duplicate-high"
+    )
+    assert selected_duplicate.intent == "light_exploration"
+    assert selected_duplicate.item.source_query == exploration_query
+
+
 @pytest.mark.parametrize(
     ("cooldown", "blocked"),
     [
