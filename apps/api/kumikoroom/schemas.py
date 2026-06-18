@@ -216,6 +216,107 @@ class ChatIn(BaseModel):
     llm_config: LLMConfigIn | None = None
 
 
+RecommendationIntentKind = Literal[
+    "similar_theme",
+    "similar_mood",
+    "same_creator_or_work",
+    "light_exploration",
+]
+RecommendationCooldownKind = Literal["item", "artist", "tag", "query"]
+RecommendationCooldownReason = Literal[
+    "dislike",
+    "recently_played",
+    "recently_recommended",
+]
+
+
+class RecommendationThemeSignalIn(BaseModel):
+    key: str
+    weight: float = 1.0
+    last_seen_at: str
+
+
+class RecommendationCooldownIn(BaseModel):
+    key: str
+    kind: RecommendationCooldownKind
+    weight: float = 1.0
+    expires_at: str
+    reason: RecommendationCooldownReason
+
+
+class RecommendationHistoryEntryIn(BaseModel):
+    item_id: str
+    title: str
+    creator: str
+    source: MusicSourceKind
+    recommended_at: str
+    played: bool = False
+    disliked: bool = False
+    reason: str
+
+
+class RecommendationRefillHistoryEntryIn(BaseModel):
+    refill_id: str
+    created_at: str
+    selected_item_ids: list[str] = Field(default_factory=list)
+    dominant_themes: list[str] = Field(default_factory=list)
+    exploration_count: int = 0
+
+
+class MusicRecommendationProfileIn(BaseModel):
+    version: Literal[1] = 1
+    updated_at: str | None = None
+    artist_weights: dict[str, float] = Field(default_factory=dict)
+    tag_weights: dict[str, float] = Field(default_factory=dict)
+    source_weights: dict[MusicSourceKind, float] = Field(default_factory=dict)
+    query_weights: dict[str, float] = Field(default_factory=dict)
+    recent_themes: list[RecommendationThemeSignalIn] = Field(default_factory=list)
+    cooldowns: list[RecommendationCooldownIn] = Field(default_factory=list)
+    recommended_items: list[RecommendationHistoryEntryIn] = Field(default_factory=list)
+    refill_history: list[RecommendationRefillHistoryEntryIn] = Field(default_factory=list)
+
+
+class AutoDjSettingsIn(BaseModel):
+    count: int = Field(default=3, ge=1, le=5)
+    queue_depth_trigger: int = Field(default=2, ge=1, le=10)
+    similar_count: int = Field(default=2, ge=0, le=5)
+    exploration_count: int = Field(default=1, ge=0, le=5)
+
+
+class AutoDjRecommendIn(BaseModel):
+    music_state: MusicAgentState | None = None
+    recommendation_profile: MusicRecommendationProfileIn | None = None
+    recent_messages: list[ChatMessageOut] = Field(default_factory=list)
+    settings: AutoDjSettingsIn = Field(default_factory=AutoDjSettingsIn)
+
+
+class AutoDjRecommendationOut(BaseModel):
+    item: ClientMusicItemOut
+    score: float
+    intent: RecommendationIntentKind
+    reason: str
+    evidence: list[str] = Field(default_factory=list)
+
+
+class RecommendationProfilePatchOut(BaseModel):
+    recommended_items: list[RecommendationHistoryEntryIn] = Field(default_factory=list)
+    cooldowns: list[RecommendationCooldownIn] = Field(default_factory=list)
+    refill_history: list[RecommendationRefillHistoryEntryIn] = Field(default_factory=list)
+
+
+class AutoDjRecommendOut(BaseModel):
+    ok: bool
+    refill_id: str | None = None
+    notice: str
+    client_actions: list[RoomClientActionOut] = Field(default_factory=list)
+    recommendations: list[AutoDjRecommendationOut] = Field(default_factory=list)
+    profile_patch: RecommendationProfilePatchOut = Field(
+        default_factory=RecommendationProfilePatchOut
+    )
+    error: str | None = None
+    source_errors: list[str] = Field(default_factory=list)
+
+
 class ProviderStatusOut(BaseModel):
     provider: LlmProviderKind
     model: str | None

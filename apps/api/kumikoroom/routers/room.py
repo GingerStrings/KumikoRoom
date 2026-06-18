@@ -2,12 +2,15 @@ from dataclasses import asdict
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
 
+from kumikoroom.auto_dj import recommend_auto_dj
 from kumikoroom.config import load_settings, runtime_config_from_llm_config
 from kumikoroom.conversation import ConversationManager
 from kumikoroom.llm import test_llm_connection
 from kumikoroom.memory import MemoryStore
 from kumikoroom.music_search import MusicSearchError, search_netease_songs
 from kumikoroom.schemas import (
+    AutoDjRecommendIn,
+    AutoDjRecommendOut,
     ChatIn,
     ChatOut,
     ChatSessionOut,
@@ -87,6 +90,11 @@ def search_music(
         )
         for result in results
     ]
+
+
+@router.post("/music/auto-dj/recommend", response_model=AutoDjRecommendOut)
+def recommend_auto_dj_tracks(payload: AutoDjRecommendIn) -> AutoDjRecommendOut:
+    return recommend_auto_dj(payload)
 
 
 @router.post("/chat", response_model=ChatOut)
