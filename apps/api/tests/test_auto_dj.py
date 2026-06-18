@@ -1,3 +1,5 @@
+import pytest
+
 from kumikoroom.auto_dj import recommend_auto_dj
 from kumikoroom.music_search import BilibiliVideoSearchResult, NeteaseSongSearchResult
 from kumikoroom.schemas import AutoDjRecommendIn
@@ -119,6 +121,7 @@ def make_netease_candidate(
     title: str,
     score: float,
     *,
+    creator: str = "Concert Band",
     playable: bool = True,
 ) -> NeteaseSongSearchResult:
     song_id = item_id.replace("netease-song-", "")
@@ -126,7 +129,7 @@ def make_netease_candidate(
         id=item_id,
         song_id=song_id,
         title=title,
-        creator="Concert Band",
+        creator=creator,
         duration_ms=210000,
         playable=playable,
         popularity=80.0,
@@ -368,3 +371,188 @@ def test_auto_dj_preserves_recall_query_and_intent(monkeypatch) -> None:
     assert by_id["netease-song-similar"].item.source_query == similar_query
     assert by_id["netease-song-explore"].intent == "light_exploration"
     assert by_id["netease-song-explore"].item.source_query == exploration_query
+
+
+@pytest.mark.parametrize(
+    ("cooldown", "blocked"),
+    [
+        (
+            {"key": "Blocked Artist", "kind": "artist", "reason": "dislike"},
+            make_netease_candidate(
+                "netease-song-blocked-artist",
+                "Artist Cooldown",
+                500.0,
+                creator="Blocked Artist",
+            ),
+        ),
+        (
+            {"key": "forbidden", "kind": "tag", "reason": "recently_recommended"},
+            make_netease_candidate(
+                "netease-song-blocked-tag",
+                "Forbidden Brass",
+                500.0,
+            ),
+        ),
+        (
+            {
+                "key": "Brass Theme Concert Band",
+                "kind": "query",
+                "reason": "recently_recommended",
+            },
+            make_netease_candidate(
+                "netease-song-blocked-query",
+                "Query Cooldown",
+                500.0,
+            ),
+        ),
+    ],
+)
+def test_auto_dj_hard_filters_active_cooldowns_for_all_kinds(
+    monkeypatch,
+    cooldown,
+    blocked,
+) -> None:
+    safe = make_netease_candidate("netease-song-safe-cooldown", "Safe Track", 100.0)
+
+    def fake_netease(query: str, limit: int = 8):
+        if cooldown["kind"] == "query" and query != cooldown["key"]:
+            return [safe]
+        return [blocked, safe]
+
+    monkeypatch.setattr(
+        "kumikoroom.auto_dj.search_netease_songs",
+        fake_netease,
+    )
+    monkeypatch.setattr(
+        "kumikoroom.auto_dj.search_bilibili_videos",
+        lambda query, limit=8: [],
+    )
+
+    profile = empty_profile()
+    profile["cooldowns"] = [
+        {
+            **cooldown,
+            "weight": 2.0,
+            "expires_at": "2099-01-01T00:00:00.000",
+        }
+    ]
+
+    result = recommend_auto_dj(
+        AutoDjRecommendIn(
+            music_state=music_state_for_auto_dj(),
+            recommendation_profile=profile,
+            recent_messages=[],
+        )
+    )
+
+    selected_ids = [recommendation.item.id for recommendation in result.recommendations]
+    assert blocked.id not in selected_ids
+    assert selected_ids == [safe.id]
+
+
+def test_auto_dj_searches_and_scores_artist_only_profile(monkeypatch) -> None:
+    queries: list[str] = []
+
+    def fake_netease(query: str, limit: int = 8):
+        queries.append(query)
+        if query == "Preferred Artist":
+            return [
+                make_netease_candidate(
+                    "netease-song-preferred-artist",
+                    "Preferred Artist Theme",
+                    100.0,
+                    creator="Preferred Artist",
+                )
+            ]
+        return []
+
+    monkeypatch.setattr("kumikoroom.auto_dj.search_netease_songs", fake_netease)
+    monkeypatch.setattr(
+        "kumikoroom.auto_dj.search_bilibili_videos",
+        lambda query, limit=8: [],
+    )
+
+    profile = empty_profile()
+    profile["artist_weights"] = {"Other Artist": 1.0, "Preferred Artist": 4.0}
+
+    result = recommend_auto_dj(
+        AutoDjRecommendIn(
+            music_state=None,
+            recommendation_profile=profile,
+            recent_messages=[],
+            settings={"count": 1, "similar_count": 1, "exploration_count": 0},
+        )
+    )
+
+    assert queries[0] == "Preferred Artist"
+    assert result.ok is True
+    assert [recommendation.item.id for recommendation in result.recommendations] == [
+        "netease-song-preferred-artist"
+    ]
+    assert result.recommendations[0].item.source_query == "Preferred Artist"
+    assert "artist preference Preferred Artist=4" in result.recommendations[0].evidence
+
+
+def test_auto_dj_filters_unplayed_recommended_items(monkeypatch) -> None:
+    repeat = make_netease_candidate("netease-song-repeat", "Repeat Track", 500.0)
+    fresh = make_netease_candidate("netease-song-fresh", "Fresh Track", 100.0)
+
+    monkeypatch.setattr(
+        "kumikoroom.auto_dj.search_netease_songs",
+        lambda query, limit=8: [repeat, fresh],
+    )
+    monkeypatch.setattr(
+        "kumikoroom.auto_dj.search_bilibili_videos",
+        lambda query, limit=8: [],
+    )
+
+    profile = empty_profile()
+    profile["recommended_items"] = [
+        {
+            "item_id": "netease-song-repeat",
+            "title": "Repeat Track",
+            "creator": "Concert Band",
+            "source": "netease",
+            "recommended_at": "2026-06-18T00:00:00.000Z",
+            "played": False,
+            "disliked": False,
+            "reason": "previous refill",
+        }
+    ]
+
+    result = recommend_auto_dj(
+        AutoDjRecommendIn(
+            music_state=music_state_for_auto_dj(),
+            recommendation_profile=profile,
+            recent_messages=[],
+            settings={"count": 1, "similar_count": 1, "exploration_count": 0},
+        )
+    )
+
+    assert [recommendation.item.id for recommendation in result.recommendations] == [
+        "netease-song-fresh"
+    ]
+
+
+def test_auto_dj_notice_uses_singular_for_one_full_recommendation(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "kumikoroom.auto_dj.search_netease_songs",
+        lambda query, limit=8: [
+            make_netease_candidate("netease-song-one", "One Track", 100.0)
+        ],
+    )
+    monkeypatch.setattr(
+        "kumikoroom.auto_dj.search_bilibili_videos",
+        lambda query, limit=8: [],
+    )
+
+    result = recommend_auto_dj(
+        AutoDjRecommendIn(
+            music_state=music_state_for_auto_dj(),
+            recommendation_profile=empty_profile(),
+            recent_messages=[],
+            settings={"count": 1, "similar_count": 1, "exploration_count": 0},
+        )
+    )
+
+    assert result.notice == "Auto DJ added 1 recommendation to the queue."

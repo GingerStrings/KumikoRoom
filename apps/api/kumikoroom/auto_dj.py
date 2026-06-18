@@ -69,7 +69,7 @@ def recommend_auto_dj(payload: AutoDjRecommendIn) -> AutoDjRecommendOut:
     intents = _build_intents(payload, profile, similar_count, exploration_count)
     source_errors: list[str] = []
     recalled_by_key = _recall_candidates(intents, source_errors)
-    blocked_ids = _blocked_item_ids(payload.music_state)
+    blocked_ids = _blocked_item_ids(payload.music_state, profile)
     scored = _score_candidates(
         list(recalled_by_key.values()),
         payload.music_state,
@@ -210,7 +210,8 @@ def _similar_query_seeds(
                 current.creator,
             ]
         )
-    seeds.extend(profile.query_weights.keys())
+    seeds.extend(_weighted_keys(profile.artist_weights))
+    seeds.extend(_weighted_keys(profile.query_weights))
     seeds.extend(themes)
     return _unique_nonempty(seeds)
 
@@ -283,7 +284,7 @@ def _score_candidates(
         candidate = recalled.result
         if candidate.id in blocked_ids or not candidate.playable:
             continue
-        if _has_strong_item_cooldown(candidate.id, profile):
+        if _has_active_hard_cooldown(recalled, profile):
             continue
         score, evidence = _candidate_score(
             candidate,
@@ -319,6 +320,12 @@ def _candidate_score(
 
     title_norm = _normalize_text(candidate.title)
     creator_norm = _normalize_text(candidate.creator)
+    for artist, weight in profile.artist_weights.items():
+        artist_norm = _normalize_text(artist)
+        if artist_norm and artist_norm in creator_norm:
+            score += 12.0 * weight
+            evidence.append(f"artist preference {artist}={weight:g}")
+
     for theme in intent.themes:
         weight = profile.tag_weights.get(theme, 1.0)
         if theme in title_norm:
@@ -445,18 +452,23 @@ def _reason_for_score(
     return f"similar theme pick scored {score:.1f}: {candidate.title}"
 
 
-def _blocked_item_ids(music_state: MusicAgentState | None) -> set[str]:
-    if music_state is None:
-        return set()
+def _blocked_item_ids(
+    music_state: MusicAgentState | None,
+    profile: MusicRecommendationProfileIn,
+) -> set[str]:
     blocked = set()
-    for track in [
-        music_state.current,
-        music_state.next,
-        *music_state.upcoming,
-        *music_state.recent,
-    ]:
-        if track is not None:
-            blocked.add(track.id)
+    if music_state is not None:
+        for track in [
+            music_state.current,
+            music_state.next,
+            *music_state.upcoming,
+            *music_state.recent,
+        ]:
+            if track is not None:
+                blocked.add(track.id)
+    for history in profile.recommended_items:
+        if not history.played and not history.disliked:
+            blocked.add(history.item_id)
     return blocked
 
 
@@ -498,17 +510,17 @@ def _dominant_themes(
     return ranked[:4]
 
 
-def _has_strong_item_cooldown(
-    item_id: str,
+def _has_active_hard_cooldown(
+    recalled: RecalledCandidate,
     profile: MusicRecommendationProfileIn,
 ) -> bool:
     now = datetime.now(timezone.utc)
     for cooldown in profile.cooldowns:
-        if cooldown.kind != "item" or cooldown.key != item_id:
+        if _parse_iso_time(cooldown.expires_at) <= now:
             continue
-        if cooldown.weight < 2.0:
+        if cooldown.reason != "dislike" and cooldown.weight < 2.0:
             continue
-        if _parse_iso_time(cooldown.expires_at) > now:
+        if _cooldown_matches(cooldown.kind, cooldown.key, recalled):
             return True
     return False
 
@@ -534,13 +546,30 @@ def _cooldown_penalty(
     return penalty
 
 
+def _cooldown_matches(kind: str, key: str, recalled: RecalledCandidate) -> bool:
+    candidate = recalled.result
+    key_norm = _normalize_text(key)
+    if not key_norm:
+        return False
+    if kind == "item":
+        return key == candidate.id
+    if kind == "artist":
+        return key_norm in _normalize_text(candidate.creator)
+    if kind == "tag":
+        return key_norm in _normalize_text(candidate.title)
+    if kind == "query":
+        return key_norm in _normalize_text(recalled.query)
+    return False
+
+
 def _notice_for_count(selected_count: int, requested_count: int) -> str:
     if selected_count == 0:
         return "Auto DJ did not find enough recommendations this time."
     if selected_count < requested_count:
         noun = "recommendation" if selected_count == 1 else "recommendations"
         return f"Auto DJ added {selected_count} {noun} and will keep listening for better fits."
-    return f"Auto DJ added {selected_count} recommendations to the queue."
+    noun = "recommendation" if selected_count == 1 else "recommendations"
+    return f"Auto DJ added {selected_count} {noun} to the queue."
 
 
 def _parse_iso_time(value: str) -> datetime:
@@ -569,6 +598,16 @@ def _unique_nonempty(values) -> list[str]:
         seen.add(key)
         unique.append(text)
     return unique
+
+
+def _weighted_keys(weights: dict[str, float]) -> list[str]:
+    return [
+        key
+        for key, _weight in sorted(
+            weights.items(),
+            key=lambda item: (-item[1], item[0]),
+        )
+    ]
 
 
 def _same_text(left: str, right: str) -> bool:
