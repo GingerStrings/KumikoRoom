@@ -14,6 +14,7 @@ const apiMocks = vi.hoisted(() => ({
   getSessions: vi.fn(),
   renameSession: vi.fn(),
   postChat: vi.fn(),
+  recommendAutoDj: vi.fn(),
   searchMusic: vi.fn(),
   testLLMConnection: vi.fn()
 }));
@@ -25,6 +26,7 @@ vi.mock("../src/api/client", () => ({
   getSessions: apiMocks.getSessions,
   renameSession: apiMocks.renameSession,
   postChat: apiMocks.postChat,
+  recommendAutoDj: apiMocks.recommendAutoDj,
   searchMusic: apiMocks.searchMusic,
   testLLMConnection: apiMocks.testLLMConnection
 }));
@@ -74,6 +76,78 @@ describe("RoomShell", () => {
       )
     );
     apiMocks.postChat.mockResolvedValue(makeChatResponse({ session: null }));
+    apiMocks.recommendAutoDj.mockResolvedValue({
+      ok: true,
+      refillId: "auto-dj-test",
+      notice: "Auto DJ added 1 track and kept close to the current mood.",
+      clientActions: [
+        {
+          type: "add_music_to_queue",
+          item: {
+            id: "netease-auto-a",
+            source: "netease",
+            title: "Auto DJ Song",
+            creator: "Auto Artist",
+            durationMs: 180000,
+            pageUrl: "https://music.163.com/#/song?id=100",
+            platformAudioUrl: "https://music.163.com/song/media/outer/url?id=100.mp3",
+            tags: ["netease", "agent-selected"],
+            canOpenVideo: false,
+            selectedReason: "close to the current listening context",
+            selectionEvidence: ["playable candidate"],
+            selectionScore: 120
+          }
+        }
+      ],
+      recommendations: [
+        {
+          item: {
+            id: "netease-auto-a",
+            source: "netease",
+            title: "Auto DJ Song",
+            creator: "Auto Artist",
+            durationMs: 180000,
+            pageUrl: "https://music.163.com/#/song?id=100",
+            platformAudioUrl: "https://music.163.com/song/media/outer/url?id=100.mp3",
+            tags: ["netease", "agent-selected"],
+            canOpenVideo: false,
+            selectedReason: "close to the current listening context",
+            selectionEvidence: ["playable candidate"],
+            selectionScore: 120
+          },
+          score: 120,
+          intent: "similar_theme",
+          reason: "close to the current listening context",
+          evidence: ["playable candidate"]
+        }
+      ],
+      profilePatch: {
+        recommendedItems: [
+          {
+            itemId: "netease-auto-a",
+            title: "Auto DJ Song",
+            creator: "Auto Artist",
+            source: "netease",
+            recommendedAt: "2026-06-18T00:00:00.000Z",
+            played: false,
+            disliked: false,
+            reason: "close to the current listening context"
+          }
+        ],
+        cooldowns: [],
+        refillHistory: [
+          {
+            refillId: "auto-dj-test",
+            createdAt: "2026-06-18T00:00:00.000Z",
+            selectedItemIds: ["netease-auto-a"],
+            dominantThemes: ["netease"],
+            explorationCount: 0
+          }
+        ]
+      },
+      error: null,
+      sourceErrors: []
+    });
     apiMocks.searchMusic.mockResolvedValue([]);
   });
 
@@ -373,6 +447,33 @@ describe("RoomShell", () => {
         })
       })
     );
+  });
+
+  it("persists Auto DJ and refills the queue when depth reaches the trigger", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("switch", { name: "Auto DJ" }));
+
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+    expect(localStorage.getItem("kumikoroom.autoDjEnabled")).toBe("true");
+    expect(apiMocks.recommendAutoDj).toHaveBeenCalledWith(
+      expect.objectContaining({
+        settings: {
+          count: 3,
+          queueDepthTrigger: 2,
+          similarCount: 2,
+          explorationCount: 1
+        },
+        recommendationProfile: expect.objectContaining({
+          version: 1
+        })
+      })
+    );
+    expect(await within(getTimeline()).findByText("Auto DJ added 1 track and kept close to the current mood.")).toBeTruthy();
+    fireEvent.click(getQueueManageButton());
+    expect(within(getMusicQueuePanel()).getByText("Auto DJ Song")).toBeTruthy();
+    expect(localStorage.getItem("kumikoroom.musicRecommendationProfile")).toContain("netease-auto-a");
   });
 
   it("creates and persists a manual playlist from the management panel", async () => {

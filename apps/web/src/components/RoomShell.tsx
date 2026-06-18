@@ -8,15 +8,19 @@ import {
   getSessionMessages,
   getSessions,
   postChat,
+  recommendAutoDj,
   renameSession,
   testLLMConnection
 } from "../api/client";
 import type {
+  AutoDjRecommendResponse,
+  AutoDjSettings,
   ChatMessage,
   ChatSession,
   ClientMusicItem,
   LLMConfig,
   LLMTestResult,
+  MusicRecommendationProfile,
   PersonaStrength,
   ProviderStatus,
   RoomClientAction,
@@ -63,6 +67,12 @@ import {
   type MusicQueueEntry,
   type MusicQueueState
 } from "../lib/musicQueue";
+import {
+  applyRecommendationProfilePatch,
+  createInitialMusicRecommendationProfile,
+  isMusicRecommendationProfile,
+} from "../lib/musicRecommendationProfile";
+import { shouldRequestAutoDjRefill } from "../lib/autoDj";
 import { LLMConfigForm } from "./LLMConfigForm";
 import { SessionSidebar } from "./SessionSidebar";
 import { VideoMiniWindow } from "./VideoMiniWindow";
@@ -70,6 +80,14 @@ import { VideoMiniWindow } from "./VideoMiniWindow";
 const LAST_SESSION_STORAGE_KEY = "kumikoroom.lastSessionId";
 const MUSIC_QUEUE_STORAGE_KEY = "kumikoroom.musicQueue";
 const MUSIC_LIBRARY_STORAGE_KEY = "kumikoroom.musicLibrary";
+const AUTO_DJ_ENABLED_STORAGE_KEY = "kumikoroom.autoDjEnabled";
+const MUSIC_RECOMMENDATION_PROFILE_STORAGE_KEY = "kumikoroom.musicRecommendationProfile";
+const DEFAULT_AUTO_DJ_SETTINGS: AutoDjSettings = {
+  count: 3,
+  queueDepthTrigger: 2,
+  similarCount: 2,
+  explorationCount: 1,
+};
 
 type MusicPanelTab = "queue" | "playlists" | "recent" | "saved";
 
@@ -122,6 +140,15 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const [musicQueueHydrated, setMusicQueueHydrated] = useState(false);
   const [musicLibrary, setMusicLibrary] = useState<MusicLibraryState>(() => createInitialMusicLibrary());
   const [musicLibraryHydrated, setMusicLibraryHydrated] = useState(false);
+  const [autoDjEnabled, setAutoDjEnabled] = useState(false);
+  const [autoDjHydrated, setAutoDjHydrated] = useState(false);
+  const [autoDjInFlightSignature, setAutoDjInFlightSignature] = useState<string | null>(null);
+  const [autoDjLastRequestedSignature, setAutoDjLastRequestedSignature] = useState<string | null>(null);
+  const [musicRecommendationProfile, setMusicRecommendationProfile] = useState<MusicRecommendationProfile>(() =>
+    createInitialMusicRecommendationProfile()
+  );
+  const musicRecommendationProfileRef = useRef(musicRecommendationProfile);
+  musicRecommendationProfileRef.current = musicRecommendationProfile;
   const [queuePanelOpen, setQueuePanelOpen] = useState(false);
   const [queuePanelTab, setQueuePanelTab] = useState<MusicPanelTab>("queue");
   const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null);
@@ -369,6 +396,32 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   }, [musicLibrary, musicLibraryHydrated]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    setAutoDjEnabled(window.localStorage.getItem(AUTO_DJ_ENABLED_STORAGE_KEY) === "true");
+    const storedProfile = readStoredMusicRecommendationProfile(window.localStorage);
+    if (storedProfile) {
+      setMusicRecommendationProfile(storedProfile);
+    }
+    setAutoDjHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!autoDjHydrated || typeof window === "undefined") return;
+
+    window.localStorage.setItem(AUTO_DJ_ENABLED_STORAGE_KEY, String(autoDjEnabled));
+  }, [autoDjEnabled, autoDjHydrated]);
+
+  useEffect(() => {
+    if (!autoDjHydrated || typeof window === "undefined") return;
+
+    window.localStorage.setItem(
+      MUSIC_RECOMMENDATION_PROFILE_STORAGE_KEY,
+      JSON.stringify(musicRecommendationProfile)
+    );
+  }, [musicRecommendationProfile, autoDjHydrated]);
+
+  useEffect(() => {
     if (selectedPlaylistId && musicLibrary.playlists.some((playlist) => playlist.id === selectedPlaylistId)) {
       return;
     }
@@ -403,6 +456,55 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
 
     timeline.scrollTop = timeline.scrollHeight;
   }, [messages, isSending, failedOutgoing]);
+
+  useEffect(() => {
+    const signature = shouldRequestAutoDjRefill({
+      enabled: autoDjEnabled,
+      hydrated: autoDjHydrated && musicQueueHydrated && musicLibraryHydrated,
+      queue: musicQueue,
+      settings: DEFAULT_AUTO_DJ_SETTINGS,
+      inFlightSignature: autoDjInFlightSignature,
+      lastRequestedSignature: autoDjLastRequestedSignature,
+    });
+    if (!signature) return;
+
+    setAutoDjInFlightSignature(signature);
+    setAutoDjLastRequestedSignature(signature);
+    const musicState = buildMusicAgentState(musicQueue, {
+      isPlaying: isPlayerPlaying,
+      currentTimeMs: Math.round(playerCurrentTime * 1000),
+      durationMs: Math.round(playerDurationSeconds * 1000)
+    }, musicLibrary);
+
+    void recommendAutoDj({
+      musicState,
+      recommendationProfile: musicRecommendationProfileRef.current,
+      recentMessages: messages.slice(-8),
+      settings: DEFAULT_AUTO_DJ_SETTINGS
+    })
+      .then((response) => {
+        applyAutoDjResponse(response);
+      })
+      .catch(() => {
+        setSendError("Auto DJ refill failed");
+      })
+      .finally(() => {
+        setAutoDjInFlightSignature(null);
+      });
+  }, [
+    autoDjEnabled,
+    autoDjHydrated,
+    musicQueueHydrated,
+    musicLibraryHydrated,
+    musicQueue,
+    musicLibrary,
+    isPlayerPlaying,
+    playerCurrentTime,
+    playerDurationSeconds,
+    messages,
+    autoDjInFlightSignature,
+    autoDjLastRequestedSignature
+  ]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -755,6 +857,25 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     }
     commitMusicQueue(nextQueueState);
     commitVideoWindowOpen(resolvedVideoWindowOpen);
+  }
+
+  function applyAutoDjResponse(response: AutoDjRecommendResponse) {
+    if (response.profilePatch) {
+      setMusicRecommendationProfile((current) =>
+        applyRecommendationProfilePatch(current, response.profilePatch)
+      );
+    }
+    if (!response.ok || response.clientActions.length === 0) {
+      return;
+    }
+
+    applyRoomClientActions(response.clientActions);
+    const notice: ChatMessage = {
+      id: `auto-dj-${response.refillId ?? Date.now()}`,
+      role: "kumiko",
+      content: response.notice
+    };
+    setMessages((current) => [...current, notice]);
   }
 
   function advancePlayerQueue(mode: MusicPlaybackMode = playbackMode) {
@@ -1672,6 +1793,16 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                   ▣
                 </button>
               ) : null}
+              <label className="auto-dj-switch">
+                <input
+                  type="checkbox"
+                  role="switch"
+                  checked={autoDjEnabled}
+                  onChange={(event) => setAutoDjEnabled(event.currentTarget.checked)}
+                  aria-label="Auto DJ"
+                />
+                <span>Auto DJ</span>
+              </label>
             </div>
             <div className="queue-preview" aria-label="播放队列预览">
               <button
@@ -1919,6 +2050,18 @@ function readStoredMusicLibrary(storage: Storage): MusicLibraryState | null {
   try {
     const parsed = JSON.parse(rawLibrary);
     return isMusicLibraryState(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function readStoredMusicRecommendationProfile(storage: Storage): MusicRecommendationProfile | null {
+  const rawProfile = storage.getItem(MUSIC_RECOMMENDATION_PROFILE_STORAGE_KEY);
+  if (!rawProfile) return null;
+
+  try {
+    const parsed = JSON.parse(rawProfile);
+    return isMusicRecommendationProfile(parsed) ? parsed : null;
   } catch {
     return null;
   }
