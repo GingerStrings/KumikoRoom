@@ -34,9 +34,15 @@ class AutoDjIntent:
 
 
 @dataclass(frozen=True)
-class ScoredCandidate:
-    candidate: MusicSearchCandidate
+class RecalledCandidate:
+    result: MusicSearchCandidate
     intent: AutoDjIntent
+    query: str
+
+
+@dataclass(frozen=True)
+class ScoredCandidate:
+    recalled: RecalledCandidate
     score: float
     reason: str
     evidence: tuple[str, ...]
@@ -62,11 +68,10 @@ def recommend_auto_dj(payload: AutoDjRecommendIn) -> AutoDjRecommendOut:
     similar_count, exploration_count = _effective_mix(payload, profile)
     intents = _build_intents(payload, profile, similar_count, exploration_count)
     source_errors: list[str] = []
-    candidates_by_key = _recall_candidates(intents, source_errors)
+    recalled_by_key = _recall_candidates(intents, source_errors)
     blocked_ids = _blocked_item_ids(payload.music_state)
     scored = _score_candidates(
-        list(candidates_by_key.values()),
-        intents,
+        list(recalled_by_key.values()),
         payload.music_state,
         profile,
         blocked_ids,
@@ -237,11 +242,11 @@ def _dedupe_intents(intents: list[AutoDjIntent]) -> list[AutoDjIntent]:
 def _recall_candidates(
     intents: list[AutoDjIntent],
     source_errors: list[str],
-) -> dict[tuple[str, str, str], MusicSearchCandidate]:
-    candidates: dict[tuple[str, str, str], MusicSearchCandidate] = {}
-    queries = _unique_nonempty(intent.query for intent in intents)
+) -> dict[tuple[str, str, str, str], RecalledCandidate]:
+    candidates: dict[tuple[str, str, str, str], RecalledCandidate] = {}
 
-    for query in queries:
+    for intent in intents:
+        query = intent.query
         for search in (search_netease_songs, search_bilibili_videos):
             try:
                 results = search(query, limit=8)
@@ -253,16 +258,20 @@ def _recall_candidates(
                     result.source,
                     _normalize_text(result.title),
                     _normalize_text(result.creator),
+                    intent.name,
                 )
                 existing = candidates.get(key)
-                if existing is None or result.score > existing.score:
-                    candidates[key] = result
+                if existing is None or result.score > existing.result.score:
+                    candidates[key] = RecalledCandidate(
+                        result=result,
+                        intent=intent,
+                        query=query,
+                    )
     return candidates
 
 
 def _score_candidates(
-    candidates: list[MusicSearchCandidate],
-    intents: list[AutoDjIntent],
+    recalled_candidates: list[RecalledCandidate],
     music_state: MusicAgentState | None,
     profile: MusicRecommendationProfileIn,
     blocked_ids: set[str],
@@ -270,23 +279,27 @@ def _score_candidates(
     scored: list[ScoredCandidate] = []
     current = music_state.current if music_state is not None else None
 
-    for candidate in candidates:
+    for recalled in recalled_candidates:
+        candidate = recalled.result
         if candidate.id in blocked_ids or not candidate.playable:
             continue
         if _has_strong_item_cooldown(candidate.id, profile):
             continue
-        for intent in intents:
-            score, evidence = _candidate_score(candidate, intent, current, profile)
-            reason = _reason_for_score(candidate, intent, score)
-            scored.append(
-                ScoredCandidate(
-                    candidate=candidate,
-                    intent=intent,
-                    score=score,
-                    reason=reason,
-                    evidence=tuple(evidence),
-                )
+        score, evidence = _candidate_score(
+            candidate,
+            recalled.intent,
+            current,
+            profile,
+        )
+        reason = _reason_for_score(candidate, recalled.intent, score)
+        scored.append(
+            ScoredCandidate(
+                recalled=recalled,
+                score=score,
+                reason=reason,
+                evidence=tuple(evidence),
             )
+        )
 
     return sorted(scored, key=lambda item: item.score, reverse=True)
 
@@ -366,10 +379,10 @@ def _select_candidates(
     for candidate in scored:
         if len(selected) >= count:
             break
-        if candidate.candidate.id in selected_ids:
+        if candidate.recalled.result.id in selected_ids:
             continue
         selected.append(candidate)
-        selected_ids.add(candidate.candidate.id)
+        selected_ids.add(candidate.recalled.result.id)
 
     return selected
 
@@ -385,10 +398,13 @@ def _select_for_intent(
     for candidate in scored:
         if slots <= 0:
             break
-        if candidate.intent.name != intent_name or candidate.candidate.id in selected_ids:
+        if (
+            candidate.recalled.intent.name != intent_name
+            or candidate.recalled.result.id in selected_ids
+        ):
             continue
         selected.append(candidate)
-        selected_ids.add(candidate.candidate.id)
+        selected_ids.add(candidate.recalled.result.id)
         slots -= 1
 
 
@@ -399,7 +415,7 @@ def _recommendation_from_scored(
     return AutoDjRecommendationOut(
         item=item,
         score=round(scored_candidate.score, 3),
-        intent=scored_candidate.intent.name,
+        intent=scored_candidate.recalled.intent.name,
         reason=scored_candidate.reason,
         evidence=list(scored_candidate.evidence),
     )
@@ -407,8 +423,8 @@ def _recommendation_from_scored(
 
 def _client_item_from_scored(scored_candidate: ScoredCandidate) -> ClientMusicItemOut:
     item = music_result_to_client_item(
-        scored_candidate.candidate,
-        source_query=scored_candidate.intent.query,
+        scored_candidate.recalled.result,
+        source_query=scored_candidate.recalled.query,
     )
     return item.model_copy(
         update={
@@ -522,15 +538,19 @@ def _notice_for_count(selected_count: int, requested_count: int) -> str:
     if selected_count == 0:
         return "Auto DJ did not find enough recommendations this time."
     if selected_count < requested_count:
-        return f"Auto DJ added {selected_count} recommendation and will keep listening for better fits."
+        noun = "recommendation" if selected_count == 1 else "recommendations"
+        return f"Auto DJ added {selected_count} {noun} and will keep listening for better fits."
     return f"Auto DJ added {selected_count} recommendations to the queue."
 
 
 def _parse_iso_time(value: str) -> datetime:
     try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return datetime.min.replace(tzinfo=timezone.utc)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _append_unique(values: list[str], value: str) -> None:

@@ -283,3 +283,88 @@ def test_auto_dj_keeps_working_when_one_source_fails(monkeypatch) -> None:
     assert result.ok is True
     assert len(result.recommendations) == 1
     assert result.source_errors == ["bilibili unavailable"]
+
+
+def test_auto_dj_treats_offsetless_cooldown_timestamp_as_utc(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "kumikoroom.auto_dj.search_netease_songs",
+        lambda query, limit=8: [
+            make_netease_candidate("netease-song-cooldown", "Cooldown Track", 140.0),
+            make_netease_candidate("netease-song-safe", "Safe Track", 120.0),
+        ],
+    )
+    monkeypatch.setattr(
+        "kumikoroom.auto_dj.search_bilibili_videos",
+        lambda query, limit=8: [],
+    )
+
+    profile = empty_profile()
+    profile["cooldowns"] = [
+        {
+            "key": "netease-song-cooldown",
+            "kind": "item",
+            "weight": 3.0,
+            "expires_at": "2099-01-01T00:00:00.000",
+            "reason": "dislike",
+        }
+    ]
+
+    result = recommend_auto_dj(
+        AutoDjRecommendIn(
+            music_state=music_state_for_auto_dj(),
+            recommendation_profile=profile,
+            recent_messages=[],
+        )
+    )
+
+    selected_ids = [recommendation.item.id for recommendation in result.recommendations]
+    assert result.ok is True
+    assert selected_ids == ["netease-song-safe"]
+
+
+def test_auto_dj_preserves_recall_query_and_intent(monkeypatch) -> None:
+    similar_query = "Brass Theme Concert Band"
+    exploration_query = "brass explore"
+
+    def fake_netease(query: str, limit: int = 8):
+        if query == similar_query:
+            return [
+                make_netease_candidate(
+                    "netease-song-similar",
+                    "Brass Similar",
+                    120.0,
+                )
+            ]
+        if query == exploration_query:
+            return [
+                make_netease_candidate(
+                    "netease-song-explore",
+                    "Brass Explore",
+                    118.0,
+                )
+            ]
+        return []
+
+    monkeypatch.setattr("kumikoroom.auto_dj.search_netease_songs", fake_netease)
+    monkeypatch.setattr(
+        "kumikoroom.auto_dj.search_bilibili_videos",
+        lambda query, limit=8: [],
+    )
+
+    result = recommend_auto_dj(
+        AutoDjRecommendIn(
+            music_state=music_state_for_auto_dj(),
+            recommendation_profile=empty_profile(),
+            recent_messages=[],
+        )
+    )
+
+    by_id = {
+        recommendation.item.id: recommendation
+        for recommendation in result.recommendations
+    }
+
+    assert by_id["netease-song-similar"].intent == "similar_theme"
+    assert by_id["netease-song-similar"].item.source_query == similar_query
+    assert by_id["netease-song-explore"].intent == "light_exploration"
+    assert by_id["netease-song-explore"].item.source_query == exploration_query
