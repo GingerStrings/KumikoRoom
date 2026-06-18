@@ -889,7 +889,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
           item: makeClientMusicItemFromMusicItem(entry.item),
           score: entry.selectionScore ?? 0,
           intent: "similar_theme",
-          reason: entry.selectedReason,
+          reason: entry.selectedReason ?? "",
           evidence: entry.selectionEvidence ?? []
         },
         new Date().toISOString()
