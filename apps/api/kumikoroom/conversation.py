@@ -258,11 +258,8 @@ def _fallback_content(runtime_config: LlmRuntimeConfig) -> str:
     if runtime_config.provider == "openai_compatible":
         return "模型连接失败，请检查 Base URL、模型名称和 API Key。"
     if runtime_config.provider == "deepseek" and not runtime_config.api_key:
-        return (
-            "DeepSeek 还没有配置好；这里还没有配置 DeepSeek API key。"
-            "先用本地的安静版本陪你聊，等配置完成后再接上正式回复。"
-        )
-    return "DeepSeek 现在暂时没有接上。我先留在本地，陪你把这句话安静地接住。"
+        return "DeepSeek 未配置 API Key，请先设置 DEEPSEEK_API_KEY。"
+    return "DeepSeek 连接失败，请检查网络、Base URL 和 API Key。"
 
 
 def _fallback_provider_status(runtime_config: LlmRuntimeConfig) -> ProviderStatusOut:

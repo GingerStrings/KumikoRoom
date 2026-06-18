@@ -1076,7 +1076,10 @@ def test_manager_falls_back_when_deepseek_is_unconfigured(monkeypatch, tmp_path)
 
     assert response.provider_status.provider == "deepseek"
     assert response.provider_status.configured is False
-    assert "还没有配置 DeepSeek" in response.reply.content
+    assert (
+        response.reply.content
+        == "DeepSeek 未配置 API Key，请先设置 DEEPSEEK_API_KEY。"
+    )
 
 
 def test_manager_keeps_configured_deepseek_status_when_provider_is_unavailable(
@@ -1107,6 +1110,7 @@ def test_manager_keeps_configured_deepseek_status_when_provider_is_unavailable(
     assert response.provider_status.model == settings.deepseek_model
     assert response.provider_status.configured is True
     assert response.provider_status.label == expected_label
+    assert response.reply.content == "DeepSeek 连接失败，请检查网络、Base URL 和 API Key。"
     assert "test-key" not in response.reply.content
 
 
