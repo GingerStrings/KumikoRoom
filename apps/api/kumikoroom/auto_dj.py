@@ -89,7 +89,7 @@ def recommend_auto_dj(
         music_state=payload.music_state,
         profile=sanitized_profile,
         recent_messages=tuple(
-            (msg.role, msg.content) for msg in payload.recent_messages
+            (msg.role, msg.content) for msg in payload.recent_messages[-200:]
         ),
         settings=payload.settings,
     )
@@ -378,11 +378,12 @@ def _candidate_score(
             evidence.append(f"artist preference {artist}={weight:g}")
 
     for theme in intent.themes:
-        weight = profile.tag_weights.get(theme, 1.0)
-        if theme in title_norm:
+        theme_norm = _normalize_text(theme)
+        weight = profile.tag_weights.get(theme, profile.tag_weights.get(theme_norm, 1.0))
+        if theme_norm in title_norm:
             score += 10.0 * weight
             evidence.append(f"title matches theme {theme}")
-        if theme in creator_norm:
+        if theme_norm in creator_norm:
             score += 4.0 * weight
             evidence.append(f"creator matches theme {theme}")
 

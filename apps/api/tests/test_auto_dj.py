@@ -11,8 +11,9 @@ from kumikoroom.auto_dj_planning import (
 from kumikoroom.music_search import BilibiliVideoSearchResult, NeteaseSongSearchResult
 from kumikoroom.schemas import (
     AutoDjRecommendIn,
-    MusicRecommendationProfileIn,
     AutoDjSettingsIn,
+    ChatMessageOut,
+    MusicRecommendationProfileIn,
 )
 
 
@@ -978,3 +979,76 @@ def test_planner_omits_required_intent_group_returns_failed(monkeypatch) -> None
     assert result.ok is False
     assert result.error == "query_planning_failed"
     assert "exploration" in result.notice.lower() or "plan missing" in result.notice.lower()
+
+
+def test_auto_dj_caps_recent_messages_at_200(monkeypatch) -> None:
+    """Backend must ignore messages beyond 200 even if the client sends more."""
+    monkeypatch.setattr(
+        "kumikoroom.auto_dj.search_netease_songs",
+        lambda query, limit=8: [make_netease_candidate("netease-song-a", "Auto Song", 100.0, creator="Auto Artist")],
+    )
+    monkeypatch.setattr(
+        "kumikoroom.auto_dj.search_bilibili_videos",
+        lambda query, limit=8: [],
+    )
+    captured_context: list = []
+
+    class CapturingPlanner(FakePlanner):
+        def plan_auto_dj_queries(self, context):
+            captured_context.append(context)
+            return super().plan_auto_dj_queries(context)
+
+    plan = AutoDjQueryPlan(
+        queries=(
+            AutoDjPlanQuery(query="test q", intent="similar_theme", themes=("test",)),
+            AutoDjPlanQuery(query="exp q", intent="light_exploration", themes=("test",)),
+        )
+    )
+    planner = CapturingPlanner(plan)
+
+    long_messages: list[ChatMessageOut] = [
+        ChatMessageOut(id=f"m-{i}", role="user", content=f"msg {i}")
+        for i in range(300)
+    ]
+
+    recommend_auto_dj(
+        AutoDjRecommendIn(
+            music_state=music_state_for_auto_dj(),
+            recommendation_profile=empty_profile(),
+            recent_messages=long_messages,
+            settings=AutoDjSettingsIn(count=3, similar_count=2, exploration_count=1),
+        ),
+        planner=planner,
+    )
+
+    assert len(captured_context) == 1
+    assert len(captured_context[0].recent_messages) == 200
+
+
+def test_auto_dj_normalizes_multi_word_themes_in_scoring(monkeypatch) -> None:
+    """LLM themes like 'wind orchestra' must match titles after whitespace stripping."""
+    monkeypatch.setattr(
+        "kumikoroom.auto_dj.search_netease_songs",
+        lambda query, limit=8: [make_netease_candidate("netease-song-a", "Wind Orchestra Suite", 100.0, creator="Test Creator")],
+    )
+    monkeypatch.setattr("kumikoroom.auto_dj.search_bilibili_videos", lambda query, limit=8: [])
+
+    plan = AutoDjQueryPlan(
+        queries=(
+            AutoDjPlanQuery(query="test", intent="similar_theme", themes=("wind orchestra",)),
+            AutoDjPlanQuery(query="exp", intent="light_exploration", themes=("test",)),
+        )
+    )
+
+    result = recommend_auto_dj(
+        AutoDjRecommendIn(
+            music_state=music_state_for_auto_dj(),
+            recommendation_profile=empty_profile(),
+            settings=AutoDjSettingsIn(count=2, similar_count=1, exploration_count=1),
+        ),
+        planner=FakePlanner(plan),
+    )
+
+    assert result.ok is True
+    # The multi-word theme should have matched after normalization
+    assert any("title matches theme wind orchestra" in e for r in result.recommendations for e in r.evidence)
