@@ -315,6 +315,7 @@ export interface AutoDjRecommendRequest {
   recommendationProfile: MusicRecommendationProfile;
   recentMessages: ChatMessage[];
   settings: AutoDjSettings;
+  llmConfig?: LLMConfig | null;
 }
 
 export interface AutoDjRecommendation {

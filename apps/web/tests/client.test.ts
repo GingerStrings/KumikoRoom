@@ -1128,6 +1128,156 @@ describe("room API client", () => {
     });
   });
 
+  it("includes llm_config in auto dj request when provided", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({
+          ok: true,
+          refill_id: "r1",
+          notice: "ok",
+          client_actions: [],
+          recommendations: [],
+          profile_patch: { recommended_items: [], cooldowns: [], refill_history: [] },
+          error: null,
+          source_errors: []
+        })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const payload: AutoDjRecommendRequest = {
+      musicState: null,
+      recommendationProfile: {
+        version: 1,
+        updatedAt: "2026-06-19T00:00:00.000Z",
+        artistWeights: {},
+        tagWeights: {},
+        sourceWeights: {},
+        queryWeights: {},
+        recentThemes: [],
+        cooldowns: [],
+        recommendedItems: [],
+        refillHistory: []
+      },
+      recentMessages: [],
+      settings: {
+        count: 3,
+        queueDepthTrigger: 2,
+        similarCount: 2,
+        explorationCount: 1
+      },
+      llmConfig: {
+        provider: "openai_compatible",
+        baseUrl: "https://example.invalid",
+        apiKey: "test",
+        model: "planner-model"
+      }
+    };
+
+    await roomApi.recommendAutoDj(payload);
+    const body = requestBody(fetchMock);
+    expect(body.llm_config).toEqual({
+      provider: "openai_compatible",
+      base_url: "https://example.invalid",
+      api_key: "test",
+      model: "planner-model"
+    });
+  });
+
+  it("omits llm_config from auto dj request when not provided", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({
+          ok: true,
+          refill_id: "r1",
+          notice: "ok",
+          client_actions: [],
+          recommendations: [],
+          profile_patch: { recommended_items: [], cooldowns: [], refill_history: [] },
+          error: null,
+          source_errors: []
+        })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const payload: AutoDjRecommendRequest = {
+      musicState: null,
+      recommendationProfile: {
+        version: 1,
+        updatedAt: "2026-06-19T00:00:00.000Z",
+        artistWeights: {},
+        tagWeights: {},
+        sourceWeights: {},
+        queryWeights: {},
+        recentThemes: [],
+        cooldowns: [],
+        recommendedItems: [],
+        refillHistory: []
+      },
+      recentMessages: [],
+      settings: {
+        count: 3,
+        queueDepthTrigger: 2,
+        similarCount: 2,
+        explorationCount: 1
+      }
+    };
+
+    await roomApi.recommendAutoDj(payload);
+    expect(requestBody(fetchMock)).not.toHaveProperty("llm_config");
+  });
+
+  it("maps the error code from a planner failure response", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () =>
+        JSON.stringify({
+          ok: false,
+          refill_id: null,
+          notice: "Auto DJ 暂时没找到合适的歌",
+          client_actions: [],
+          recommendations: [],
+          profile_patch: { recommended_items: [], cooldowns: [], refill_history: [] },
+          error: "query_planning_failed",
+          source_errors: []
+        })
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const payload: AutoDjRecommendRequest = {
+      musicState: null,
+      recommendationProfile: {
+        version: 1,
+        updatedAt: "2026-06-19T00:00:00.000Z",
+        artistWeights: {},
+        tagWeights: {},
+        sourceWeights: {},
+        queryWeights: {},
+        recentThemes: [],
+        cooldowns: [],
+        recommendedItems: [],
+        refillHistory: []
+      },
+      recentMessages: [],
+      settings: {
+        count: 3,
+        queueDepthTrigger: 2,
+        similarCount: 2,
+        explorationCount: 1
+      }
+    };
+
+    const response = await roomApi.recommendAutoDj(payload);
+    expect(response.ok).toBe(false);
+    expect(response.error).toBe("query_planning_failed");
+  });
   it("loads memories and maps created timestamps", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,

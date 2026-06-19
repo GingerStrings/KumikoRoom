@@ -169,7 +169,8 @@ export function recommendAutoDj(payload: AutoDjRecommendRequest): Promise<AutoDj
         queue_depth_trigger: payload.settings.queueDepthTrigger,
         similar_count: payload.settings.similarCount,
         exploration_count: payload.settings.explorationCount
-      }
+      },
+      ...(payload.llmConfig ? { llm_config: mapLLMConfigRequest(payload.llmConfig) } : {})
     })
   }).then(mapAutoDjRecommendResponse);
 }
