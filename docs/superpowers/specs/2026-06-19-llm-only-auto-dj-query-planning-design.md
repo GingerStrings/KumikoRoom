@@ -38,7 +38,7 @@ These facts are the starting point for this design.
 - Preserve traditional recommendation behavior after candidate recall.
 - Stop cleanly when the LLM is unavailable, times out, returns invalid JSON, or returns weak generic queries.
 - Give the user a quiet, visible Auto DJ status without changing the queue on failure.
-- Keep the path bounded with a three-second planner timeout and strict output limits.
+- Keep the path bounded with a fifteen-second planner timeout and strict output limits.
 - Make the no-fallback rule enforceable through tests.
 
 ## 4. Non-Goals
@@ -123,7 +123,7 @@ This method must not:
 - perform music search;
 - synthesize a fallback query after any failure.
 
-The Auto DJ endpoint creates the manager with a three-second provider timeout. The provider timeout should become an injected constructor setting with the existing 45-second chat behavior kept as the default. Test providers remain injectable through the existing `provider` argument.
+The Auto DJ endpoint creates the manager with a fifteen-second provider timeout. The provider timeout should become an injected constructor setting with the existing 45-second chat behavior kept as the default. Test providers remain injectable through the existing `provider` argument.
 
 At present, constructing `ConversationManager` also constructs `MemoryStore` and `SessionStore`, and both constructors initialize SQLite schemas. Add an explicit planning construction mode that skips both stores. `plan_auto_dj_queries` never initializes or accesses either store, which guarantees that an Auto DJ planning request does not touch the session or memory database.
 
@@ -132,7 +132,7 @@ At present, constructing `ConversationManager` also constructs `MemoryStore` and
 Extend `ConversationManager` with an explicit constructor option such as `initialize_stores: bool = True`:
 
 - The default remains `True`, so existing chat routes and injected test stores keep their current behavior.
-- The Auto DJ route passes `initialize_stores=False` and the three-second provider timeout.
+- The Auto DJ route passes `initialize_stores=False` and the fifteen-second provider timeout.
 - In planning mode, `memory_store` and `session_store` remain absent and no SQLite path or schema is touched.
 - `plan_auto_dj_queries` is available in both modes and never reads either store.
 - Calling `chat()` on a planning-only manager raises a clear internal error so this restricted mode cannot be used accidentally for a chat request.
@@ -146,7 +146,7 @@ The runtime provider rules are:
 - The `mock` runtime is unavailable for real Auto DJ planning.
 - Missing credentials, invalid runtime configuration, provider errors, and timeout all fail the refill.
 
-The manager performs the mock/configuration preflight before calling `provider.generate`. This makes unavailable local configuration a zero-provider-call failure.
+The manager rejects the `mock` runtime before calling `provider.generate`. Provider-level configuration failures such as missing DeepSeek credentials are allowed to be raised by the provider and are handled as planning failures.
 
 ## 7. Planning Context
 
@@ -358,7 +358,8 @@ Use an explicit Auto DJ toggle handler. Turning Auto DJ off clears transient sta
 | Condition | Provider `generate` calls | Search calls | Queue change | Public error |
 | --- | ---: | ---: | --- | --- |
 | No recommendation context | 0 | 0 | None | `needs_more_context` |
-| Mock or unconfigured LLM | 0 | 0 | None | `query_planning_failed` |
+| Mock runtime | 0 | 0 | None | `query_planning_failed` |
+| Unconfigured provider / missing credentials | 1 | 0 | None | `query_planning_failed` |
 | Planner timeout | 1 | 0 | None | `query_planning_failed` |
 | Provider/network error | 1 | 0 | None | `query_planning_failed` |
 | Invalid JSON or schema | 1 | 0 | None | `query_planning_failed` |
@@ -420,7 +421,7 @@ Desktop browser verification covers the Auto DJ switch, successful refill, LLM f
 - Every requested non-zero intent group appears in the validated plan before platform search begins.
 - `ConversationManager` supplies the real provider path without writing chat sessions or memories. Its planning-only construction mode skips `MemoryStore` and `SessionStore` entirely, while default chat construction remains unchanged.
 - The planning context honors the §7 message limit (200) and the §7.1 profile sanitization rules.
-- LLM planning completes within three seconds or fails the refill.
+- LLM planning completes within fifteen seconds or fails the refill.
 - Planner failures return `ok: false`, empty actions, empty recommendations, and an empty profile patch.
 - The frontend shows a quiet failure status and leaves playback and queue state unchanged.
 - Toggling Auto DJ off and on can retry the same queue state.
