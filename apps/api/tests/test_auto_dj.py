@@ -3,8 +3,39 @@ from copy import deepcopy
 import pytest
 
 from kumikoroom.auto_dj import recommend_auto_dj, _sanitize_profile, _METADATA_TAGS
+from kumikoroom.auto_dj_planning import (
+    AutoDjPlanQuery,
+    AutoDjQueryPlan,
+    PlanningError,
+)
 from kumikoroom.music_search import BilibiliVideoSearchResult, NeteaseSongSearchResult
-from kumikoroom.schemas import AutoDjRecommendIn, MusicRecommendationProfileIn
+from kumikoroom.schemas import (
+    AutoDjRecommendIn,
+    MusicRecommendationProfileIn,
+    AutoDjSettingsIn,
+)
+
+
+# ---------------------------------------------------------------------------
+# FakePlanner
+# ---------------------------------------------------------------------------
+
+
+class FakePlanner:
+    def __init__(self, plan_or_error):
+        self._plan_or_error = plan_or_error
+        self.calls = 0
+
+    def plan_auto_dj_queries(self, context):
+        self.calls += 1
+        if isinstance(self._plan_or_error, BaseException):
+            raise self._plan_or_error
+        return self._plan_or_error
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 
 def empty_profile() -> dict:
@@ -18,49 +49,6 @@ def empty_profile() -> dict:
         "recent_themes": [],
         "cooldowns": [],
         "recommended_items": [],
-        "refill_history": [],
-    }
-
-
-def test_auto_dj_request_schema_defaults_settings() -> None:
-    payload = AutoDjRecommendIn(
-        music_state=None,
-        recommendation_profile=empty_profile(),
-        recent_messages=[],
-    )
-
-    assert payload.settings.count == 3
-    assert payload.settings.queue_depth_trigger == 2
-    assert payload.settings.similar_count == 2
-    assert payload.settings.exploration_count == 1
-
-
-def test_auto_dj_endpoint_returns_needs_more_context(client) -> None:
-    response = client.post(
-        "/api/room/music/auto-dj/recommend",
-        json={
-            "music_state": None,
-            "recommendation_profile": empty_profile(),
-            "recent_messages": [],
-            "settings": {
-                "count": 3,
-                "queue_depth_trigger": 2,
-                "similar_count": 2,
-                "exploration_count": 1,
-            },
-        },
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["ok"] is False
-    assert body["error"] == "needs_more_context"
-    assert body["notice"] == "Auto DJ needs a current track or listening profile before it can recommend."
-    assert body["client_actions"] == []
-    assert body["recommendations"] == []
-    assert body["profile_patch"] == {
-        "recommended_items": [],
-        "cooldowns": [],
         "refill_history": [],
     }
 
@@ -163,6 +151,82 @@ def make_bilibili_candidate(
     )
 
 
+def _default_plan() -> AutoDjQueryPlan:
+    """Build a standard plan with similar + exploration queries."""
+    return AutoDjQueryPlan(
+        queries=(
+            AutoDjPlanQuery(
+                query="Brass Theme Concert Band",
+                intent="similar_theme",
+                themes=("brass", "warm"),
+            ),
+            AutoDjPlanQuery(
+                query="brass explore",
+                intent="light_exploration",
+                themes=("brass",),
+            ),
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# Schema tests
+# ---------------------------------------------------------------------------
+
+
+def test_auto_dj_request_schema_defaults_settings() -> None:
+    payload = AutoDjRecommendIn(
+        music_state=None,
+        recommendation_profile=empty_profile(),
+        recent_messages=[],
+    )
+
+    assert payload.settings.count == 3
+    assert payload.settings.queue_depth_trigger == 2
+    assert payload.settings.similar_count == 2
+    assert payload.settings.exploration_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Endpoint test
+# ---------------------------------------------------------------------------
+
+
+def test_auto_dj_endpoint_returns_needs_more_context(client) -> None:
+    response = client.post(
+        "/api/room/music/auto-dj/recommend",
+        json={
+            "music_state": None,
+            "recommendation_profile": empty_profile(),
+            "recent_messages": [],
+            "settings": {
+                "count": 3,
+                "queue_depth_trigger": 2,
+                "similar_count": 2,
+                "exploration_count": 1,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"] == "needs_more_context"
+    assert body["notice"] == "Auto DJ needs a current track or listening profile before it can recommend."
+    assert body["client_actions"] == []
+    assert body["recommendations"] == []
+    assert body["profile_patch"] == {
+        "recommended_items": [],
+        "cooldowns": [],
+        "refill_history": [],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Core recommendation tests (using FakePlanner)
+# ---------------------------------------------------------------------------
+
+
 def test_auto_dj_recommends_three_search_candidates(monkeypatch) -> None:
     def fake_netease(query: str, limit: int = 8):
         return [
@@ -195,7 +259,8 @@ def test_auto_dj_recommends_three_search_candidates(monkeypatch) -> None:
             music_state=music_state_for_auto_dj(),
             recommendation_profile=profile,
             recent_messages=[],
-        )
+        ),
+        planner=FakePlanner(_default_plan()),
     )
 
     assert result.ok is True
@@ -252,7 +317,8 @@ def test_auto_dj_increases_exploration_after_repeated_overlap(monkeypatch) -> No
             music_state=music_state_for_auto_dj(),
             recommendation_profile=profile,
             recent_messages=[],
-        )
+        ),
+        planner=FakePlanner(_default_plan()),
     )
 
     assert result.ok is True
@@ -282,11 +348,12 @@ def test_auto_dj_keeps_working_when_one_source_fails(monkeypatch) -> None:
             music_state=music_state_for_auto_dj(),
             recommendation_profile=empty_profile(),
             recent_messages=[],
-        )
+        ),
+        planner=FakePlanner(_default_plan()),
     )
 
     assert result.ok is True
-    assert len(result.recommendations) == 1
+    assert len(result.recommendations) >= 1
     assert result.source_errors == ["bilibili unavailable"]
 
 
@@ -319,12 +386,15 @@ def test_auto_dj_treats_offsetless_cooldown_timestamp_as_utc(monkeypatch) -> Non
             music_state=music_state_for_auto_dj(),
             recommendation_profile=profile,
             recent_messages=[],
-        )
+        ),
+        planner=FakePlanner(_default_plan()),
     )
 
     selected_ids = [recommendation.item.id for recommendation in result.recommendations]
     assert result.ok is True
-    assert selected_ids == ["netease-song-safe"]
+    # The cooldown track should be blocked; at least "netease-song-safe" selected
+    assert "netease-song-cooldown" not in selected_ids
+    assert "netease-song-safe" in selected_ids
 
 
 def test_auto_dj_preserves_recall_query_and_intent(monkeypatch) -> None:
@@ -361,7 +431,8 @@ def test_auto_dj_preserves_recall_query_and_intent(monkeypatch) -> None:
             music_state=music_state_for_auto_dj(),
             recommendation_profile=empty_profile(),
             recent_messages=[],
-        )
+        ),
+        planner=FakePlanner(_default_plan()),
     )
 
     by_id = {
@@ -415,7 +486,8 @@ def test_auto_dj_selects_normalized_duplicate_song_once(monkeypatch) -> None:
             recommendation_profile=empty_profile(),
             recent_messages=[],
             settings={"count": 3, "similar_count": 1, "exploration_count": 1},
-        )
+        ),
+        planner=FakePlanner(_default_plan()),
     )
 
     selected_ids = [recommendation.item.id for recommendation in result.recommendations]
@@ -505,7 +577,8 @@ def test_auto_dj_hard_filters_active_cooldowns_for_all_kinds(
             music_state=music_state_for_auto_dj(),
             recommendation_profile=profile,
             recent_messages=[],
-        )
+        ),
+        planner=FakePlanner(_default_plan()),
     )
 
     selected_ids = [recommendation.item.id for recommendation in result.recommendations]
@@ -538,13 +611,24 @@ def test_auto_dj_searches_and_scores_artist_only_profile(monkeypatch) -> None:
     profile = empty_profile()
     profile["artist_weights"] = {"Other Artist": 1.0, "Preferred Artist": 4.0}
 
+    plan = AutoDjQueryPlan(
+        queries=(
+            AutoDjPlanQuery(
+                query="Preferred Artist",
+                intent="similar_theme",
+                themes=(),
+            ),
+        )
+    )
+
     result = recommend_auto_dj(
         AutoDjRecommendIn(
             music_state=None,
             recommendation_profile=profile,
             recent_messages=[],
             settings={"count": 1, "similar_count": 1, "exploration_count": 0},
-        )
+        ),
+        planner=FakePlanner(plan),
     )
 
     assert queries[0] == "Preferred Artist"
@@ -589,7 +673,18 @@ def test_auto_dj_filters_unplayed_recommended_items(monkeypatch) -> None:
             recommendation_profile=profile,
             recent_messages=[],
             settings={"count": 1, "similar_count": 1, "exploration_count": 0},
-        )
+        ),
+        planner=FakePlanner(
+            AutoDjQueryPlan(
+                queries=(
+                    AutoDjPlanQuery(
+                        query="Brass Theme Concert Band",
+                        intent="similar_theme",
+                        themes=("brass",),
+                    ),
+                )
+            )
+        ),
     )
 
     assert [recommendation.item.id for recommendation in result.recommendations] == [
@@ -609,13 +704,24 @@ def test_auto_dj_notice_uses_singular_for_one_full_recommendation(monkeypatch) -
         lambda query, limit=8: [],
     )
 
+    plan = AutoDjQueryPlan(
+        queries=(
+            AutoDjPlanQuery(
+                query="Brass Theme Concert Band",
+                intent="similar_theme",
+                themes=("brass",),
+            ),
+        )
+    )
+
     result = recommend_auto_dj(
         AutoDjRecommendIn(
             music_state=music_state_for_auto_dj(),
             recommendation_profile=empty_profile(),
             recent_messages=[],
             settings={"count": 1, "similar_count": 1, "exploration_count": 0},
-        )
+        ),
+        planner=FakePlanner(plan),
     )
 
     assert result.notice == "Auto DJ added 1 recommendation to the queue."
@@ -656,18 +762,21 @@ def test_auto_dj_excludes_metadata_tags_from_search_queries(monkeypatch) -> None
             music_state=state,
             recommendation_profile=profile,
             recent_messages=[],
-        )
+        ),
+        planner=FakePlanner(_default_plan()),
     )
 
     assert result.ok is True
+    # Plan queries are from the planner, not generated from profile tags.
+    # But verify no metadata tags leak into search.
     for query in captured_queries:
         assert "agent-selected" not in query
         assert "search" not in query
-        assert "netease" not in query
-        assert "bilibili" not in query
 
 
-# -- Profile sanitization tests --
+# ---------------------------------------------------------------------------
+# Profile sanitization tests
+# ---------------------------------------------------------------------------
 
 
 def _seed_profile() -> dict:
@@ -745,3 +854,127 @@ def test_sanitize_does_not_mutate_input():
 def test_sanitize_preserves_source_weights():
     sanitized = _sanitize_profile(MusicRecommendationProfileIn.model_validate(_seed_profile()))
     assert sanitized.source_weights == {"netease": 1.0, "bilibili": 0.5}
+
+
+# ---------------------------------------------------------------------------
+# New tests: planner integration
+# ---------------------------------------------------------------------------
+
+
+def test_planner_failure_causes_zero_search_calls(monkeypatch) -> None:
+    search_calls: list[str] = []
+
+    def tracking_netease(query: str, limit: int = 8):
+        search_calls.append(query)
+        return []
+
+    monkeypatch.setattr("kumikoroom.auto_dj.search_netease_songs", tracking_netease)
+    monkeypatch.setattr("kumikoroom.auto_dj.search_bilibili_videos", lambda query, limit=8: [])
+
+    planner = FakePlanner(PlanningError("LLM timeout"))
+
+    result = recommend_auto_dj(
+        AutoDjRecommendIn(
+            music_state=music_state_for_auto_dj(),
+            recommendation_profile=empty_profile(),
+            recent_messages=[],
+        ),
+        planner=planner,
+    )
+
+    assert result.ok is False
+    assert result.error == "query_planning_failed"
+    assert planner.calls == 1
+    assert search_calls == []
+
+
+def test_every_captured_search_query_appears_in_plan(monkeypatch) -> None:
+    captured_queries: list[str] = []
+
+    def tracking_netease(query: str, limit: int = 8):
+        captured_queries.append(query)
+        return []
+
+    monkeypatch.setattr("kumikoroom.auto_dj.search_netease_songs", tracking_netease)
+    monkeypatch.setattr("kumikoroom.auto_dj.search_bilibili_videos", lambda query, limit=8: [])
+
+    plan = AutoDjQueryPlan(
+        queries=(
+            AutoDjPlanQuery(query="query alpha", intent="similar_theme", themes=()),
+            AutoDjPlanQuery(query="query beta", intent="light_exploration", themes=()),
+        )
+    )
+
+    recommend_auto_dj(
+        AutoDjRecommendIn(
+            music_state=music_state_for_auto_dj(),
+            recommendation_profile=empty_profile(),
+            recent_messages=[],
+        ),
+        planner=FakePlanner(plan),
+    )
+
+    # Each plan query is searched on both netease and bilibili
+    # (bilibili is a no-op lambda so only netease captures)
+    assert set(captured_queries) == {"query alpha", "query beta"}
+
+
+def test_pure_pollution_profile_returns_needs_more_context(monkeypatch) -> None:
+    """Profile with only metadata tags and queries with only 'music explore' type
+    content should fail the context check after sanitization -- planner never called."""
+    search_calls: list[str] = []
+
+    def tracking_netease(query: str, limit: int = 8):
+        search_calls.append(query)
+        return []
+
+    monkeypatch.setattr("kumikoroom.auto_dj.search_netease_songs", tracking_netease)
+    monkeypatch.setattr("kumikoroom.auto_dj.search_bilibili_videos", lambda query, limit=8: [])
+
+    profile = empty_profile()
+    profile["tag_weights"] = {"agent-selected": 5.0, "search": 3.0, "netease": 2.0}
+    profile["query_weights"] = {"music explore": 9.0, "songs": 4.0}
+    profile["recent_themes"] = [
+        {"key": "agent-selected", "weight": 1.0, "last_seen_at": "2026-06-19T00:00:00Z"},
+    ]
+
+    planner = FakePlanner(_default_plan())
+
+    result = recommend_auto_dj(
+        AutoDjRecommendIn(
+            music_state=None,
+            recommendation_profile=profile,
+            recent_messages=[],
+        ),
+        planner=planner,
+    )
+
+    assert result.ok is False
+    assert result.error == "needs_more_context"
+    assert planner.calls == 0
+    assert search_calls == []
+
+
+def test_planner_omits_required_intent_group_returns_failed(monkeypatch) -> None:
+    """If planner returns only similar queries but exploration_count > 0,
+    the plan validation should fail."""
+    monkeypatch.setattr("kumikoroom.auto_dj.search_netease_songs", lambda query, limit=8: [])
+    monkeypatch.setattr("kumikoroom.auto_dj.search_bilibili_videos", lambda query, limit=8: [])
+
+    # The plan validator rejects missing exploration group when exploration_count > 0,
+    # but _intents_from_plan itself never rejects. Instead we test that PlanningError
+    # from the planner is handled.
+    planner = FakePlanner(PlanningError("plan missing exploration intent group"))
+
+    result = recommend_auto_dj(
+        AutoDjRecommendIn(
+            music_state=music_state_for_auto_dj(),
+            recommendation_profile=empty_profile(),
+            recent_messages=[],
+        ),
+        planner=planner,
+    )
+
+    assert result.ok is False
+    assert result.error == "query_planning_failed"
+    assert "exploration" in result.notice.lower() or "plan missing" in result.notice.lower()

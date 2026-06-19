@@ -94,7 +94,13 @@ def search_music(
 
 @router.post("/music/auto-dj/recommend", response_model=AutoDjRecommendOut)
 def recommend_auto_dj_tracks(payload: AutoDjRecommendIn) -> AutoDjRecommendOut:
-    return recommend_auto_dj(payload)
+    planner = ConversationManager(
+        settings=load_settings(),
+        llm_config=payload.llm_config,
+        initialize_stores=False,
+        planner_timeout_seconds=3.0,
+    )
+    return recommend_auto_dj(payload, planner=planner)
 
 
 @router.post("/chat", response_model=ChatOut)

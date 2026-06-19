@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import logging
 import re
-from typing import Literal
+from typing import Literal, Protocol
 
 from kumikoroom.agent_tools import music_result_to_client_item
-from kumikoroom.auto_dj_planning import is_generic_query
+from kumikoroom.auto_dj_planning import (
+    AutoDjQueryPlan,
+    AutoDjQueryPlanningContext,
+    PlanningError,
+    _SIMILAR_INTENTS,
+    is_generic_query,
+)
 from kumikoroom.music_search import (
     MusicSearchCandidate,
     search_bilibili_videos,
@@ -27,9 +34,16 @@ from kumikoroom.schemas import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+
+IntentSelectionGroup = Literal["similar", "exploration"]
+
+
 @dataclass(frozen=True)
 class AutoDjIntent:
-    name: Literal["similar_theme", "light_exploration"]
+    name: str
+    selection_group: IntentSelectionGroup
     query: str
     themes: tuple[str, ...]
 
@@ -49,32 +63,54 @@ class ScoredCandidate:
     evidence: tuple[str, ...]
 
 
-def recommend_auto_dj(payload: AutoDjRecommendIn) -> AutoDjRecommendOut:
-    if not _has_recommendation_context(
-        payload.music_state, payload.recommendation_profile
-    ):
-        return AutoDjRecommendOut(
-            ok=False,
-            refill_id=None,
-            notice="Auto DJ needs a current track or listening profile before it can recommend.",
-            client_actions=[],
-            recommendations=[],
-            profile_patch=RecommendationProfilePatchOut(),
-            error="needs_more_context",
-        )
+class AutoDjQueryPlanner(Protocol):
+    def plan_auto_dj_queries(
+        self, context: AutoDjQueryPlanningContext
+    ) -> AutoDjQueryPlan: ...
 
-    profile = payload.recommendation_profile or MusicRecommendationProfileIn()
+
+def recommend_auto_dj(
+    payload: AutoDjRecommendIn, *, planner: AutoDjQueryPlanner | None = None
+) -> AutoDjRecommendOut:
+    sanitized_profile = _sanitize_profile(
+        payload.recommendation_profile or MusicRecommendationProfileIn()
+    )
+
+    if not _has_recommendation_context(payload.music_state, sanitized_profile):
+        return _needs_more_context_response()
+
+    if planner is None:
+        return _query_planning_failed_response("no planner provided")
+
     refill_id = f"auto-dj-{_utc_compact_timestamp()}"
     created_at = _current_iso_time()
-    similar_count, exploration_count = _effective_mix(payload, profile)
-    intents = _build_intents(payload, profile, similar_count, exploration_count)
+
+    context = AutoDjQueryPlanningContext(
+        music_state=payload.music_state,
+        profile=sanitized_profile,
+        recent_messages=tuple(
+            (msg.role, msg.content) for msg in payload.recent_messages
+        ),
+        settings=payload.settings,
+    )
+    try:
+        plan = planner.plan_auto_dj_queries(context)
+    except PlanningError as exc:
+        logger.warning("auto dj query planning failed: %s", exc)
+        return _query_planning_failed_response(str(exc))
+
+    intents = _intents_from_plan(plan)
+    if not intents:
+        return _query_planning_failed_response("plan produced no intents")
+
+    similar_count, exploration_count = _effective_mix(payload, sanitized_profile)
     source_errors: list[str] = []
     recalled_by_key = _recall_candidates(intents, source_errors)
-    blocked_ids = _blocked_item_ids(payload.music_state, profile)
+    blocked_ids = _blocked_item_ids(payload.music_state, sanitized_profile)
     scored = _score_candidates(
         list(recalled_by_key.values()),
         payload.music_state,
-        profile,
+        sanitized_profile,
         blocked_ids,
     )
     selected = _select_candidates(
@@ -84,6 +120,65 @@ def recommend_auto_dj(payload: AutoDjRecommendIn) -> AutoDjRecommendOut:
         exploration_count=exploration_count,
     )
 
+    if not selected:
+        return _no_qualified_candidates_response(source_errors)
+
+    return _build_success_response(
+        payload, selected, source_errors, sanitized_profile, refill_id, created_at
+    )
+
+
+def _empty_profile_patch() -> RecommendationProfilePatchOut:
+    return RecommendationProfilePatchOut()
+
+
+def _needs_more_context_response() -> AutoDjRecommendOut:
+    return AutoDjRecommendOut(
+        ok=False,
+        refill_id=None,
+        notice="Auto DJ needs a current track or listening profile before it can recommend.",
+        client_actions=[],
+        recommendations=[],
+        profile_patch=_empty_profile_patch(),
+        error="needs_more_context",
+    )
+
+
+def _query_planning_failed_response(detail: str) -> AutoDjRecommendOut:
+    return AutoDjRecommendOut(
+        ok=False,
+        refill_id=None,
+        notice=f"Auto DJ could not plan queries: {detail}",
+        client_actions=[],
+        recommendations=[],
+        profile_patch=_empty_profile_patch(),
+        error="query_planning_failed",
+    )
+
+
+def _no_qualified_candidates_response(
+    source_errors: list[str],
+) -> AutoDjRecommendOut:
+    return AutoDjRecommendOut(
+        ok=False,
+        refill_id=None,
+        notice="Auto DJ found no qualified recommendations this time.",
+        client_actions=[],
+        recommendations=[],
+        profile_patch=_empty_profile_patch(),
+        error="no_qualified_candidates",
+        source_errors=source_errors,
+    )
+
+
+def _build_success_response(
+    payload: AutoDjRecommendIn,
+    selected: list[ScoredCandidate],
+    source_errors: list[str],
+    sanitized_profile: MusicRecommendationProfileIn,
+    refill_id: str,
+    created_at: str,
+) -> AutoDjRecommendOut:
     recommendations = [
         _recommendation_from_scored(scored_candidate)
         for scored_candidate in selected
@@ -93,7 +188,7 @@ def recommend_auto_dj(payload: AutoDjRecommendIn) -> AutoDjRecommendOut:
         for recommendation in recommendations
     ]
     selected_ids = [recommendation.item.id for recommendation in recommendations]
-    dominant_themes = _dominant_themes(payload.music_state, profile)
+    dominant_themes = _dominant_themes(payload.music_state, sanitized_profile)
     profile_patch = RecommendationProfilePatchOut(
         recommended_items=[
             RecommendationHistoryEntryIn(
@@ -177,68 +272,22 @@ def _last_two_refills_overlap(profile: MusicRecommendationProfileIn) -> bool:
     return len(set(first.dominant_themes) & set(second.dominant_themes)) >= 2
 
 
-def _build_intents(
-    payload: AutoDjRecommendIn,
-    profile: MusicRecommendationProfileIn,
-    similar_count: int,
-    exploration_count: int,
-) -> list[AutoDjIntent]:
-    themes = tuple(_dominant_themes(payload.music_state, profile))
-    similar_queries = _similar_query_seeds(payload.music_state, profile, themes)
-    exploration_queries = _exploration_query_seeds(themes, profile)
+
+def _intents_from_plan(plan: AutoDjQueryPlan) -> list[AutoDjIntent]:
     intents: list[AutoDjIntent] = []
-
-    for query in similar_queries[: max(similar_count, 1)]:
-        intents.append(AutoDjIntent("similar_theme", query, themes))
-    for query in exploration_queries[: max(exploration_count, 1)]:
-        intents.append(AutoDjIntent("light_exploration", query, themes))
-
-    return _dedupe_intents(intents)
-
-
-def _similar_query_seeds(
-    music_state: MusicAgentState | None,
-    profile: MusicRecommendationProfileIn,
-    themes: tuple[str, ...],
-) -> list[str]:
-    seeds: list[str] = []
-    current = music_state.current if music_state is not None else None
-    if current is not None:
-        seeds.extend(
-            [
-                f"{current.title} {current.creator}",
-                current.title,
-                current.creator,
-            ]
+    for entry in plan.queries:
+        group: IntentSelectionGroup = (
+            "similar" if entry.intent in _SIMILAR_INTENTS else "exploration"
         )
-    seeds.extend(_weighted_keys(profile.artist_weights))
-    seeds.extend(_weighted_keys(profile.query_weights))
-    seeds.extend(themes)
-    return _unique_nonempty(seeds)
-
-
-def _exploration_query_seeds(
-    themes: tuple[str, ...],
-    profile: MusicRecommendationProfileIn,
-) -> list[str]:
-    seeds: list[str] = []
-    for theme in themes:
-        seeds.append(f"{theme} explore")
-        seeds.append(f"{theme} ost")
-    seeds.extend(theme.key for theme in profile.recent_themes)
-    return _unique_nonempty(seeds or ["music explore"])
-
-
-def _dedupe_intents(intents: list[AutoDjIntent]) -> list[AutoDjIntent]:
-    seen: set[tuple[str, str]] = set()
-    deduped: list[AutoDjIntent] = []
-    for intent in intents:
-        key = (intent.name, _normalize_text(intent.query))
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(intent)
-    return deduped
+        intents.append(
+            AutoDjIntent(
+                name=entry.intent,
+                selection_group=group,
+                query=entry.query,
+                themes=entry.themes,
+            )
+        )
+    return intents
 
 
 def _recall_candidates(
@@ -346,15 +395,12 @@ def _candidate_score(
         score -= cooldown_penalty
         evidence.append(f"cooldown penalty {cooldown_penalty:g}")
 
-    if intent.name == "light_exploration":
+    if intent.selection_group == "exploration":
         score += 7.0
-        evidence.append("light exploration bonus")
-        if "explore" in title_norm:
-            score += 14.0
-            evidence.append("title supports exploration")
+        evidence.append("exploration bonus")
     else:
         score += 5.0
-        evidence.append("similar theme bonus")
+        evidence.append("similar bonus")
 
     return score, evidence
 
@@ -376,7 +422,7 @@ def _select_candidates(
         selected,
         selected_ids,
         selected_keys,
-        intent_name="similar_theme",
+        selection_group="similar",
         slots=similar_count,
     )
     _select_for_intent(
@@ -384,7 +430,7 @@ def _select_candidates(
         selected,
         selected_ids,
         selected_keys,
-        intent_name="light_exploration",
+        selection_group="exploration",
         slots=exploration_count,
     )
 
@@ -425,7 +471,7 @@ def _select_for_intent(
     selected_ids: set[str],
     selected_keys: set[tuple[str, str, str]],
     *,
-    intent_name: Literal["similar_theme", "light_exploration"],
+    selection_group: IntentSelectionGroup,
     slots: int,
 ) -> None:
     for candidate in scored:
@@ -433,7 +479,7 @@ def _select_for_intent(
             break
         candidate_key = _candidate_identity_key(candidate)
         if (
-            candidate.recalled.intent.name != intent_name
+            candidate.recalled.intent.selection_group != selection_group
             or candidate.recalled.result.id in selected_ids
             or candidate_key in selected_keys
         ):
@@ -485,9 +531,9 @@ def _reason_for_score(
     intent: AutoDjIntent,
     score: float,
 ) -> str:
-    if intent.name == "light_exploration":
-        return f"light exploration pick scored {score:.1f}: {candidate.title}"
-    return f"similar theme pick scored {score:.1f}: {candidate.title}"
+    if intent.selection_group == "exploration":
+        return f"exploration pick scored {score:.1f}: {candidate.title}"
+    return f"similar pick scored {score:.1f}: {candidate.title}"
 
 
 def _blocked_item_ids(
@@ -670,29 +716,6 @@ def _parse_iso_time(value: str) -> datetime:
 def _append_unique(values: list[str], value: str) -> None:
     if value and value not in values:
         values.append(value)
-
-
-def _unique_nonempty(values) -> list[str]:
-    seen: set[str] = set()
-    unique: list[str] = []
-    for value in values:
-        text = str(value or "").strip()
-        key = _normalize_text(text)
-        if not text or key in seen:
-            continue
-        seen.add(key)
-        unique.append(text)
-    return unique
-
-
-def _weighted_keys(weights: dict[str, float]) -> list[str]:
-    return [
-        key
-        for key, _weight in sorted(
-            weights.items(),
-            key=lambda item: (-item[1], item[0]),
-        )
-    ]
 
 
 def _same_text(left: str, right: str) -> bool:

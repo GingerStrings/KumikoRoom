@@ -288,6 +288,7 @@ class AutoDjRecommendIn(BaseModel):
     recommendation_profile: MusicRecommendationProfileIn | None = None
     recent_messages: list[ChatMessageOut] = Field(default_factory=list)
     settings: AutoDjSettingsIn = Field(default_factory=AutoDjSettingsIn)
+    llm_config: LLMConfigIn | None = None
 
 
 class AutoDjRecommendationOut(BaseModel):
