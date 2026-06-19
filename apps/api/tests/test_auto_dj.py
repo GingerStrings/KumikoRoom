@@ -1,8 +1,10 @@
+from copy import deepcopy
+
 import pytest
 
-from kumikoroom.auto_dj import recommend_auto_dj
+from kumikoroom.auto_dj import recommend_auto_dj, _sanitize_profile, _METADATA_TAGS
 from kumikoroom.music_search import BilibiliVideoSearchResult, NeteaseSongSearchResult
-from kumikoroom.schemas import AutoDjRecommendIn
+from kumikoroom.schemas import AutoDjRecommendIn, MusicRecommendationProfileIn
 
 
 def empty_profile() -> dict:
@@ -663,3 +665,83 @@ def test_auto_dj_excludes_metadata_tags_from_search_queries(monkeypatch) -> None
         assert "search" not in query
         assert "netease" not in query
         assert "bilibili" not in query
+
+
+# -- Profile sanitization tests --
+
+
+def _seed_profile() -> dict:
+    return {
+        "version": 1,
+        "updated_at": "2026-06-19T00:00:00Z",
+        "artist_weights": {"sammy": 1.0},
+        "tag_weights": {
+            "agent-selected": 5.0,
+            "search": 3.0,
+            "netease": 2.0,
+            "j-pop": 4.0,
+        },
+        "source_weights": {"netease": 1.0, "bilibili": 0.5},
+        "query_weights": {
+            "music explore": 9.0,
+            "songs": 4.0,
+            "hibike euphonium": 6.0,
+        },
+        "recent_themes": [
+            {"key": "agent-selected", "weight": 1.0, "last_seen_at": "2026-06-19T00:00:00Z"},
+            {"key": "wind orchestra", "weight": 1.0, "last_seen_at": "2026-06-19T00:00:00Z"},
+        ],
+        "cooldowns": [
+            {"kind": "tag", "key": "agent-selected", "weight": 1, "expires_at": "2099-01-01T00:00:00Z", "reason": "dislike"},
+            {"kind": "tag", "key": "j-pop", "weight": 1, "expires_at": "2099-01-01T00:00:00Z", "reason": "dislike"},
+            {"kind": "query", "key": "music explore", "weight": 1, "expires_at": "2099-01-01T00:00:00Z", "reason": "dislike"},
+            {"kind": "query", "key": "hibike euphonium", "weight": 1, "expires_at": "2099-01-01T00:00:00Z", "reason": "dislike"},
+        ],
+        "recommended_items": [],
+        "refill_history": [],
+    }
+
+
+def test_sanitize_drops_metadata_tag_weights():
+    raw = MusicRecommendationProfileIn.model_validate(_seed_profile())
+    sanitized = _sanitize_profile(raw)
+    assert "agent-selected" not in sanitized.tag_weights
+    assert "search" not in sanitized.tag_weights
+    assert "netease" not in sanitized.tag_weights
+    assert sanitized.tag_weights["j-pop"] == 4.0
+
+
+def test_sanitize_drops_metadata_recent_themes():
+    sanitized = _sanitize_profile(MusicRecommendationProfileIn.model_validate(_seed_profile()))
+    keys = [theme.key for theme in sanitized.recent_themes]
+    assert "agent-selected" not in keys
+    assert "wind orchestra" in keys
+
+
+def test_sanitize_drops_generic_query_weights():
+    sanitized = _sanitize_profile(MusicRecommendationProfileIn.model_validate(_seed_profile()))
+    assert "music explore" not in sanitized.query_weights
+    assert "songs" not in sanitized.query_weights
+    assert sanitized.query_weights["hibike euphonium"] == 6.0
+
+
+def test_sanitize_drops_metadata_tag_cooldowns_and_generic_query_cooldowns():
+    sanitized = _sanitize_profile(MusicRecommendationProfileIn.model_validate(_seed_profile()))
+    keys = {(c.kind, c.key) for c in sanitized.cooldowns}
+    assert ("tag", "agent-selected") not in keys
+    assert ("query", "music explore") not in keys
+    assert ("tag", "j-pop") in keys
+    assert ("query", "hibike euphonium") in keys
+
+
+def test_sanitize_does_not_mutate_input():
+    raw_dict = _seed_profile()
+    raw = MusicRecommendationProfileIn.model_validate(raw_dict)
+    snapshot = deepcopy(raw.model_dump())
+    _ = _sanitize_profile(raw)
+    assert raw.model_dump() == snapshot
+
+
+def test_sanitize_preserves_source_weights():
+    sanitized = _sanitize_profile(MusicRecommendationProfileIn.model_validate(_seed_profile()))
+    assert sanitized.source_weights == {"netease": 1.0, "bilibili": 0.5}

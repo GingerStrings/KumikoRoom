@@ -6,6 +6,7 @@ import re
 from typing import Literal
 
 from kumikoroom.agent_tools import music_result_to_client_item
+from kumikoroom.auto_dj_planning import is_generic_query
 from kumikoroom.music_search import (
     MusicSearchCandidate,
     search_bilibili_videos,
@@ -510,6 +511,43 @@ def _blocked_item_ids(
 
 
 _METADATA_TAGS = frozenset({"agent-selected", "bilibili", "netease", "search"})
+
+
+def _sanitize_profile(
+    profile: MusicRecommendationProfileIn,
+) -> MusicRecommendationProfileIn:
+    snapshot = profile.model_copy(deep=True)
+    cleaned_tag_weights = {
+        key: weight
+        for key, weight in snapshot.tag_weights.items()
+        if _normalize_text(key) not in _METADATA_TAGS
+    }
+    cleaned_recent_themes = [
+        theme
+        for theme in snapshot.recent_themes
+        if _normalize_text(theme.key) not in _METADATA_TAGS
+    ]
+    cleaned_query_weights = {
+        key: weight
+        for key, weight in snapshot.query_weights.items()
+        if not is_generic_query(key)
+    }
+    cleaned_cooldowns = []
+    for cooldown in snapshot.cooldowns:
+        if cooldown.kind == "tag" and _normalize_text(cooldown.key) in _METADATA_TAGS:
+            continue
+        if cooldown.kind == "query" and is_generic_query(cooldown.key):
+            continue
+        cleaned_cooldowns.append(cooldown)
+
+    return snapshot.model_copy(
+        update={
+            "tag_weights": cleaned_tag_weights,
+            "recent_themes": cleaned_recent_themes,
+            "query_weights": cleaned_query_weights,
+            "cooldowns": cleaned_cooldowns,
+        }
+    )
 
 
 def _dominant_themes(
