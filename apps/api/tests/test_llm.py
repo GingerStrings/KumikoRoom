@@ -9,6 +9,7 @@ import pytest
 from kumikoroom.config import ApiSettings, LlmRuntimeConfig
 from kumikoroom.llm import (
     DeepSeekLLMProvider,
+    LLMMessage,
     LLMTestResult,
     LLMToolCall,
     MockLLMProvider,
@@ -733,3 +734,66 @@ def test_test_llm_connection_mock_provider_short_circuits() -> None:
     assert result.ok is True
     assert result.latency_ms == 0
     assert result.model is None
+
+
+def test_deepseek_provider_threads_custom_timeout_into_http_client() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["timeout"] = request.extensions.get("timeout")
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "ok"}}
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    provider = DeepSeekLLMProvider(
+        runtime_config=LlmRuntimeConfig(
+            provider="deepseek",
+            base_url="https://example.invalid",
+            api_key="key",
+            model="m",
+        ),
+        transport=transport,
+    )
+
+    provider.generate(messages=[LLMMessage(role="user", content="hi")], timeout=3.0)
+
+    assert captured["timeout"] is not None
+    timeout = captured["timeout"]
+    assert any(value == 3.0 for value in timeout.values())  # type: ignore[union-attr]
+
+
+def test_deepseek_provider_keeps_45s_default_when_timeout_missing() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["timeout"] = request.extensions.get("timeout")
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "ok"}}
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    provider = DeepSeekLLMProvider(
+        runtime_config=LlmRuntimeConfig(
+            provider="deepseek",
+            base_url="https://example.invalid",
+            api_key="key",
+            model="m",
+        ),
+        transport=transport,
+    )
+
+    provider.generate(messages=[LLMMessage(role="user", content="hi")])
+
+    timeout = captured["timeout"]
+    assert any(value == 45.0 for value in timeout.values())  # type: ignore[union-attr]

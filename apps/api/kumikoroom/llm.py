@@ -60,6 +60,7 @@ class LLMProvider(Protocol):
         messages: list[LLMMessage],
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | None = None,
+        timeout: float | None = None,
     ) -> LLMResult:
         ...
 
@@ -90,6 +91,7 @@ class MockLLMProvider:
         messages: list[LLMMessage],
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | None = None,
+        timeout: float | None = None,
     ) -> LLMResult:
         user_message = _last_user_message(messages) or "今天的音乐"
         return LLMResult(
@@ -135,6 +137,7 @@ class DeepSeekLLMProvider:
         messages: list[LLMMessage],
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | None = None,
+        timeout: float | None = None,
     ) -> LLMResult:
         runtime = self.runtime_config
         api_key = runtime.api_key
@@ -159,7 +162,7 @@ class DeepSeekLLMProvider:
 
         try:
             with httpx.Client(
-                timeout=45.0,
+                timeout=45.0 if timeout is None else timeout,
                 transport=self.transport,
                 trust_env=False,
             ) as client:
