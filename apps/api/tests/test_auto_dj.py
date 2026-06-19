@@ -978,7 +978,7 @@ def test_planner_omits_required_intent_group_returns_failed(monkeypatch) -> None
 
     assert result.ok is False
     assert result.error == "query_planning_failed"
-    assert "exploration" in result.notice.lower() or "plan missing" in result.notice.lower()
+    assert result.notice == "Auto DJ 暂时没找到合适的歌"
 
 
 def test_auto_dj_caps_recent_messages_at_200(monkeypatch) -> None:

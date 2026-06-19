@@ -148,7 +148,7 @@ def _query_planning_failed_response(detail: str) -> AutoDjRecommendOut:
     return AutoDjRecommendOut(
         ok=False,
         refill_id=None,
-        notice=f"Auto DJ could not plan queries: {detail}",
+        notice="Auto DJ 暂时没找到合适的歌",
         client_actions=[],
         recommendations=[],
         profile_patch=_empty_profile_patch(),
