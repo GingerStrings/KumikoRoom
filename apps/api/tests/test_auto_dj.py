@@ -644,12 +644,15 @@ def test_auto_dj_excludes_metadata_tags_from_search_queries(monkeypatch) -> None
     monkeypatch.setattr("kumikoroom.auto_dj.search_bilibili_videos", lambda query, limit=8: [])
 
     state = music_state_for_auto_dj()
-    state["current"]["tags"] = ["agent-selected", "search"]
+    state["current"]["tags"] = ["agent-selected", "search", "netease", "bilibili"]
+
+    profile = empty_profile()
+    profile["tag_weights"] = {"netease": 10.0, "bilibili": 9.0}
 
     result = recommend_auto_dj(
         AutoDjRecommendIn(
             music_state=state,
-            recommendation_profile=empty_profile(),
+            recommendation_profile=profile,
             recent_messages=[],
         )
     )
@@ -658,3 +661,5 @@ def test_auto_dj_excludes_metadata_tags_from_search_queries(monkeypatch) -> None
     for query in captured_queries:
         assert "agent-selected" not in query
         assert "search" not in query
+        assert "netease" not in query
+        assert "bilibili" not in query

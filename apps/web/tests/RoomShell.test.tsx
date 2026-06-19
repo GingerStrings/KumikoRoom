@@ -93,6 +93,7 @@ describe("RoomShell", () => {
             platformAudioUrl: "https://music.163.com/song/media/outer/url?id=100.mp3",
             tags: ["netease", "agent-selected"],
             canOpenVideo: false,
+            sourceQuery: "current mellow theme",
             selectedReason: "close to the current listening context",
             selectionEvidence: ["playable candidate"],
             selectionScore: 120
@@ -111,6 +112,7 @@ describe("RoomShell", () => {
             platformAudioUrl: "https://music.163.com/song/media/outer/url?id=100.mp3",
             tags: ["netease", "agent-selected"],
             canOpenVideo: false,
+            sourceQuery: "current mellow theme",
             selectedReason: "close to the current listening context",
             selectionEvidence: ["playable candidate"],
             selectionScore: 120
@@ -474,6 +476,87 @@ describe("RoomShell", () => {
     fireEvent.click(getQueueManageButton());
     expect(within(getMusicQueuePanel()).getByText("Auto DJ Song")).toBeTruthy();
     expect(localStorage.getItem("kumikoroom.musicRecommendationProfile")).toContain("netease-auto-a");
+    const storedQueue = JSON.parse(localStorage.getItem("kumikoroom.musicQueue") ?? "{}") as {
+      entries?: Array<{ id?: string; recommendationIntent?: string; recommendationRefillId?: string }>;
+    };
+    expect(storedQueue.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "netease-auto-a",
+        recommendationIntent: "similar_theme",
+        recommendationRefillId: "auto-dj-test"
+      })
+    ]));
+  });
+
+  it("learns from an Auto DJ recommendation when it starts playing only once", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    const autoDjSwitch = screen.getByRole("switch", { name: "Auto DJ" });
+    fireEvent.click(autoDjSwitch);
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+    fireEvent.click(autoDjSwitch);
+
+    fireEvent.click(getQueueManageButton());
+    const panel = getMusicQueuePanel();
+    const row = within(panel).getByText("Auto DJ Song").closest(".music-queue-row");
+    if (!row) {
+      throw new Error("Auto DJ queue row not found");
+    }
+
+    fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "播放" }));
+    await waitFor(() => {
+      const profile = JSON.parse(
+        localStorage.getItem("kumikoroom.musicRecommendationProfile") ?? "{}"
+      );
+      expect(profile.recommendedItems).toEqual(expect.arrayContaining([
+        expect.objectContaining({ itemId: "netease-auto-a", played: true })
+      ]));
+      expect(profile.artistWeights["auto artist"]).toBe(1);
+      expect(profile.sourceWeights.netease).toBe(0.5);
+      expect(profile.queryWeights["current mellow theme"]).toBe(0.5);
+    });
+
+    fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "播放" }));
+    await waitFor(() => {
+      const profile = JSON.parse(
+        localStorage.getItem("kumikoroom.musicRecommendationProfile") ?? "{}"
+      );
+      expect(profile.artistWeights["auto artist"]).toBe(1);
+      expect(profile.sourceWeights.netease).toBe(0.5);
+      expect(profile.queryWeights["current mellow theme"]).toBe(0.5);
+    });
+  });
+
+  it("learns a skip when an unplayed Auto DJ recommendation is removed", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    const autoDjSwitch = screen.getByRole("switch", { name: "Auto DJ" });
+    fireEvent.click(autoDjSwitch);
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+    fireEvent.click(autoDjSwitch);
+
+    fireEvent.click(getQueueManageButton());
+    const panel = getMusicQueuePanel();
+    const row = within(panel).getByText("Auto DJ Song").closest(".music-queue-row");
+    if (!row) {
+      throw new Error("Auto DJ queue row not found");
+    }
+
+    fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "移除" }));
+    await waitFor(() => {
+      const profile = JSON.parse(
+        localStorage.getItem("kumikoroom.musicRecommendationProfile") ?? "{}"
+      );
+      expect(profile.recommendedItems).toEqual(expect.arrayContaining([
+        expect.objectContaining({ itemId: "netease-auto-a", played: false, disliked: false })
+      ]));
+      expect(profile.artistWeights["auto artist"]).toBe(-0.15);
+      expect(profile.sourceWeights.netease).toBe(-0.1);
+      expect(profile.queryWeights["current mellow theme"]).toBe(-0.1);
+    });
+    expect(within(panel).queryByText("Auto DJ Song")).toBeNull();
   });
 
   it("creates and persists a manual playlist from the management panel", async () => {

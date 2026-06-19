@@ -1697,14 +1697,14 @@ p {
 
 .player-controls {
   display: grid;
-  grid-template-columns: clamp(28px, 10vw, 34px) clamp(38px, 12vw, 42px) clamp(28px, 10vw, 34px) minmax(44px, 1fr) clamp(28px, 10vw, 34px);
+  grid-template-columns: clamp(28px, 10vw, 34px) clamp(38px, 12vw, 42px) clamp(28px, 10vw, 34px) minmax(44px, 1fr) minmax(64px, max-content);
   align-items: center;
   gap: 8px;
   margin-top: 13px;
 }
 
 .player-controls[data-has-video="true"] {
-  grid-template-columns: clamp(28px, 9vw, 34px) clamp(38px, 12vw, 42px) clamp(28px, 9vw, 34px) minmax(36px, 1fr) clamp(28px, 9vw, 34px) clamp(28px, 9vw, 34px);
+  grid-template-columns: clamp(28px, 9vw, 34px) clamp(38px, 12vw, 42px) clamp(28px, 9vw, 34px) minmax(36px, 1fr) clamp(28px, 9vw, 34px) minmax(64px, max-content);
 }
 
 .control {

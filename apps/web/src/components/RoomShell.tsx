@@ -13,6 +13,7 @@ import {
   testLLMConnection
 } from "../api/client";
 import type {
+  AutoDjRecommendation,
   AutoDjRecommendResponse,
   AutoDjSettings,
   ChatMessage,
@@ -23,6 +24,7 @@ import type {
   MusicRecommendationProfile,
   PersonaStrength,
   ProviderStatus,
+  RecommendationIntent,
   RoomClientAction,
   RoomState,
   StoredChatMessage
@@ -72,6 +74,8 @@ import {
   createInitialMusicRecommendationProfile,
   dislikeRecommendedItem,
   isMusicRecommendationProfile,
+  markRecommendedItemAccepted,
+  markRecommendedItemSkipped,
 } from "../lib/musicRecommendationProfile";
 import { shouldRequestAutoDjRefill } from "../lib/autoDj";
 import { LLMConfigForm } from "./LLMConfigForm";
@@ -870,7 +874,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
       return;
     }
 
-    applyRoomClientActions(response.clientActions);
+    applyRoomClientActions(withAutoDjRecommendationMetadata(response));
     const notice: ChatMessage = {
       id: `auto-dj-${response.refillId ?? Date.now()}`,
       role: "kumiko",
@@ -885,19 +889,47 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     setMusicRecommendationProfile((current) =>
       dislikeRecommendedItem(
         current,
-        {
-          item: makeClientMusicItemFromMusicItem(entry.item),
-          score: entry.selectionScore ?? 0,
-          intent: "similar_theme",
-          reason: entry.selectedReason ?? "",
-          evidence: entry.selectionEvidence ?? []
-        },
+        makeAutoDjRecommendationFromQueueEntry(entry),
         new Date().toISOString()
       )
     );
     if (entry.status === "queued") {
       commitMusicQueue(removeQueueEntry(musicQueueRef.current, entry.id));
     }
+  }
+
+  function recordRecommendedItemAccepted(entry: MusicQueueEntry) {
+    if (!isRecommendedQueueEntry(entry)) return;
+
+    setMusicRecommendationProfile((current) => {
+      const historyEntry = current.recommendedItems.find((item) => item.itemId === entry.id);
+      if (!historyEntry || historyEntry.played || historyEntry.disliked) {
+        return current;
+      }
+
+      return markRecommendedItemAccepted(
+        current,
+        makeAutoDjRecommendationFromQueueEntry(entry),
+        new Date().toISOString()
+      );
+    });
+  }
+
+  function recordRecommendedItemSkipped(entry: MusicQueueEntry) {
+    if (!isRecommendedQueueEntry(entry) || entry.status !== "queued") return;
+
+    setMusicRecommendationProfile((current) => {
+      const historyEntry = current.recommendedItems.find((item) => item.itemId === entry.id);
+      if (!historyEntry || historyEntry.played || historyEntry.disliked) {
+        return current;
+      }
+
+      return markRecommendedItemSkipped(
+        current,
+        makeAutoDjRecommendationFromQueueEntry(entry),
+        new Date().toISOString()
+      );
+    });
   }
 
   function advancePlayerQueue(mode: MusicPlaybackMode = playbackMode) {
@@ -911,6 +943,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
 
     const nextTrack = nextEntry.item;
     platformAudioRef.current?.pause();
+    recordRecommendedItemAccepted(nextEntry);
     commitMusicQueue(result.state);
     setPlayerCurrentTime(0);
     setPlayerDuration(nextTrack.durationMs / 1000);
@@ -935,9 +968,13 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   function selectPlayerTrack(nextIndex: number) {
     if (playerQueue.length === 0) return;
 
-    const nextTrack = playerQueue[nextIndex] ?? playerQueue[0] ?? PLAYER_TRACKS[0];
+    const nextEntry = playerQueueEntries[nextIndex] ?? playerQueueEntries[0] ?? null;
+    const nextTrack = nextEntry?.item ?? PLAYER_TRACKS[0];
 
     platformAudioRef.current?.pause();
+    if (nextEntry) {
+      recordRecommendedItemAccepted(nextEntry);
+    }
     updateMusicQueue((currentQueue) => playQueueItem(currentQueue, nextTrack.id));
     setPlayerCurrentTime(0);
     setPlayerDuration(nextTrack.durationMs / 1000);
@@ -951,6 +988,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     if (!entry) return;
 
     platformAudioRef.current?.pause();
+    recordRecommendedItemAccepted(entry);
     updateMusicQueue((currentQueue) => playQueueItem(currentQueue, entryId));
     setPlayerCurrentTime(0);
     setPlayerDuration(entry.item.durationMs / 1000);
@@ -961,6 +999,10 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   }
 
   function handleQueueEntryRemove(entryId: string) {
+    const entry = musicQueueRef.current.entries.find((candidate) => candidate.id === entryId);
+    if (!entry) return;
+
+    recordRecommendedItemSkipped(entry);
     updateMusicQueue((currentQueue) => removeQueueEntry(currentQueue, entryId));
   }
 
@@ -969,6 +1011,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   }
 
   function handleQueueEntryVideo(entry: MusicQueueEntry) {
+    recordRecommendedItemAccepted(entry);
     updateMusicQueue((currentQueue) => playQueueItem(currentQueue, entry.id));
     setPlayerCurrentTime(0);
     setPlayerDuration(entry.item.durationMs / 1000);
@@ -2049,6 +2092,36 @@ function isMusicItem(value: unknown): value is MusicItem {
   );
 }
 
+function withAutoDjRecommendationMetadata(response: AutoDjRecommendResponse): RoomClientAction[] {
+  const recommendationsById = new Map(
+    response.recommendations.map((recommendation) => [recommendation.item.id, recommendation])
+  );
+
+  return response.clientActions.map((action) => {
+    if (!("item" in action)) {
+      return action;
+    }
+
+    const recommendation = recommendationsById.get(action.item.id);
+    if (!recommendation) {
+      return action;
+    }
+
+    return {
+      ...action,
+      item: {
+        ...action.item,
+        sourceQuery: action.item.sourceQuery ?? recommendation.item.sourceQuery ?? null,
+        selectedReason: action.item.selectedReason ?? recommendation.reason,
+        selectionEvidence: action.item.selectionEvidence ?? recommendation.evidence,
+        selectionScore: action.item.selectionScore ?? recommendation.score,
+        recommendationIntent: recommendation.intent,
+        recommendationRefillId: response.refillId,
+      },
+    };
+  });
+}
+
 function readStoredMusicQueue(storage: Storage): MusicQueueState | null {
   const rawQueue = storage.getItem(MUSIC_QUEUE_STORAGE_KEY);
   if (!rawQueue) return null;
@@ -2117,6 +2190,8 @@ function isMusicQueueEntry(value: unknown): value is MusicQueueEntry {
     isOptionalString(value.selectedReason) &&
     isOptionalStringArray(value.selectionEvidence) &&
     isOptionalNumber(value.selectionScore) &&
+    isOptionalRecommendationIntent(value.recommendationIntent) &&
+    isOptionalString(value.recommendationRefillId) &&
     isOptionalBoolean(value.saved)
   );
 }
@@ -2139,6 +2214,19 @@ function isOptionalBoolean(value: unknown): boolean {
 
 function isOptionalStringArray(value: unknown): boolean {
   return value === undefined || (Array.isArray(value) && value.every((entry) => typeof entry === "string"));
+}
+
+function isOptionalRecommendationIntent(value: unknown): value is RecommendationIntent | undefined {
+  return value === undefined || isRecommendationIntent(value);
+}
+
+function isRecommendationIntent(value: unknown): value is RecommendationIntent {
+  return (
+    value === "similar_theme" ||
+    value === "similar_mood" ||
+    value === "same_creator_or_work" ||
+    value === "light_exploration"
+  );
 }
 
 function getVisibleQueuePanelEntries(
@@ -2192,6 +2280,32 @@ function makeClientMusicItemFromMusicItem(item: MusicItem): ClientMusicItem {
     tags: [...item.tags],
     canOpenVideo: item.canOpenVideo
   };
+}
+
+function makeClientMusicItemFromQueueEntry(entry: MusicQueueEntry): ClientMusicItem {
+  return {
+    ...makeClientMusicItemFromMusicItem(entry.item),
+    sourceQuery: entry.sourceQuery ?? null,
+    selectedReason: entry.selectedReason ?? null,
+    selectionEvidence: entry.selectionEvidence ? [...entry.selectionEvidence] : [],
+    selectionScore: entry.selectionScore ?? null,
+    recommendationIntent: entry.recommendationIntent ?? null,
+    recommendationRefillId: entry.recommendationRefillId ?? null,
+  };
+}
+
+function makeAutoDjRecommendationFromQueueEntry(entry: MusicQueueEntry): AutoDjRecommendation {
+  return {
+    item: makeClientMusicItemFromQueueEntry(entry),
+    score: entry.selectionScore ?? 0,
+    intent: entry.recommendationIntent ?? "similar_theme",
+    reason: entry.selectedReason ?? "",
+    evidence: entry.selectionEvidence ? [...entry.selectionEvidence] : [],
+  };
+}
+
+function isRecommendedQueueEntry(entry: MusicQueueEntry): boolean {
+  return Boolean(entry.recommendationRefillId || entry.selectedReason);
 }
 
 function getMusicSourceLabel(source: MusicSourceKind): string {

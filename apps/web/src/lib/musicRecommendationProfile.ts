@@ -15,13 +15,18 @@ const REFILL_HISTORY_LIMIT = 20;
 const ACCEPT_ARTIST_DELTA = 1;
 const ACCEPT_TAG_DELTA = 0.75;
 const ACCEPT_SOURCE_DELTA = 0.5;
+const ACCEPT_QUERY_DELTA = 0.5;
 const SKIP_ARTIST_DELTA = -0.15;
 const SKIP_TAG_DELTA = -0.1;
+const SKIP_SOURCE_DELTA = -0.1;
+const SKIP_QUERY_DELTA = -0.1;
 const DISLIKE_ARTIST_DELTA = -1;
 const DISLIKE_TAG_DELTA = -0.75;
+const DISLIKE_SOURCE_DELTA = -0.5;
+const DISLIKE_QUERY_DELTA = -0.75;
 const MIN_WEIGHT = -5;
 const MAX_WEIGHT = 5;
-const DISLIKE_COOLDOWN_DAYS = 14;
+const DISLIKE_COOLDOWN_HOURS = 12;
 
 export function createInitialMusicRecommendationProfile(
   now = currentIsoTime()
@@ -47,11 +52,11 @@ export function isMusicRecommendationProfile(value: unknown): value is MusicReco
 
   return (
     value.version === 1 &&
-    typeof value.updatedAt === "string" &&
-    isNumberRecord(value.artistWeights) &&
-    isNumberRecord(value.tagWeights) &&
+    isIsoDateString(value.updatedAt) &&
+    isWeightRecord(value.artistWeights) &&
+    isWeightRecord(value.tagWeights) &&
     isSourceWeights(value.sourceWeights) &&
-    isNumberRecord(value.queryWeights) &&
+    isWeightRecord(value.queryWeights) &&
     Array.isArray(value.recentThemes) &&
     value.recentThemes.every(isRecommendationThemeSignal) &&
     Array.isArray(value.cooldowns) &&
@@ -101,6 +106,7 @@ export function markRecommendedItemAccepted(
   const item = recommendation.item;
   const artistKey = normalizeSignalKey(item.creator);
   const tagKeys = getNormalizedTagKeys(item.tags);
+  const queryKey = normalizeOptionalSignalKey(item.sourceQuery);
 
   return {
     ...cloneMusicRecommendationProfile(profile),
@@ -108,6 +114,7 @@ export function markRecommendedItemAccepted(
     artistWeights: adjustSignalWeights(profile.artistWeights, artistKey ? [artistKey] : [], ACCEPT_ARTIST_DELTA),
     tagWeights: adjustSignalWeights(profile.tagWeights, tagKeys, ACCEPT_TAG_DELTA),
     sourceWeights: adjustSourceWeight(profile.sourceWeights, item.source, ACCEPT_SOURCE_DELTA),
+    queryWeights: adjustSignalWeights(profile.queryWeights, queryKey ? [queryKey] : [], ACCEPT_QUERY_DELTA),
     recommendedItems: profile.recommendedItems.map((entry) =>
       entry.itemId === item.id
         ? {
@@ -128,12 +135,15 @@ export function markRecommendedItemSkipped(
   const item = recommendation.item;
   const artistKey = normalizeSignalKey(item.creator);
   const tagKeys = getNormalizedTagKeys(item.tags);
+  const queryKey = normalizeOptionalSignalKey(item.sourceQuery);
 
   return {
     ...cloneMusicRecommendationProfile(profile),
     updatedAt: now,
     artistWeights: adjustSignalWeights(profile.artistWeights, artistKey ? [artistKey] : [], SKIP_ARTIST_DELTA),
     tagWeights: adjustSignalWeights(profile.tagWeights, tagKeys, SKIP_TAG_DELTA),
+    sourceWeights: adjustSourceWeight(profile.sourceWeights, item.source, SKIP_SOURCE_DELTA),
+    queryWeights: adjustSignalWeights(profile.queryWeights, queryKey ? [queryKey] : [], SKIP_QUERY_DELTA),
   };
 }
 
@@ -145,13 +155,16 @@ export function dislikeRecommendedItem(
   const item = recommendation.item;
   const artistKey = normalizeSignalKey(item.creator);
   const tagKeys = getNormalizedTagKeys(item.tags);
-  const dislikeCooldowns = createDislikeCooldowns(item.id, artistKey, tagKeys, now);
+  const queryKey = normalizeOptionalSignalKey(item.sourceQuery);
+  const dislikeCooldowns = createDislikeCooldowns(item.id, artistKey, tagKeys, queryKey, now);
 
   return {
     ...cloneMusicRecommendationProfile(profile),
     updatedAt: now,
     artistWeights: adjustSignalWeights(profile.artistWeights, artistKey ? [artistKey] : [], DISLIKE_ARTIST_DELTA),
     tagWeights: adjustSignalWeights(profile.tagWeights, tagKeys, DISLIKE_TAG_DELTA),
+    sourceWeights: adjustSourceWeight(profile.sourceWeights, item.source, DISLIKE_SOURCE_DELTA),
+    queryWeights: adjustSignalWeights(profile.queryWeights, queryKey ? [queryKey] : [], DISLIKE_QUERY_DELTA),
     cooldowns: mergeCooldowns(profile.cooldowns, dislikeCooldowns),
     recommendedItems: profile.recommendedItems.map((entry) =>
       entry.itemId === item.id
@@ -309,10 +322,14 @@ function capRefillHistory(
   entries: RecommendationRefillHistoryEntry[],
   limit: number
 ): RecommendationRefillHistoryEntry[] {
+  if (limit <= 0) {
+    return [];
+  }
+
   return entries
     .map((entry, index) => ({ entry, index }))
-    .sort((left, right) => compareIsoDescending(left.entry.createdAt, right.entry.createdAt) || left.index - right.index)
-    .slice(0, limit)
+    .sort((left, right) => left.entry.createdAt.localeCompare(right.entry.createdAt) || left.index - right.index)
+    .slice(-limit)
     .map(({ entry }) => entry);
 }
 
@@ -320,9 +337,10 @@ function createDislikeCooldowns(
   itemId: string,
   artistKey: string,
   tagKeys: string[],
+  queryKey: string,
   now: string
 ): RecommendationCooldown[] {
-  const expiresAt = addDaysIso(now, DISLIKE_COOLDOWN_DAYS);
+  const expiresAt = addHoursIso(now, DISLIKE_COOLDOWN_HOURS);
   const cooldowns: RecommendationCooldown[] = [
     {
       kind: "item",
@@ -353,6 +371,16 @@ function createDislikeCooldowns(
     });
   }
 
+  if (queryKey) {
+    cooldowns.push({
+      kind: "query",
+      key: queryKey,
+      weight: 1,
+      expiresAt,
+      reason: "dislike",
+    });
+  }
+
   return cooldowns;
 }
 
@@ -376,6 +404,10 @@ function normalizeSignalKey(key: string): string {
   return key.trim().toLowerCase();
 }
 
+function normalizeOptionalSignalKey(key: string | null | undefined): string {
+  return typeof key === "string" ? normalizeSignalKey(key) : "";
+}
+
 function clampWeight(value: number): number {
   return Math.max(MIN_WEIGHT, Math.min(MAX_WEIGHT, value));
 }
@@ -384,9 +416,9 @@ function compareIsoDescending(left: string, right: string): number {
   return right.localeCompare(left);
 }
 
-function addDaysIso(now: string, days: number): string {
+function addHoursIso(now: string, hours: number): string {
   const date = new Date(now);
-  date.setUTCDate(date.getUTCDate() + days);
+  date.setUTCHours(date.getUTCHours() + hours);
   return date.toISOString();
 }
 
@@ -396,9 +428,9 @@ function isRecommendationThemeSignal(value: unknown): value is RecommendationThe
   }
 
   return (
-    typeof value.key === "string" &&
-    isFiniteNumber(value.weight) &&
-    typeof value.lastSeenAt === "string"
+    isNonEmptyString(value.key) &&
+    isBoundedWeight(value.weight) &&
+    isIsoDateString(value.lastSeenAt)
   );
 }
 
@@ -408,10 +440,10 @@ function isRecommendationCooldown(value: unknown): value is RecommendationCooldo
   }
 
   return (
-    typeof value.key === "string" &&
+    isNonEmptyString(value.key) &&
     isCooldownKind(value.kind) &&
-    isFiniteNumber(value.weight) &&
-    typeof value.expiresAt === "string" &&
+    isCooldownWeight(value.weight) &&
+    isIsoDateString(value.expiresAt) &&
     isCooldownReason(value.reason)
   );
 }
@@ -422,14 +454,14 @@ function isRecommendationHistoryEntry(value: unknown): value is RecommendationHi
   }
 
   return (
-    typeof value.itemId === "string" &&
-    typeof value.title === "string" &&
-    typeof value.creator === "string" &&
+    isNonEmptyString(value.itemId) &&
+    isNonEmptyString(value.title) &&
+    isNonEmptyString(value.creator) &&
     isMusicSource(value.source) &&
-    typeof value.recommendedAt === "string" &&
+    isIsoDateString(value.recommendedAt) &&
     typeof value.played === "boolean" &&
     typeof value.disliked === "boolean" &&
-    typeof value.reason === "string"
+    isNonEmptyString(value.reason)
   );
 }
 
@@ -439,21 +471,21 @@ function isRecommendationRefillHistoryEntry(value: unknown): value is Recommenda
   }
 
   return (
-    typeof value.refillId === "string" &&
-    typeof value.createdAt === "string" &&
+    isNonEmptyString(value.refillId) &&
+    isIsoDateString(value.createdAt) &&
     Array.isArray(value.selectedItemIds) &&
-    value.selectedItemIds.every((itemId) => typeof itemId === "string") &&
+    value.selectedItemIds.every(isNonEmptyString) &&
     Array.isArray(value.dominantThemes) &&
-    value.dominantThemes.every((theme) => typeof theme === "string") &&
-    isFiniteNumber(value.explorationCount)
+    value.dominantThemes.every(isNonEmptyString) &&
+    isNonNegativeInteger(value.explorationCount)
   );
 }
 
-function isNumberRecord(value: unknown): value is Record<string, number> {
+function isWeightRecord(value: unknown): value is Record<string, number> {
   return (
     isRecord(value) &&
     !Array.isArray(value) &&
-    Object.values(value).every(isFiniteNumber)
+    Object.entries(value).every(([key, weight]) => normalizeSignalKey(key).length > 0 && isBoundedWeight(weight))
   );
 }
 
@@ -462,7 +494,7 @@ function isSourceWeights(value: unknown): value is MusicRecommendationProfile["s
     isRecord(value) &&
     !Array.isArray(value) &&
     Object.entries(value).every(([key, weight]) =>
-      (key === "bilibili" || key === "netease") && isFiniteNumber(weight)
+      (key === "bilibili" || key === "netease") && isBoundedWeight(weight)
     )
   );
 }
@@ -481,6 +513,30 @@ function isMusicSource(value: unknown): value is AutoDjRecommendation["item"]["s
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
+}
+
+function isBoundedWeight(value: unknown): value is number {
+  return isFiniteNumber(value) && value >= MIN_WEIGHT && value <= MAX_WEIGHT;
+}
+
+function isCooldownWeight(value: unknown): value is number {
+  return isFiniteNumber(value) && value >= 0;
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return Number.isInteger(value) && (value as number) >= 0;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isIsoDateString(value: unknown): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && value.includes("T");
 }
 
 function isRecord(value: unknown): value is UnknownRecord {

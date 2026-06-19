@@ -18,6 +18,8 @@ export interface MusicQueueEntry {
   selectedReason?: string;
   selectionEvidence?: string[];
   selectionScore?: number;
+  recommendationIntent?: ClientMusicItem["recommendationIntent"];
+  recommendationRefillId?: string;
   saved?: boolean;
 }
 
@@ -26,6 +28,8 @@ type ClientMusicQueueItem = ClientMusicItem & {
   selectedReason?: string | null;
   selectionEvidence?: string[] | null;
   selectionScore?: number | null;
+  recommendationIntent?: ClientMusicItem["recommendationIntent"];
+  recommendationRefillId?: string | null;
 };
 
 type MusicItemUpdate = Omit<MusicItem, "pageUrl" | "embedUrl" | "platformAudioUrl"> & {
@@ -306,7 +310,7 @@ export function upsertQueueItem(
   item: MusicItemUpdate,
   metadata: Partial<Pick<
     MusicQueueEntry,
-    "addedBy" | "sourceQuery" | "selectedReason" | "selectionEvidence" | "selectionScore"
+    "addedBy" | "sourceQuery" | "selectedReason" | "selectionEvidence" | "selectionScore" | "recommendationIntent" | "recommendationRefillId"
   >> = {},
   now = currentIsoTime()
 ): MusicQueueState {
@@ -325,6 +329,8 @@ export function upsertQueueItem(
                 ? entry.selectionEvidence
                 : cloneSelectionEvidence(metadata.selectionEvidence),
             selectionScore: metadata.selectionScore ?? entry.selectionScore,
+            recommendationIntent: metadata.recommendationIntent ?? entry.recommendationIntent,
+            recommendationRefillId: metadata.recommendationRefillId ?? entry.recommendationRefillId,
           }
         : entry
     );
@@ -346,6 +352,8 @@ export function upsertQueueItem(
         selectedReason: metadata.selectedReason,
         selectionEvidence: cloneSelectionEvidence(metadata.selectionEvidence),
         selectionScore: metadata.selectionScore,
+        recommendationIntent: metadata.recommendationIntent,
+        recommendationRefillId: metadata.recommendationRefillId,
       },
     ],
   };
@@ -629,7 +637,7 @@ function getClientItemQueueMetadata(
   item: ClientMusicQueueItem
 ): Partial<Pick<
   MusicQueueEntry,
-  "addedBy" | "sourceQuery" | "selectedReason" | "selectionEvidence" | "selectionScore"
+  "addedBy" | "sourceQuery" | "selectedReason" | "selectionEvidence" | "selectionScore" | "recommendationIntent" | "recommendationRefillId"
 >> {
   return {
     addedBy: item.tags.includes("agent-selected") ? "agent" : "user",
@@ -637,6 +645,8 @@ function getClientItemQueueMetadata(
     selectedReason: item.selectedReason ?? undefined,
     selectionEvidence: item.selectionEvidence ?? undefined,
     selectionScore: item.selectionScore ?? undefined,
+    recommendationIntent: item.recommendationIntent ?? undefined,
+    recommendationRefillId: item.recommendationRefillId ?? undefined,
   };
 }
 

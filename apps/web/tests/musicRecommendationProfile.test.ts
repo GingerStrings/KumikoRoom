@@ -237,7 +237,9 @@ describe("musicRecommendationProfile", () => {
     expect(result.recommendedItems.map((entry) => entry.itemId)).not.toContain("old-0");
     expect(result.refillHistory).toHaveLength(20);
     expect(result.refillHistory.filter((entry) => entry.refillId === "refill-1")).toHaveLength(1);
-    expect(result.refillHistory[0]).toMatchObject({ refillId: "refill-1", explorationCount: 2 });
+    expect(result.refillHistory.map((entry) => entry.refillId)).not.toContain("old-refill-0");
+    expect(result.refillHistory.at(-2)).toMatchObject({ refillId: "refill-1", explorationCount: 2 });
+    expect(result.refillHistory.at(-1)).toMatchObject({ refillId: "refill-2", explorationCount: 1 });
     expect(result.cooldowns.filter((cooldown) => cooldown.kind === "artist" && cooldown.key === "kumiko ensemble")).toHaveLength(1);
     expect(result.cooldowns.find((cooldown) => cooldown.kind === "artist" && cooldown.key === "kumiko ensemble"))
       .toMatchObject({ weight: 0.9, expiresAt: "2026-06-21T00:00:00.000Z" });
@@ -245,11 +247,72 @@ describe("musicRecommendationProfile", () => {
     expect(profile.refillHistory).toHaveLength(20);
   });
 
+  it("rejects malformed persisted profile values before hydrating recommendation state", () => {
+    const profile = makeProfile({
+      artistWeights: { "kumiko ensemble": 1 },
+      tagWeights: { quiet: 0.5 },
+      sourceWeights: { netease: 0.25 },
+      queryWeights: { "quiet piano": 0.1 },
+      recentThemes: [{ key: "quiet", weight: 0.75, lastSeenAt: NOW }],
+      cooldowns: [{
+        kind: "artist",
+        key: "kumiko ensemble",
+        weight: 1,
+        expiresAt: "2026-06-19T00:00:00.000Z",
+        reason: "dislike",
+      }],
+      recommendedItems: [{
+        itemId: "track-1",
+        title: "Moonlit Room",
+        creator: "Kumiko Ensemble",
+        source: "netease",
+        recommendedAt: NOW,
+        played: false,
+        disliked: false,
+        reason: "Matches the current quiet mood.",
+      }],
+      refillHistory: [{
+        refillId: "refill-1",
+        createdAt: NOW,
+        selectedItemIds: ["track-1"],
+        dominantThemes: ["quiet"],
+        explorationCount: 1,
+      }],
+    });
+
+    const invalidProfiles = [
+      { ...profile, updatedAt: "not-a-date" },
+      { ...profile, artistWeights: { "": 1 } },
+      { ...profile, tagWeights: { quiet: 6 } },
+      { ...profile, sourceWeights: { spotify: 1 } },
+      { ...profile, queryWeights: { "quiet piano": Number.NaN } },
+      { ...profile, recentThemes: [{ key: "", weight: 0.75, lastSeenAt: NOW }] },
+      { ...profile, recentThemes: [{ key: "quiet", weight: 0.75, lastSeenAt: "bad-date" }] },
+      { ...profile, cooldowns: [{ ...profile.cooldowns[0], key: "" }] },
+      { ...profile, cooldowns: [{ ...profile.cooldowns[0], weight: -1 }] },
+      { ...profile, cooldowns: [{ ...profile.cooldowns[0], expiresAt: "bad-date" }] },
+      { ...profile, recommendedItems: [{ ...profile.recommendedItems[0], itemId: "" }] },
+      { ...profile, recommendedItems: [{ ...profile.recommendedItems[0], recommendedAt: "bad-date" }] },
+      { ...profile, refillHistory: [{ ...profile.refillHistory[0], refillId: "" }] },
+      { ...profile, refillHistory: [{ ...profile.refillHistory[0], selectedItemIds: ["track-1", ""] }] },
+      { ...profile, refillHistory: [{ ...profile.refillHistory[0], dominantThemes: [""] }] },
+      { ...profile, refillHistory: [{ ...profile.refillHistory[0], createdAt: "bad-date" }] },
+      { ...profile, refillHistory: [{ ...profile.refillHistory[0], explorationCount: 1.5 }] },
+      { ...profile, refillHistory: [{ ...profile.refillHistory[0], explorationCount: -1 }] },
+    ];
+
+    expect(isMusicRecommendationProfile(profile)).toBe(true);
+    for (const invalidProfile of invalidProfiles) {
+      expect(isMusicRecommendationProfile(invalidProfile)).toBe(false);
+    }
+  });
+
   it("bumps artist, tag, and source weights, marks history played, and updates updatedAt when accepted", () => {
     const profile = makeProfile({
       artistWeights: { "kumiko ensemble": 0.2 },
       tagWeights: { quiet: 0.1 },
       sourceWeights: { netease: 0.25 },
+      queryWeights: { "quiet moon": 0.1 },
       recommendedItems: [{
         itemId: "track-1",
         title: "Moonlit Room",
@@ -262,36 +325,51 @@ describe("musicRecommendationProfile", () => {
       }],
     });
 
-    const result = markRecommendedItemAccepted(profile, makeRecommendation(), LATER);
+    const result = markRecommendedItemAccepted(
+      profile,
+      makeRecommendation({ item: { ...makeRecommendation().item, sourceQuery: "Quiet Moon" } }),
+      LATER
+    );
 
     expect(result.updatedAt).toBe(LATER);
     expect(result.artistWeights["kumiko ensemble"]).toBeGreaterThan(profile.artistWeights["kumiko ensemble"]);
     expect(result.tagWeights["night jazz"]).toBeGreaterThan(0);
     expect(result.tagWeights.quiet).toBeGreaterThan(profile.tagWeights.quiet);
     expect(result.sourceWeights.netease).toBeGreaterThan(profile.sourceWeights.netease!);
+    expect(result.queryWeights["quiet moon"]).toBeGreaterThan(profile.queryWeights["quiet moon"]);
     expect(result.recommendedItems[0]).toMatchObject({ itemId: "track-1", played: true, disliked: false });
     expect(profile.recommendedItems[0].played).toBe(false);
   });
 
-  it("lightly downweights artist and tags and updates updatedAt when skipped", () => {
+  it("lightly downweights artist, tags, source, and query and updates updatedAt when skipped", () => {
     const profile = makeProfile({
       artistWeights: { "kumiko ensemble": 1 },
       tagWeights: { "night jazz": 1, quiet: 1 },
+      sourceWeights: { netease: 1 },
+      queryWeights: { "quiet moon": 1 },
     });
 
-    const result = markRecommendedItemSkipped(profile, makeRecommendation(), LATER);
+    const result = markRecommendedItemSkipped(
+      profile,
+      makeRecommendation({ item: { ...makeRecommendation().item, sourceQuery: "Quiet Moon" } }),
+      LATER
+    );
 
     expect(result.updatedAt).toBe(LATER);
     expect(result.artistWeights["kumiko ensemble"]).toBeLessThan(profile.artistWeights["kumiko ensemble"]);
     expect(result.tagWeights["night jazz"]).toBeLessThan(profile.tagWeights["night jazz"]);
     expect(result.tagWeights.quiet).toBeLessThan(profile.tagWeights.quiet);
+    expect(result.sourceWeights.netease).toBeLessThan(profile.sourceWeights.netease!);
+    expect(result.queryWeights["quiet moon"]).toBeLessThan(profile.queryWeights["quiet moon"]);
     expect(result.artistWeights["kumiko ensemble"]).toBeGreaterThan(0);
   });
 
-  it("downweights recommendation signals, creates cooldowns, marks history disliked, and updates updatedAt when disliked", () => {
+  it("downweights recommendation signals, creates 12 hour cooldowns, marks history disliked, and updates updatedAt when disliked", () => {
     const profile = makeProfile({
       artistWeights: { "kumiko ensemble": 1 },
       tagWeights: { "night jazz": 1, quiet: 1 },
+      sourceWeights: { netease: 1 },
+      queryWeights: { "quiet moon": 1 },
       recommendedItems: [{
         itemId: "track-1",
         title: "Moonlit Room",
@@ -304,20 +382,27 @@ describe("musicRecommendationProfile", () => {
       }],
     });
 
-    const result = dislikeRecommendedItem(profile, makeRecommendation(), LATER);
+    const result = dislikeRecommendedItem(
+      profile,
+      makeRecommendation({ item: { ...makeRecommendation().item, sourceQuery: "Quiet Moon" } }),
+      LATER
+    );
 
     expect(result.updatedAt).toBe(LATER);
     expect(result.artistWeights["kumiko ensemble"]).toBeLessThan(profile.artistWeights["kumiko ensemble"]);
     expect(result.tagWeights["night jazz"]).toBeLessThan(profile.tagWeights["night jazz"]);
     expect(result.tagWeights.quiet).toBeLessThan(profile.tagWeights.quiet);
+    expect(result.sourceWeights.netease).toBeLessThan(profile.sourceWeights.netease!);
+    expect(result.queryWeights["quiet moon"]).toBeLessThan(profile.queryWeights["quiet moon"]);
     expect(result.recommendedItems[0]).toMatchObject({ itemId: "track-1", played: false, disliked: true });
     expect(result.cooldowns).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "item", key: "track-1", reason: "dislike" }),
       expect.objectContaining({ kind: "artist", key: "kumiko ensemble", reason: "dislike" }),
       expect.objectContaining({ kind: "tag", key: "night jazz", reason: "dislike" }),
       expect.objectContaining({ kind: "tag", key: "quiet", reason: "dislike" }),
+      expect.objectContaining({ kind: "query", key: "quiet moon", reason: "dislike" }),
     ]));
-    expect(result.cooldowns.every((cooldown) => cooldown.expiresAt > LATER)).toBe(true);
+    expect(result.cooldowns.every((cooldown) => cooldown.expiresAt === "2026-06-18T12:05:00.000Z")).toBe(true);
     expect(profile.cooldowns).toEqual([]);
     expect(profile.recommendedItems[0].disliked).toBe(false);
   });

@@ -141,10 +141,10 @@ describe("Liz Bluebird room visual tokens", () => {
     const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
 
     expectRuleToContain(css, ".player-controls", [
-      "grid-template-columns: clamp(28px, 10vw, 34px) clamp(38px, 12vw, 42px) clamp(28px, 10vw, 34px) minmax(44px, 1fr) clamp(28px, 10vw, 34px);",
+      "grid-template-columns: clamp(28px, 10vw, 34px) clamp(38px, 12vw, 42px) clamp(28px, 10vw, 34px) minmax(44px, 1fr) minmax(64px, max-content);",
     ]);
     expectRuleToContain(css, ".player-controls[data-has-video=\"true\"]", [
-      "grid-template-columns: clamp(28px, 9vw, 34px) clamp(38px, 12vw, 42px) clamp(28px, 9vw, 34px) minmax(36px, 1fr) clamp(28px, 9vw, 34px) clamp(28px, 9vw, 34px);",
+      "grid-template-columns: clamp(28px, 9vw, 34px) clamp(38px, 12vw, 42px) clamp(28px, 9vw, 34px) minmax(36px, 1fr) clamp(28px, 9vw, 34px) minmax(64px, max-content);",
     ]);
     expect(css).toContain("@media (max-height: 520px)");
     expect(css).toContain("max-height: calc(100vh - 24px);");
@@ -158,7 +158,7 @@ describe("Liz Bluebird room visual tokens", () => {
       "overflow: hidden;",
     ]);
     expectRuleToContain(css, ".player-controls", [
-      "grid-template-columns: clamp(28px, 10vw, 34px) clamp(38px, 12vw, 42px) clamp(28px, 10vw, 34px) minmax(44px, 1fr) clamp(28px, 10vw, 34px);",
+      "grid-template-columns: clamp(28px, 10vw, 34px) clamp(38px, 12vw, 42px) clamp(28px, 10vw, 34px) minmax(44px, 1fr) minmax(64px, max-content);",
     ]);
     expectRuleToContain(css, ".queue-preview", [
       "display: grid;",

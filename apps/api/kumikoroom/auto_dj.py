@@ -509,7 +509,7 @@ def _blocked_item_ids(
     return blocked
 
 
-_METADATA_TAGS = frozenset({"agent-selected", "search"})
+_METADATA_TAGS = frozenset({"agent-selected", "bilibili", "netease", "search"})
 
 
 def _dominant_themes(

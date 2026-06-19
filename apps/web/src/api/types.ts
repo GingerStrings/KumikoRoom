@@ -131,6 +131,8 @@ export interface ClientMusicItem {
   selectedReason?: string | null;
   selectionEvidence?: string[];
   selectionScore?: number | null;
+  recommendationIntent?: RecommendationIntent | null;
+  recommendationRefillId?: string | null;
 }
 
 export interface MusicAgentTrack {

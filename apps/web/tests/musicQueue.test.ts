@@ -615,7 +615,9 @@ describe("musicQueue", () => {
         ...makeClientItem("auto-a", "Auto A"),
         selectedReason: "close to the current listening context",
         selectionEvidence: ["playable candidate", "source preference netease"],
-        selectionScore: 122.5
+        selectionScore: 122.5,
+        recommendationIntent: "similar_theme",
+        recommendationRefillId: "refill-auto-1",
       },
       "2026-06-18T00:01:00.000Z"
     );
@@ -624,5 +626,7 @@ describe("musicQueue", () => {
     expect(queued.selectedReason).toBe("close to the current listening context");
     expect(queued.selectionEvidence).toEqual(["playable candidate", "source preference netease"]);
     expect(queued.selectionScore).toBe(122.5);
+    expect(queued.recommendationIntent).toBe("similar_theme");
+    expect(queued.recommendationRefillId).toBe("refill-auto-1");
   });
 });
