@@ -2,6 +2,14 @@ from dataclasses import asdict, dataclass
 import json
 from typing import Any
 
+from kumikoroom.auto_dj_planning import (
+    AutoDjQueryPlan,
+    AutoDjQueryPlanningContext,
+    PlanningError,
+    build_auto_dj_planning_system_prompt,
+    build_auto_dj_planning_user_prompt,
+    parse_and_validate_plan,
+)
 from kumikoroom.agent_tools import (
     RoomAgentToolContext,
     dispatch_room_agent_tool,
@@ -63,6 +71,7 @@ class ConversationManager:
         session_store: SessionStore | None = None,
         llm_config=None,
         initialize_stores: bool = True,
+        planner_timeout_seconds: float = 45.0,
     ) -> None:
         """``initialize_stores=False`` skips Memory/Session SQLite init for
         planning-only flows; ``chat()`` is unavailable in that mode."""
@@ -85,6 +94,29 @@ class ConversationManager:
         else:
             self.memory_store = None
             self.session_store = None
+        self.planner_timeout_seconds = planner_timeout_seconds
+
+    def plan_auto_dj_queries(
+        self, context: AutoDjQueryPlanningContext
+    ) -> AutoDjQueryPlan:
+        """Call the LLM to produce a search-query plan without touching stores."""
+        if self.runtime_config.provider == "mock":
+            raise PlanningError("planning is not available with the mock provider")
+
+        system_prompt = build_auto_dj_planning_system_prompt(context.settings)
+        user_prompt = build_auto_dj_planning_user_prompt(context)
+        messages: list[LLMMessage] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        try:
+            result = self.provider.generate(
+                messages, timeout=self.planner_timeout_seconds
+            )
+        except Exception as exc:
+            raise PlanningError(f"LLM call failed: {exc}") from exc
+
+        return parse_and_validate_plan(result.content, context.settings)
 
     def chat(self, payload: ChatIn) -> ChatOut:
         if self.memory_store is None or self.session_store is None:
