@@ -149,6 +149,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const [autoDjHydrated, setAutoDjHydrated] = useState(false);
   const [autoDjInFlightSignature, setAutoDjInFlightSignature] = useState<string | null>(null);
   const [autoDjLastRequestedSignature, setAutoDjLastRequestedSignature] = useState<string | null>(null);
+  const [autoDjStatus, setAutoDjStatus] = useState<"idle" | "loading" | "unavailable">("idle");
   const [musicRecommendationProfile, setMusicRecommendationProfile] = useState<MusicRecommendationProfile>(() =>
     createInitialMusicRecommendationProfile()
   );
@@ -481,17 +482,20 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
       durationMs: Math.round(playerDurationSeconds * 1000)
     }, musicLibrary);
 
+    setAutoDjStatus("loading");
     void recommendAutoDj({
       musicState,
       recommendationProfile: musicRecommendationProfileRef.current,
-      recentMessages: messages.slice(-8),
-      settings: DEFAULT_AUTO_DJ_SETTINGS
+      recentMessages: messages.slice(-200),
+      settings: DEFAULT_AUTO_DJ_SETTINGS,
+      llmConfig: llmConfig ?? null
     })
       .then((response) => {
         applyAutoDjResponse(response);
+        setAutoDjStatus(response.ok ? "idle" : "unavailable");
       })
       .catch(() => {
-        setSendError("Auto DJ refill failed");
+        setAutoDjStatus("unavailable");
       })
       .finally(() => {
         setAutoDjInFlightSignature(null);
@@ -1874,10 +1878,27 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                   type="checkbox"
                   role="switch"
                   checked={autoDjEnabled}
-                  onChange={(event) => setAutoDjEnabled(event.currentTarget.checked)}
+                  onChange={(event) => {
+                    const next = event.currentTarget.checked;
+                    setAutoDjEnabled(next);
+                    setAutoDjStatus("idle");
+                    if (!next) {
+                      setAutoDjLastRequestedSignature(null);
+                    }
+                  }}
                   aria-label="Auto DJ"
                 />
                 <span>Auto DJ</span>
+                {autoDjStatus === "loading" ? (
+                  <span className="auto-dj-status" data-state="loading" aria-live="polite">
+                    搜索中…
+                  </span>
+                ) : null}
+                {autoDjStatus === "unavailable" ? (
+                  <span className="auto-dj-status" data-state="unavailable" aria-live="polite">
+                    暂时没找到合适的歌
+                  </span>
+                ) : null}
               </label>
             </div>
             <div className="queue-preview" aria-label="播放队列预览">

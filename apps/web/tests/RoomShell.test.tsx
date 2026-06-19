@@ -559,6 +559,106 @@ describe("RoomShell", () => {
     expect(within(panel).queryByText("Auto DJ Song")).toBeNull();
   });
 
+  it("sends the configured llmConfig with the Auto DJ refill", async () => {
+    localStorage.setItem(
+      "kumikoroom.llmConfig",
+      JSON.stringify({
+        provider: "openai_compatible",
+        baseUrl: "https://example.invalid",
+        apiKey: "test",
+        model: "planner-model"
+      })
+    );
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("switch", { name: "Auto DJ" }));
+
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+    expect(apiMocks.recommendAutoDj.mock.calls[0][0].llmConfig).toMatchObject({
+      provider: "openai_compatible",
+      apiKey: "test"
+    });
+  });
+
+  it("includes up to the last 200 chat messages on the Auto DJ refill", async () => {
+    const stored: StoredChatMessage[] = Array.from({ length: 250 }, (_, index) => ({
+      id: `seed-${index}`,
+      sessionId: defaultSession.id,
+      role: index % 2 === 0 ? "user" : "kumiko",
+      content: `seed message ${index}`
+    }));
+    apiMocks.getSessionMessages.mockResolvedValueOnce(stored);
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    await waitFor(() => expect(screen.getByText("seed message 249")).toBeTruthy());
+    fireEvent.click(screen.getByRole("switch", { name: "Auto DJ" }));
+
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+    expect(apiMocks.recommendAutoDj.mock.calls[0][0].recentMessages).toHaveLength(200);
+  });
+
+  it("shows an inline status and no chat notice when the planner fails", async () => {
+    apiMocks.recommendAutoDj.mockReset();
+    apiMocks.recommendAutoDj.mockResolvedValue({
+      ok: false,
+      refillId: null,
+      notice: "Auto DJ 暂时没找到合适的歌",
+      clientActions: [],
+      recommendations: [],
+      profilePatch: { recommendedItems: [], cooldowns: [], refillHistory: [] },
+      error: "query_planning_failed",
+      sourceErrors: []
+    });
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("switch", { name: "Auto DJ" }));
+
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("暂时没找到合适的歌")).toBeTruthy();
+    expect(within(getTimeline()).queryByText(/Auto DJ added/i)).toBeNull();
+    expect(screen.queryByText("消息没送出去，检查本地 API 后可以重试。")).toBeNull();
+  });
+
+  it("retries the same queue after toggling Auto DJ off then on", async () => {
+    apiMocks.recommendAutoDj.mockReset();
+    apiMocks.recommendAutoDj
+      .mockResolvedValueOnce({
+        ok: false,
+        refillId: null,
+        notice: "Auto DJ 暂时没找到合适的歌",
+        clientActions: [],
+        recommendations: [],
+        profilePatch: { recommendedItems: [], cooldowns: [], refillHistory: [] },
+        error: "query_planning_failed",
+        sourceErrors: []
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        refillId: null,
+        notice: "Auto DJ 暂时没找到合适的歌",
+        clientActions: [],
+        recommendations: [],
+        profilePatch: { recommendedItems: [], cooldowns: [], refillHistory: [] },
+        error: "query_planning_failed",
+        sourceErrors: []
+      });
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    const autoDjSwitch = screen.getByRole("switch", { name: "Auto DJ" });
+    fireEvent.click(autoDjSwitch);
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+    fireEvent.click(autoDjSwitch);
+    fireEvent.click(autoDjSwitch);
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(2));
+  });
+
   it("creates and persists a manual playlist from the management panel", async () => {
     const firstRender = render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
 
