@@ -295,6 +295,7 @@ def _recall_candidates(
     source_errors: list[str],
 ) -> dict[tuple[str, str, str, str], RecalledCandidate]:
     candidates: dict[tuple[str, str, str, str], RecalledCandidate] = {}
+    logger.info("auto dj search queries: %s", [intent.query for intent in intents])
 
     for intent in intents:
         query = intent.query
