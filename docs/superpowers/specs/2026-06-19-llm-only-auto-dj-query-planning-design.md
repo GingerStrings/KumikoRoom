@@ -25,6 +25,8 @@ The current implementation has these relevant boundaries:
 - The frontend has `llmConfig`, but `recommendAutoDj` does not send it.
 - `RoomShell` silently ignores an `ok: false` Auto DJ response after applying any profile patch.
 - The frontend stores the last request signature before completion, so the same queue state will not retry until its signature changes.
+- `_dominant_themes` filters `_METADATA_TAGS`, including `agent-selected`, `search`, `netease`, and `bilibili`, but `_exploration_query_seeds` reads `profile.recent_themes` without that filter, leaking metadata tags into search queries.
+- The browser-owned profile pipeline (`getNormalizedTagKeys` in `apps/web/src/lib/musicRecommendationProfile.ts`) writes raw track tags into `tagWeights` and dislike cooldowns, including the same metadata tokens. The pollution feeds back into Auto DJ context on every refill.
 
 These facts are the starting point for this design.
 
@@ -36,7 +38,7 @@ These facts are the starting point for this design.
 - Preserve traditional recommendation behavior after candidate recall.
 - Stop cleanly when the LLM is unavailable, times out, returns invalid JSON, or returns weak generic queries.
 - Give the user a quiet, visible Auto DJ status without changing the queue on failure.
-- Keep the path bounded with a three-second planner timeout, strict output limits, and a small success-only cache.
+- Keep the path bounded with a three-second planner timeout and strict output limits.
 - Make the no-fallback rule enforceable through tests.
 
 ## 4. Non-Goals
@@ -45,9 +47,20 @@ These facts are the starting point for this design.
 - Building collaborative filtering, embeddings, a vector database, or a catalog index.
 - Asking the LLM to rank every recalled track.
 - Writing Auto DJ planning turns into chat sessions or memory.
-- Persisting query-plan cache entries across API process restarts.
+- Adding a process-local query-plan cache. Per-request planning is acceptable at Auto DJ's call frequency (see §9).
 - Adding recommendation tuning controls to the UI.
 - Mobile browser verification in this change.
+- Adopting any part of the upstream Codex framework (`ContextManager`, `for_prompt`, `compact.rs`, rollout, memory extension). Codex is a Rust long-conversation agent runtime; KumikoRoom uses single-shot LLM calls. The two are not compatible in scope. Codex remains a reference for design philosophy only.
+- Reworking how the browser-owned profile is updated from accept/skip/dislike feedback. The existing automatic learning pipeline keeps writing raw track tags into `tagWeights` and cooldowns. This change defends against that data downstream (see §7.1) but does not redesign the source.
+
+## 4.1 Known Defects Out of Scope
+
+These bugs surfaced during cross-review and stay open for follow-up. They are listed so that completing this spec does not appear to fix them:
+
+- Disliking a track that is currently playing only updates the profile; the track is not removed from playback.
+- `_cooldown_matches(kind="tag")` and `_cooldown_penalty` test against `candidate.title` instead of the candidate tag list. Tag cooldowns therefore behave as title-substring matches.
+- `_cooldown_penalty` lumps `kind in {"tag", "query"}` and matches against `title_norm`, while `_cooldown_matches` for `query` matches against `recalled.query`. Query cooldown hard blocking and soft penalties therefore evaluate different fields.
+- A failed Auto DJ refill still writes `autoDjLastRequestedSignature`, so retries for the same queue state require a queue mutation. §13 introduces a manual reset path through the toggle, but the underlying signature handling remains unchanged.
 
 ## 5. Architecture
 
@@ -76,9 +89,9 @@ The endpoint remains synchronous to match the current search and provider code.
 Focused file boundaries:
 
 - `conversation.py` owns provider selection, the Auto DJ prompt, and the single provider call.
-- A small `auto_dj_planning.py` module owns planning context types, strict parsing, validation errors, cache keys, and the bounded LRU cache.
-- `auto_dj.py` owns recall, deterministic scoring, selection, and response mapping.
-- `routers/room.py` wires the request, `ConversationManager`, cache, and recommender together.
+- A small `auto_dj_planning.py` module owns planning context types, strict parsing, and validation errors.
+- `auto_dj.py` owns profile sanitization (§7.1), recall, deterministic scoring, selection, and response mapping.
+- `routers/room.py` wires the request, `ConversationManager`, and recommender together.
 
 ## 6. ConversationManager Query Planning
 
@@ -112,7 +125,19 @@ This method must not:
 
 The Auto DJ endpoint creates the manager with a three-second provider timeout. The provider timeout should become an injected constructor setting with the existing 45-second chat behavior kept as the default. Test providers remain injectable through the existing `provider` argument.
 
-At present, constructing `ConversationManager` also constructs `MemoryStore` and `SessionStore`, and both constructors initialize SQLite schemas. Change these stores to lazy initialization inside the chat path. Injected test stores keep working as they do now. `plan_auto_dj_queries` never initializes or accesses either store, which guarantees that an Auto DJ planning request does not touch the session or memory database.
+At present, constructing `ConversationManager` also constructs `MemoryStore` and `SessionStore`, and both constructors initialize SQLite schemas. Add an explicit planning construction mode that skips both stores. `plan_auto_dj_queries` never initializes or accesses either store, which guarantees that an Auto DJ planning request does not touch the session or memory database.
+
+## 6.1 Planning-Only Construction
+
+Extend `ConversationManager` with an explicit constructor option such as `initialize_stores: bool = True`:
+
+- The default remains `True`, so existing chat routes and injected test stores keep their current behavior.
+- The Auto DJ route passes `initialize_stores=False` and the three-second provider timeout.
+- In planning mode, `memory_store` and `session_store` remain absent and no SQLite path or schema is touched.
+- `plan_auto_dj_queries` is available in both modes and never reads either store.
+- Calling `chat()` on a planning-only manager raises a clear internal error so this restricted mode cannot be used accidentally for a chat request.
+
+This keeps the change local to manager construction and avoids introducing shared lazy-initialization state or concurrency coordination into the existing chat path.
 
 The runtime provider rules are:
 
@@ -130,16 +155,35 @@ The LLM receives bounded structured context from data already present in the req
 - current track;
 - queued and recently played tracks available in `music_state`;
 - saved tracks and lightweight playlists;
-- artist, tag, source, and prior-query weights;
-- active cooldowns;
+- artist, tag, source, and prior-query weights (after sanitization, see §7.1);
+- active cooldowns (after sanitization, see §7.1);
 - recent recommendation and refill history;
-- up to the last eight chat messages;
+- up to the last 200 chat messages from the active session;
 - requested recommendation count;
 - requested similar and exploration counts.
+
+The chat-message limit rises from the chat path's 8 to 200 because Auto DJ benefits from longer-range expressed preferences ("today I want quieter music") that a short window forgets. Modern LLM context windows (128k–1M tokens) absorb 200 short chat messages without strain. The frontend caps the slice at 200, but actual messages-per-session is typically far smaller. No token-budget truncation is added in this change; if a future deployment uses a small-context model, that constraint becomes a follow-up.
 
 The prompt asks the model to reason across these signals. It should produce a mixture of direct music-platform searches covering creator/work relationships, mood or theme relationships, and light exploration. It must avoid copying a single token from the context into every query.
 
 Raw API keys, internal paths, and unrelated chat or memory data are excluded from the prompt.
+
+## 7.1 Profile Sanitization Before Prompting
+
+The browser-owned feedback pipeline writes raw track tags into `tagWeights` and dislike cooldowns (see §2). An incoming persisted profile may also contain `recentThemes`. Without filtering, those entries reach the LLM as if they were musical signals, biasing query planning toward internal tokens like `agent-selected`, `search`, `netease`, `bilibili`.
+
+Before building the planning context, the orchestration layer sanitizes the incoming profile:
+
+- Drop entries from `tag_weights` whose normalized key is in `_METADATA_TAGS`.
+- Drop entries from `recent_themes` whose normalized key is in `_METADATA_TAGS`.
+- Drop cooldowns whose `kind == "tag"` and whose normalized `key` is in `_METADATA_TAGS`.
+- Drop entries from `query_weights` whose normalized key is rejected by the generic-query validator, including historical values such as `music explore`.
+- Drop cooldowns whose `kind == "query"` and whose normalized key is rejected by the same generic-query validator.
+- Source-weight `bilibili` and `netease` keys remain valid and are not stripped.
+
+`_METADATA_TAGS` stays defined in `auto_dj.py`. Sanitization happens once per request, on a deep copy, before the profile is serialized into prompt context and before deterministic scoring reads it. The original profile object stored in the request is not mutated.
+
+`_METADATA_TAGS` remains the single source for metadata-tag filtering. The generic-query validator is shared between profile sanitization and query-plan validation so those two paths cannot drift apart. This addresses §2's profile pollution defect at the consumer side without redesigning the producer (see §4 Non-Goals).
 
 ## 8. LLM Output Contract
 
@@ -182,35 +226,28 @@ Validation rules:
 - Every intent must be one of the allowed values.
 - Every themes array contains at most four trimmed, non-empty strings.
 - Generic searches such as `music`, `songs`, `new music`, and `music explore` are rejected.
-- When settings request both similar and exploration results, the accepted plan must contain at least one query in each requested group.
-- Invalid entries may be removed. If the remaining plan violates count or intent coverage, the whole plan fails.
+- When `similar_count` is greater than zero, the accepted plan must contain at least one `similar_theme`, `similar_mood`, or `same_creator_or_work` entry.
+- When `exploration_count` is greater than zero, the accepted plan must contain at least one `light_exploration` entry.
+- Invalid entries may be removed. If the remaining entries do not cover every requested non-zero intent group, the whole plan fails.
+
+The prompt asks the model to cover every requested non-zero intent group, and the validator enforces that contract. If the model omits a required group, the refill fails before search. Search may still return fewer qualified candidates than requested; that later stage keeps its existing partial-success behavior.
 
 Validation only accepts or rejects LLM output. It never edits a query into a new search phrase and never adds replacement entries.
 
-The parser and validator live in `auto_dj_planning.py`. `ConversationManager.plan_auto_dj_queries` returns only an `AutoDjQueryPlan` that has passed this shared validator. Cache insertion accepts the same validated type, so orchestration cannot accidentally cache raw provider text.
+The parser and validator live in `auto_dj_planning.py`. `ConversationManager.plan_auto_dj_queries` returns only an `AutoDjQueryPlan` that has passed this shared validator. The orchestration layer never sees raw provider text.
 
-## 9. Query Plan Cache
+## 9. No Query Plan Cache
 
-Use a process-local LRU cache with at most 128 successful plans.
+This change does not add a query-plan cache. Reasons:
 
-The cache key is a stable digest of:
+- Auto DJ refills are infrequent (queue-depth triggered, typically minutes apart), so per-request LLM calls are not a hot path.
+- A meaningful cache key would have to include the chat-message slice (now 200 messages, see §7), the profile snapshot, and `music_state`. Any of these change between most refills, so cache hit rate would be near zero.
+- Modern LLM provider APIs (Anthropic, OpenAI) include automatic prompt-prefix caching at the API layer. Stable prefixes such as the system prompt benefit from that mechanism without application-level state.
+- Avoiding a cache removes one layer of state, simplifies the failure matrix, and ensures the LLM always sees the freshest context.
 
-- normalized provider, base URL, and model;
-- a one-way API-key identity digest when a key exists;
-- bounded planning context;
-- recommendation settings.
+Every accepted refill calls the planner. Every successful refill performs platform searches. Failures behave per the matrix in §14 with `provider.generate` count adjusted to "1" wherever a previous version of this spec listed a cache-hit row.
 
-The bounded context digest includes the current track identity, music-state inputs, `profile.updated_at`, relevant profile signals, and the last eight message roles and contents. Raw API keys and raw cache inputs must not appear in logs.
-
-Cache behavior:
-
-- Cache only plans that passed full validation.
-- A hit may skip the provider call and proceed directly to search.
-- Provider, model, key identity, current track, profile, recent messages, or settings changes produce a different key.
-- Planning failures and empty plans are never cached.
-- Search failures and candidate-selection failures do not invalidate a valid query plan.
-
-The cache belongs to the Auto DJ orchestration layer because `ConversationManager` instances are currently created per request. It must be injectable or clearable in tests.
+Future revisions may revisit caching if measurement shows the planner becomes a bottleneck. That measurement is out of scope here.
 
 ## 10. Auto DJ Orchestration Changes
 
@@ -219,13 +256,14 @@ The cache belongs to the Auto DJ orchestration layer because `ConversationManage
 The orchestration order is mandatory:
 
 1. Validate that some recommendation context exists.
-2. Resolve a validated cached plan or call the LLM planner, which parses and validates its result.
-3. Confirm the returned object is the validated plan type.
-4. Call NetEase and Bilibili searches for each accepted query.
-5. Score, deduplicate, apply cooldowns, and select candidates.
-6. Build queue actions and profile patches only for selected candidates.
+2. Sanitize the incoming profile per §7.1.
+3. Call the LLM planner, which parses and validates its result.
+4. Confirm the returned object is the validated plan type.
+5. Call NetEase and Bilibili searches for each accepted query.
+6. Score, deduplicate, apply cooldowns, and select candidates.
+7. Build queue actions and profile patches only for selected candidates.
 
-No platform search function may run before step 3 succeeds.
+No platform search function may run before step 4 succeeds.
 
 Delete all local query construction from the active path, including:
 
@@ -320,14 +358,15 @@ Use an explicit Auto DJ toggle handler. Turning Auto DJ off clears transient sta
 | Condition | Provider `generate` calls | Search calls | Queue change | Public error |
 | --- | ---: | ---: | --- | --- |
 | No recommendation context | 0 | 0 | None | `needs_more_context` |
-| Valid cached plan | 0 | One or more | Qualified items only | Success or `no_qualified_candidates` |
 | Mock or unconfigured LLM | 0 | 0 | None | `query_planning_failed` |
 | Planner timeout | 1 | 0 | None | `query_planning_failed` |
 | Provider/network error | 1 | 0 | None | `query_planning_failed` |
 | Invalid JSON or schema | 1 | 0 | None | `query_planning_failed` |
 | Empty or generic plan | 1 | 0 | None | `query_planning_failed` |
+| Plan missing a requested intent group | 1 | 0 | None | `query_planning_failed` |
 | One music source fails after a fresh plan | 1 | Planned searches continue | Qualified items only | Success when candidates remain |
 | Valid fresh plan, no candidates | 1 | Planned searches complete | None | `no_qualified_candidates` |
+| Valid fresh plan with candidates | 1 | Planned searches complete | Qualified items only | Success |
 
 ## 15. Testing Strategy
 
@@ -335,19 +374,19 @@ Use an explicit Auto DJ toggle handler. Turning Auto DJ off clears transient sta
 
 - `ConversationManager.plan_auto_dj_queries` uses the selected runtime provider and returns typed plans from valid JSON.
 - The planning method performs no session-store or memory-store writes.
+- Planning-only construction does not instantiate `MemoryStore` or `SessionStore`, while the default chat construction path still initializes both stores normally.
 - Frontend LLM configuration takes priority over server configuration.
 - Server configuration works when frontend configuration is absent.
-- Mock, unconfigured, timeout, provider failure, invalid JSON, generic output, and missing intent coverage all raise a planning failure.
+- Mock, unconfigured, timeout, provider failure, invalid JSON, entirely-empty plans, and plans missing a requested intent group all raise a planning failure.
+- A plan containing only similar intents fails when `exploration_count` is non-zero, and an exploration-only plan fails when `similar_count` is non-zero.
 - Strict parsing rejects Markdown fences and surrounding prose.
 
 ### Backend orchestration tests
 
-- Every captured platform search query appears exactly in a successful LLM plan or cache hit.
+- Every captured platform search query appears exactly in a successful LLM plan.
 - Planner failure causes zero NetEase and zero Bilibili calls.
 - Query construction, search calls, and response data contain no `music explore` fallback. The literal may remain only in rejection tests or a generic-query denylist.
-- Cache hits avoid a second provider call.
-- Provider/model, current track, profile, recent message, and settings changes invalidate the cache.
-- Failed plans are not cached.
+- Profile sanitization (§7.1) drops `agent-selected`, `search`, and other `_METADATA_TAGS` from `tag_weights`, `recent_themes`, and `kind == "tag"` cooldowns. It also removes generic historical searches from `query_weights` and `kind == "query"` cooldowns. The planning context and deterministic scoring receive the sanitized copy, while the original request object remains unchanged.
 - Valid plans preserve source failure handling, duplicate filtering, cooldown filtering, partial success, and recommendation evidence.
 - Candidate titles containing `explore` receive no title-specific score bonus.
 - Play, skip, save, playlist-add, and dislike feedback continue changing profile signals.
@@ -356,6 +395,7 @@ Use an explicit Auto DJ toggle handler. Turning Auto DJ off clears transient sta
 
 - `recommendAutoDj` serializes `llmConfig` as `llm_config`.
 - Enabling Auto DJ sends the current LLM configuration.
+- The request includes up to the last 200 chat messages (verified with a fixture longer than 200 to confirm the slice boundary).
 - `ok: false` and request rejection leave the queue unchanged and show the inline status.
 - Failed refills add no chat notice.
 - Turning Auto DJ off and on permits a retry for the same queue signature.
@@ -374,10 +414,12 @@ Desktop browser verification covers the Auto DJ switch, successful refill, LLM f
 
 ## 16. Acceptance Criteria
 
-- Auto DJ performs no NetEase or Bilibili search without a validated LLM plan or a cache entry created from one.
+- Auto DJ performs no NetEase or Bilibili search without a validated LLM plan from the current request.
 - Current title, artist, tags, profile data, or fixed strings never become locally generated fallback queries.
 - `music explore` is never constructed, searched, or returned. A denylist or test may contain the literal solely to reject it.
-- `ConversationManager` supplies the real provider path without writing chat sessions or memories.
+- Every requested non-zero intent group appears in the validated plan before platform search begins.
+- `ConversationManager` supplies the real provider path without writing chat sessions or memories. Its planning-only construction mode skips `MemoryStore` and `SessionStore` entirely, while default chat construction remains unchanged.
+- The planning context honors the §7 message limit (200) and the §7.1 profile sanitization rules.
 - LLM planning completes within three seconds or fails the refill.
 - Planner failures return `ok: false`, empty actions, empty recommendations, and an empty profile patch.
 - The frontend shows a quiet failure status and leaves playback and queue state unchanged.
