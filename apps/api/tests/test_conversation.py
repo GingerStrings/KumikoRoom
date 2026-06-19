@@ -1,10 +1,14 @@
 import json
+from pathlib import Path
 
-from kumikoroom.config import load_settings
+import pytest
+
+from kumikoroom.config import ApiSettings, load_settings
 from kumikoroom.conversation import ConversationManager
 from kumikoroom.llm import (
     LLMResult,
     LLMToolCall,
+    MockLLMProvider,
     ProviderStatus,
     ProviderUnavailable,
 )
@@ -1317,3 +1321,43 @@ def test_manager_fallback_for_mock_remains_mock(
 
     assert response.provider_status.provider == "mock"
     assert response.provider_status.configured is False
+
+
+# --- Planning-only construction tests (PR1: initialize_stores flag) ---
+
+
+def _api_settings(tmp_path: Path) -> ApiSettings:
+    return ApiSettings(
+        llm_provider="mock",
+        deepseek_api_key=None,
+        deepseek_model="deepseek-v4-flash",
+        deepseek_base_url="https://api.deepseek.com",
+        memory_db_path=tmp_path / "memory.sqlite3",
+    )
+
+
+def test_default_construction_initializes_both_stores(tmp_path: Path) -> None:
+    settings = _api_settings(tmp_path)
+    manager = ConversationManager(settings=settings, provider=MockLLMProvider())
+    assert manager.memory_store is not None
+    assert manager.session_store is not None
+
+
+def test_planning_only_construction_skips_both_stores(tmp_path: Path) -> None:
+    settings = _api_settings(tmp_path)
+    manager = ConversationManager(
+        settings=settings, provider=MockLLMProvider(), initialize_stores=False
+    )
+    assert manager.memory_store is None
+    assert manager.session_store is None
+    assert not settings.memory_db_path.exists()
+
+
+def test_planning_only_chat_raises(tmp_path: Path) -> None:
+    manager = ConversationManager(
+        settings=_api_settings(tmp_path),
+        provider=MockLLMProvider(),
+        initialize_stores=False,
+    )
+    with pytest.raises(RuntimeError, match="planning-only"):
+        manager.chat(payload=None)  # type: ignore[arg-type]

@@ -62,7 +62,10 @@ class ConversationManager:
         memory_store: MemoryStore | None = None,
         session_store: SessionStore | None = None,
         llm_config=None,
+        initialize_stores: bool = True,
     ) -> None:
+        """``initialize_stores=False`` skips Memory/Session SQLite init for
+        planning-only flows; ``chat()`` is unavailable in that mode."""
         self.settings = settings or load_settings()
         if llm_config is not None:
             normalized = llm_config.normalized() if hasattr(llm_config, "normalized") else llm_config
@@ -74,10 +77,20 @@ class ConversationManager:
         self.provider = provider or build_provider(
             runtime_config=self.runtime_config
         )
-        self.memory_store = memory_store or MemoryStore(self.settings.memory_db_path)
-        self.session_store = session_store or SessionStore(self.settings.memory_db_path)
+        self.memory_store: MemoryStore | None
+        self.session_store: SessionStore | None
+        if initialize_stores or memory_store is not None or session_store is not None:
+            self.memory_store = memory_store or MemoryStore(self.settings.memory_db_path)
+            self.session_store = session_store or SessionStore(self.settings.memory_db_path)
+        else:
+            self.memory_store = None
+            self.session_store = None
 
     def chat(self, payload: ChatIn) -> ChatOut:
+        if self.memory_store is None or self.session_store is None:
+            raise RuntimeError(
+                "ConversationManager.chat() called on a planning-only instance"
+            )
         message = payload.message.strip() or "今天的音乐"
         session = self._resolve_session(payload.session_id)
         saved_user_message = self.session_store.append_message(
