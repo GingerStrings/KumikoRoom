@@ -98,7 +98,7 @@ def recommend_auto_dj_tracks(payload: AutoDjRecommendIn) -> AutoDjRecommendOut:
         settings=load_settings(),
         llm_config=payload.llm_config,
         initialize_stores=False,
-        planner_timeout_seconds=3.0,
+        planner_timeout_seconds=15.0,
     )
     return recommend_auto_dj(payload, planner=planner)
 

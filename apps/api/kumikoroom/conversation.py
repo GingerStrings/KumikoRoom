@@ -1,6 +1,9 @@
 from dataclasses import asdict, dataclass
 import json
+import logging
 from typing import Any
+
+_logger = logging.getLogger(__name__)
 
 from kumikoroom.auto_dj_planning import (
     AutoDjQueryPlan,
@@ -114,6 +117,7 @@ class ConversationManager:
                 messages, timeout=self.planner_timeout_seconds
             )
         except Exception as exc:
+            _logger.exception("auto dj planner provider call failed")
             raise PlanningError(f"LLM call failed: {exc}") from exc
 
         return parse_and_validate_plan(result.content, context.settings)
