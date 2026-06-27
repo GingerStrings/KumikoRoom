@@ -293,8 +293,11 @@ _UNRELATED_REQUEST_TERMS = (
     "帮我看看",
     "帮我写",
     "请写",
+    "给我写",
+    "写京吹",
     "写一段",
     "写一下",
+    "写一篇",
     "写段",
     "编一段",
     "生成",
@@ -303,6 +306,8 @@ _UNRELATED_REQUEST_TERMS = (
     "合奏怎么练",
     "怎么练",
     "怎么写比较好",
+    "推荐一下",
+    "有没有推荐",
     "推荐一本",
     "推荐一部",
     "一本小说",
@@ -316,6 +321,9 @@ _UNRELATED_FAILURE_TERMS = (
     "播放失败",
     "加载失败",
     "加载不出来",
+    "加载不了",
+    "不能打开",
+    "没法打开",
     "下载失败",
     "解析失败",
     "导入失败",
@@ -335,6 +343,9 @@ _OPERATIONAL_FAILURE_TERMS = (
     "播放失败",
     "加载失败",
     "加载不出来",
+    "加载不了",
+    "不能打开",
+    "没法打开",
     "下载失败",
     "解析失败",
     "导入失败",
@@ -343,6 +354,14 @@ _OPERATIONAL_FAILURE_TERMS = (
     "接口",
     "崩溃",
     "卡住",
+)
+_PERSONA_ADDRESS_SEPARATORS = ("，", ",", "、", "：", ":", " ")
+_USER_PERSONAL_CONTEXT_TERMS = (
+    "我和",
+    "我的",
+    "我最近",
+    "朋友",
+    "你觉得我",
 )
 _SNIPPET_END_PUNCTUATION = "。！？!?；;，,"
 _NOVEL_REFERENCE_TITLE = "小说参考片段："
@@ -425,8 +444,15 @@ def should_retrieve_novel_context(
     has_unrelated_request = _contains_any(current_text, _UNRELATED_REQUEST_TERMS)
     has_unrelated_failure = _contains_any(current_text, _UNRELATED_FAILURE_TERMS)
     has_operational_failure = _contains_any(current_text, _OPERATIONAL_FAILURE_TERMS)
+    has_user_personal_context = _contains_any(
+        current_text,
+        _USER_PERSONAL_CONTEXT_TERMS,
+    )
 
     if has_operational_failure:
+        return False
+
+    if _has_persona_address(current_text) and has_user_personal_context:
         return False
 
     if has_unrelated_request and has_unrelated_failure:
@@ -933,6 +959,14 @@ def _quote_fts_token(token: str) -> str:
 
 def _contains_any(text: str, terms: Sequence[str]) -> bool:
     return any(term.lower() in text for term in terms)
+
+
+def _has_persona_address(text: str) -> bool:
+    return any(
+        text.startswith(f"{term}{separator}")
+        for term in _SOURCE_CHARACTER_TERMS
+        for separator in _PERSONA_ADDRESS_SEPARATORS
+    )
 
 
 def _format_reference_line(

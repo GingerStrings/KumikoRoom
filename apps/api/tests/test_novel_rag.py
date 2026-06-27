@@ -662,6 +662,16 @@ def test_retrieval_gate_skips_unrelated_failure_questions_with_why() -> None:
         "搜索京吹小说",
         "推荐京吹小说吗",
         "上低音号怎么吹响",
+        "久美子，我和朋友的关系为什么这么别扭",
+        "久美子，你觉得我和朋友的关系怎么样",
+        "久美子，我最近性格为什么这么别扭",
+        "写京吹人物关系分析",
+        "给我写一篇京吹人物关系分析",
+        "推荐一下京吹人物关系分析",
+        "有没有推荐的京吹人物关系分析",
+        "京吹小说为什么加载不了",
+        "京吹小说为什么不能打开",
+        "京吹小说为什么没法打开",
     ],
 )
 def test_retrieval_gate_skips_reviewed_false_positive_cases(message: str) -> None:
@@ -672,6 +682,13 @@ def test_retrieval_gate_skips_failure_followup_after_source_context() -> None:
     assert (
         should_retrieve_novel_context(
             "为什么打不开？",
+            recent_user_messages=["我们刚才聊了京吹小说"],
+        )
+        is False
+    )
+    assert (
+        should_retrieve_novel_context(
+            "为什么加载不了？",
             recent_user_messages=["我们刚才聊了京吹小说"],
         )
         is False
