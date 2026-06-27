@@ -309,6 +309,19 @@ _UNRELATED_REQUEST_TERMS = (
     "合奏怎么练",
     "怎么练",
 )
+_UNRELATED_FAILURE_TERMS = (
+    "打不开",
+    "没声音",
+    "没有声音",
+    "播放失败",
+    "加载失败",
+    "失败",
+    "报错",
+    "错误",
+    "接口",
+    "崩溃",
+    "卡住",
+)
 _SNIPPET_END_PUNCTUATION = "。！？!?；;，,"
 _NOVEL_REFERENCE_TITLE = "小说参考片段："
 _NOVEL_REFERENCE_RULE_LINES = (
@@ -388,10 +401,14 @@ def should_retrieve_novel_context(
     has_character_name = _contains_any(current_text, _SOURCE_CHARACTER_TERMS)
     has_analysis_intent = _contains_any(current_text, _ANALYSIS_INTENT_TERMS)
     has_unrelated_request = _contains_any(current_text, _UNRELATED_REQUEST_TERMS)
+    has_unrelated_failure = _contains_any(current_text, _UNRELATED_FAILURE_TERMS)
     has_strong_source_intent = _contains_any(
         current_text,
         _STRONG_SOURCE_INTENT_TERMS,
     )
+
+    if has_unrelated_request and has_unrelated_failure:
+        return False
 
     if has_unrelated_request and not has_strong_source_intent:
         return False
