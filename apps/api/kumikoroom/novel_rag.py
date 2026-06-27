@@ -292,9 +292,11 @@ _UNRELATED_REQUEST_TERMS = (
     "看看这个文件",
     "帮我看看",
     "帮我写",
+    "推荐",
     "请写",
     "给我写",
     "写京吹",
+    "写个",
     "写一段",
     "写一下",
     "写一篇",
@@ -312,6 +314,7 @@ _UNRELATED_REQUEST_TERMS = (
     "推荐一部",
     "一本小说",
     "一部小说",
+    "找一下",
 )
 _UNRELATED_FAILURE_TERMS = (
     "打不开",
@@ -355,7 +358,25 @@ _OPERATIONAL_FAILURE_TERMS = (
     "崩溃",
     "卡住",
 )
-_PERSONA_ADDRESS_SEPARATORS = ("，", ",", "、", "：", ":", " ")
+_GENERIC_OPERATIONAL_FAILURE_TERMS = (
+    "失败",
+    "错误",
+)
+_OPERATIONAL_FAILURE_SUBJECT_TERMS = (
+    "小说",
+    "文件",
+    "app",
+    "应用",
+    "工具",
+    "接口",
+    "加载",
+    "下载",
+    "解析",
+    "导入",
+    "打开",
+    "播放",
+)
+_PERSONA_ADDRESS_SEPARATORS = ("，", ",", "、", "：", ":", " ", "啊", "呀")
 _USER_PERSONAL_CONTEXT_TERMS = (
     "我和",
     "我跟",
@@ -365,11 +386,24 @@ _USER_PERSONAL_CONTEXT_TERMS = (
     "好友",
     "你觉得我",
 )
-_INSTRUMENT_USAGE_PATTERNS = (
-    "上低音号怎么吹",
-    "上低音号为什么吹",
-    "上低音号吹响",
-    "上低音号吹不响",
+_MUSIC_TERMS = (
+    "音乐",
+    "歌曲",
+    "角色歌",
+    "角色曲",
+    "的歌",
+)
+_MUSIC_APPRECIATION_TERMS = (
+    "好听",
+    "动听",
+)
+_INSTRUMENT_USAGE_TERMS = (
+    "怎么吹",
+    "为什么吹",
+    "吹响",
+    "吹不响",
+    "难吹",
+    "不好吹",
 )
 _SNIPPET_END_PUNCTUATION = "。！？!?；;，,"
 _NOVEL_REFERENCE_TITLE = "小说参考片段："
@@ -451,7 +485,7 @@ def should_retrieve_novel_context(
     has_analysis_intent = _contains_any(current_text, _ANALYSIS_INTENT_TERMS)
     has_unrelated_request = _contains_any(current_text, _UNRELATED_REQUEST_TERMS)
     has_unrelated_failure = _contains_any(current_text, _UNRELATED_FAILURE_TERMS)
-    has_operational_failure = _contains_any(current_text, _OPERATIONAL_FAILURE_TERMS)
+    has_operational_failure = _has_operational_failure(current_text)
     has_user_personal_context = _contains_any(
         current_text,
         _USER_PERSONAL_CONTEXT_TERMS,
@@ -460,7 +494,10 @@ def should_retrieve_novel_context(
     if has_operational_failure:
         return False
 
-    if _contains_any(current_text, _INSTRUMENT_USAGE_PATTERNS):
+    if _has_music_appreciation(current_text):
+        return False
+
+    if _is_instrument_usage_question(current_text):
         return False
 
     if _has_persona_address(current_text) and has_user_personal_context:
@@ -970,6 +1007,26 @@ def _quote_fts_token(token: str) -> str:
 
 def _contains_any(text: str, terms: Sequence[str]) -> bool:
     return any(term.lower() in text for term in terms)
+
+
+def _has_music_appreciation(text: str) -> bool:
+    return _contains_any(text, _MUSIC_TERMS) and _contains_any(
+        text,
+        _MUSIC_APPRECIATION_TERMS,
+    )
+
+
+def _has_operational_failure(text: str) -> bool:
+    if _contains_any(text, _OPERATIONAL_FAILURE_TERMS):
+        return True
+    return _contains_any(
+        text,
+        _GENERIC_OPERATIONAL_FAILURE_TERMS,
+    ) and _contains_any(text, _OPERATIONAL_FAILURE_SUBJECT_TERMS)
+
+
+def _is_instrument_usage_question(text: str) -> bool:
+    return "上低音号" in text and _contains_any(text, _INSTRUMENT_USAGE_TERMS)
 
 
 def _has_persona_address(text: str) -> bool:

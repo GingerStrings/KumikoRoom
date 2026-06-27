@@ -680,6 +680,27 @@ def test_retrieval_gate_skips_reviewed_false_positive_cases(message: str) -> Non
     assert should_retrieve_novel_context(message) is False
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "推荐京吹人物关系分析",
+        "请推荐京吹人物关系分析",
+        "写个京吹人物关系分析",
+        "找一下京吹人物关系分析",
+        "京吹音乐为什么这么好听",
+        "久美子的歌为什么这么好听",
+        "久美子啊，我和朋友的关系为什么这么别扭",
+        "久美子呀，我最近性格为什么这么别扭",
+        "上低音号为什么这么难吹",
+        "上低音号为什么不好吹",
+        "京吹小说为什么失败",
+        "京吹小说为什么错误",
+    ],
+)
+def test_retrieval_gate_skips_task4_false_positive_variants(message: str) -> None:
+    assert should_retrieve_novel_context(message) is False
+
+
 def test_retrieval_gate_skips_failure_followup_after_source_context() -> None:
     assert (
         should_retrieve_novel_context(
