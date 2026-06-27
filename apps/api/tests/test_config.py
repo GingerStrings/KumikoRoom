@@ -238,3 +238,59 @@ def test_runtime_config_strips_trailing_slash_in_base_url(monkeypatch) -> None:
     runtime = runtime_config_from_llm_config(settings, llm_config)
 
     assert runtime.base_url == "https://api.siliconflow.cn/v1"
+
+
+def test_novel_rag_defaults_to_local_paths(monkeypatch) -> None:
+    monkeypatch.delenv("KUMIKOROOM_NOVEL_CORPUS_DIR", raising=False)
+    monkeypatch.delenv("KUMIKOROOM_NOVEL_RAG_DB_PATH", raising=False)
+    monkeypatch.delenv("KUMIKOROOM_NOVEL_RAG_ENABLED", raising=False)
+
+    settings = load_settings()
+
+    assert settings.novel_corpus_dir == Path(r"D:\555\codex\jc")
+    assert settings.novel_rag_db_path == Path("user-data/rag/kumiko-novels.sqlite3")
+    assert settings.novel_rag_enabled is True
+
+
+def test_novel_rag_paths_can_be_overridden(monkeypatch, tmp_path: Path) -> None:
+    corpus_dir = tmp_path / "jc"
+    rag_path = tmp_path / "rag.sqlite3"
+    monkeypatch.setenv("KUMIKOROOM_NOVEL_CORPUS_DIR", str(corpus_dir))
+    monkeypatch.setenv("KUMIKOROOM_NOVEL_RAG_DB_PATH", str(rag_path))
+
+    settings = load_settings()
+
+    assert settings.novel_corpus_dir == corpus_dir
+    assert settings.novel_rag_db_path == rag_path
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected"),
+    [
+        ("1", True),
+        ("true", True),
+        ("yes", True),
+        ("on", True),
+        ("0", False),
+        ("false", False),
+        ("no", False),
+        ("off", False),
+    ],
+)
+def test_novel_rag_enabled_parses_boolean_values(
+    monkeypatch,
+    raw_value: str,
+    expected: bool,
+) -> None:
+    monkeypatch.setenv("KUMIKOROOM_NOVEL_RAG_ENABLED", raw_value)
+
+    settings = load_settings()
+
+    assert settings.novel_rag_enabled is expected
+
+
+def test_invalid_novel_rag_enabled_raises_value_error(monkeypatch) -> None:
+    monkeypatch.setenv("KUMIKOROOM_NOVEL_RAG_ENABLED", "maybe")
+
+    with pytest.raises(ValueError, match="KUMIKOROOM_NOVEL_RAG_ENABLED"):
+        load_settings()

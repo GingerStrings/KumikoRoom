@@ -9,6 +9,8 @@ LlmProvider = Literal["mock", "deepseek", "openai_compatible"]
 DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash"
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MEMORY_DB_PATH = Path("user-data/memory/kumikoroom-memory.sqlite3")
+DEFAULT_NOVEL_CORPUS_DIR = Path(r"D:\555\codex\jc")
+DEFAULT_NOVEL_RAG_DB_PATH = Path("user-data/rag/kumiko-novels.sqlite3")
 
 
 @dataclass(frozen=True)
@@ -18,6 +20,9 @@ class ApiSettings:
     deepseek_model: str
     deepseek_base_url: str
     memory_db_path: Path
+    novel_corpus_dir: Path
+    novel_rag_db_path: Path
+    novel_rag_enabled: bool
 
     @property
     def is_deepseek_configured(self) -> bool:
@@ -47,6 +52,14 @@ def load_settings() -> ApiSettings:
         memory_db_path=Path(
             _env_value("KUMIKOROOM_MEMORY_DB_PATH") or DEFAULT_MEMORY_DB_PATH
         ),
+        novel_corpus_dir=Path(
+            _env_value("KUMIKOROOM_NOVEL_CORPUS_DIR") or DEFAULT_NOVEL_CORPUS_DIR
+        ),
+        novel_rag_db_path=Path(
+            _env_value("KUMIKOROOM_NOVEL_RAG_DB_PATH")
+            or DEFAULT_NOVEL_RAG_DB_PATH
+        ),
+        novel_rag_enabled=_env_bool("KUMIKOROOM_NOVEL_RAG_ENABLED", True),
     )
 
 
@@ -120,6 +133,21 @@ def _explicit_env_value(name: str) -> str | None:
         return None
 
     return os.environ[name]
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw_value = _env_value(name)
+    if raw_value is None:
+        return default
+
+    normalized = raw_value.lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(
+        f"{name} must be one of 1, true, yes, on, 0, false, no, or off"
+    )
 
 
 def _deepseek_base_url() -> str:

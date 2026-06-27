@@ -17,12 +17,23 @@ def isolate_api_settings(
         "DEEPSEEK_API_KEY",
         "DEEPSEEK_MODEL",
         "DEEPSEEK_BASE_URL",
+        "KUMIKOROOM_NOVEL_CORPUS_DIR",
+        "KUMIKOROOM_NOVEL_RAG_DB_PATH",
+        "KUMIKOROOM_NOVEL_RAG_ENABLED",
     ):
         monkeypatch.delenv(env_name, raising=False)
 
     monkeypatch.setenv(
         "KUMIKOROOM_MEMORY_DB_PATH",
         str(tmp_path / "memory.sqlite3"),
+    )
+    monkeypatch.setenv(
+        "KUMIKOROOM_NOVEL_CORPUS_DIR",
+        str(tmp_path / "jc"),
+    )
+    monkeypatch.setenv(
+        "KUMIKOROOM_NOVEL_RAG_DB_PATH",
+        str(tmp_path / "rag.sqlite3"),
     )
 
 
