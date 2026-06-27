@@ -630,6 +630,33 @@ def test_retrieval_gate_skips_unrelated_failure_questions_with_why() -> None:
     assert should_retrieve_novel_context("播放久美子的角色歌为什么没声音") is False
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "京吹小说为什么打不开",
+        "京吹小说加载失败怎么办",
+        "久美子的歌为什么没声音",
+        "久美子的角色曲为什么没声音",
+        "帮我写一段京吹人物关系分析",
+        "帮我写一段久美子为什么这样说的台词",
+        "用工具分析京吹人物关系",
+        "能推荐一本小说吗",
+    ],
+)
+def test_retrieval_gate_skips_reviewed_false_positive_cases(message: str) -> None:
+    assert should_retrieve_novel_context(message) is False
+
+
+def test_retrieval_gate_skips_failure_followup_after_source_context() -> None:
+    assert (
+        should_retrieve_novel_context(
+            "为什么打不开？",
+            recent_user_messages=["我们刚才聊了京吹小说"],
+        )
+        is False
+    )
+
+
 def test_retrieval_gate_triggers_for_character_analysis_with_name() -> None:
     assert should_retrieve_novel_context("久美子的性格为什么会这样？") is True
     assert should_retrieve_novel_context("丽奈和久美子的关系为什么这么别扭") is True

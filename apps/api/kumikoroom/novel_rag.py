@@ -237,18 +237,6 @@ _SOURCE_ANCHOR_TERMS = (
     "小说",
     "原作",
 )
-_STRONG_SOURCE_INTENT_TERMS = (
-    "剧情分析",
-    "人物关系",
-    "什么意思",
-    "怎么理解",
-    "怎么看",
-    "为什么",
-    "关系",
-    "性格",
-    "说话方式",
-    "语气",
-)
 _ANALYSIS_INTENT_TERMS = (
     "为什么",
     "关系",
@@ -308,6 +296,10 @@ _UNRELATED_REQUEST_TERMS = (
     "角色歌",
     "合奏怎么练",
     "怎么练",
+    "推荐一本",
+    "推荐一部",
+    "一本小说",
+    "一部小说",
 )
 _UNRELATED_FAILURE_TERMS = (
     "打不开",
@@ -318,6 +310,17 @@ _UNRELATED_FAILURE_TERMS = (
     "失败",
     "报错",
     "错误",
+    "接口",
+    "崩溃",
+    "卡住",
+)
+_OPERATIONAL_FAILURE_TERMS = (
+    "打不开",
+    "没声音",
+    "没有声音",
+    "播放失败",
+    "加载失败",
+    "报错",
     "接口",
     "崩溃",
     "卡住",
@@ -402,15 +405,15 @@ def should_retrieve_novel_context(
     has_analysis_intent = _contains_any(current_text, _ANALYSIS_INTENT_TERMS)
     has_unrelated_request = _contains_any(current_text, _UNRELATED_REQUEST_TERMS)
     has_unrelated_failure = _contains_any(current_text, _UNRELATED_FAILURE_TERMS)
-    has_strong_source_intent = _contains_any(
-        current_text,
-        _STRONG_SOURCE_INTENT_TERMS,
-    )
+    has_operational_failure = _contains_any(current_text, _OPERATIONAL_FAILURE_TERMS)
+
+    if has_operational_failure:
+        return False
 
     if has_unrelated_request and has_unrelated_failure:
         return False
 
-    if has_unrelated_request and not has_strong_source_intent:
+    if has_unrelated_request:
         return False
 
     if has_source_anchor:
