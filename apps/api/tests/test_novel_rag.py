@@ -1,8 +1,10 @@
+import sqlite3
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 
+from kumikoroom import novel_rag
 from kumikoroom.novel_rag import (
     NovelChunk,
     NovelRagStore,
@@ -323,10 +325,89 @@ def test_store_searches_cjk_terms_with_generated_search_text(tmp_path: Path) -> 
     assert "久美子没有急着回答" in results[0].text
 
 
+def test_store_searches_natural_cjk_question_with_extra_words(
+    tmp_path: Path,
+) -> None:
+    store = NovelRagStore(tmp_path / "novels.sqlite3")
+    store.clear()
+    store.upsert_chunks(
+        [
+            NovelChunk(
+                source_id="01",
+                source_title="第一卷",
+                source_path="local.epub",
+                chapter_path="chapter.xhtml",
+                chapter_title="第一章",
+                chunk_index=0,
+                text="久美子和丽奈站在一起，谁都没有先把话说满。",
+            )
+        ]
+    )
+
+    results = store.search("久美子和丽奈的关系为什么这样", limit=5)
+
+    assert len(results) == 1
+    assert "久美子和丽奈站在一起" in results[0].text
+
+
 def test_store_search_empty_query_returns_empty_list(tmp_path: Path) -> None:
     store = NovelRagStore(tmp_path / "novels.sqlite3")
 
     assert store.search("   ") == []
+
+
+def test_store_closes_connections_after_operations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connections: list[TrackingConnection] = []
+    original_connect = novel_rag.sqlite3.connect
+
+    class TrackingConnection(sqlite3.Connection):
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+            super().close()
+
+    def tracking_connect(*args: object, **kwargs: object) -> TrackingConnection:
+        connect_kwargs = dict(kwargs)
+        connect_kwargs["factory"] = TrackingConnection
+        connection = original_connect(*args, **connect_kwargs)
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(novel_rag.sqlite3, "connect", tracking_connect)
+    db_path = tmp_path / "novels.sqlite3"
+
+    try:
+        store = NovelRagStore(db_path)
+        store.clear()
+        store.upsert_chunks(
+            [
+                NovelChunk(
+                    source_id="01",
+                    source_title="第一卷",
+                    source_path="local.epub",
+                    chapter_path="chapter.xhtml",
+                    chapter_title="第一章",
+                    chunk_index=0,
+                    text="久美子。",
+                )
+            ]
+        )
+
+        assert store.search("久美子", limit=1)
+        assert connections
+        assert all(connection.closed for connection in connections)
+
+        db_path.unlink()
+
+        assert not db_path.exists()
+    finally:
+        for connection in connections:
+            if not connection.closed:
+                connection.close()
 
 
 def test_rebuild_novel_index_indexes_epubs_and_skips_other_files(tmp_path: Path) -> None:
@@ -355,6 +436,43 @@ def test_rebuild_novel_index_indexes_epubs_and_skips_other_files(tmp_path: Path)
         NovelRagStore(db_path).search("久美子", limit=1)[0].source_id
         == "01-fixture"
     )
+
+
+def test_rebuild_novel_index_keeps_colliding_source_ids_distinct(
+    tmp_path: Path,
+) -> None:
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+    write_epub(
+        corpus_dir / "a b.epub",
+        {
+            "OEBPS/Text/chapter.xhtml": (
+                "<html xmlns='http://www.w3.org/1999/xhtml'>"
+                "<body><p>第一本久美子。</p></body></html>"
+            )
+        },
+    )
+    write_epub(
+        corpus_dir / "a-b.epub",
+        {
+            "OEBPS/Text/chapter.xhtml": (
+                "<html xmlns='http://www.w3.org/1999/xhtml'>"
+                "<body><p>第二本丽奈。</p></body></html>"
+            )
+        },
+    )
+    db_path = tmp_path / "rag.sqlite3"
+
+    stats = rebuild_novel_index(corpus_dir, db_path)
+    store = NovelRagStore(db_path)
+    first_result = store.search("第一本久美子", limit=1)
+    second_result = store.search("第二本丽奈", limit=1)
+
+    assert stats.source_count == 2
+    assert stats.chunk_count == 2
+    assert first_result
+    assert second_result
+    assert first_result[0].source_id != second_result[0].source_id
 
 
 def test_rebuild_novel_index_reports_broken_epub_and_continues(

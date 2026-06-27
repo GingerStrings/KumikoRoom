@@ -6,6 +6,7 @@ import re
 import sqlite3
 import sys
 from argparse import ArgumentParser
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,43 +59,45 @@ class NovelRagStore:
         return connection
 
     def initialize_schema(self) -> None:
-        with self._connect() as connection:
-            connection.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS novel_sources (
-                    source_id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    path TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS novel_sources (
+                        source_id TEXT PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        path TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    );
 
-                CREATE TABLE IF NOT EXISTS novel_chunks (
-                    source_id TEXT NOT NULL REFERENCES novel_sources(source_id)
-                        ON DELETE CASCADE,
-                    chapter_path TEXT NOT NULL,
-                    chapter_title TEXT NOT NULL,
-                    chunk_index INTEGER NOT NULL,
-                    text TEXT NOT NULL,
-                    search_text TEXT NOT NULL,
-                    UNIQUE(source_id, chapter_path, chunk_index)
-                );
+                    CREATE TABLE IF NOT EXISTS novel_chunks (
+                        source_id TEXT NOT NULL REFERENCES novel_sources(source_id)
+                            ON DELETE CASCADE,
+                        chapter_path TEXT NOT NULL,
+                        chapter_title TEXT NOT NULL,
+                        chunk_index INTEGER NOT NULL,
+                        text TEXT NOT NULL,
+                        search_text TEXT NOT NULL,
+                        UNIQUE(source_id, chapter_path, chunk_index)
+                    );
 
-                CREATE VIRTUAL TABLE IF NOT EXISTS novel_chunks_fts
-                USING fts5(
-                    search_text,
-                    content='novel_chunks',
-                    content_rowid='rowid'
-                );
-                """
-            )
+                    CREATE VIRTUAL TABLE IF NOT EXISTS novel_chunks_fts
+                    USING fts5(
+                        search_text,
+                        content='novel_chunks',
+                        content_rowid='rowid'
+                    );
+                    """
+                )
 
     def clear(self) -> None:
-        with self._connect() as connection:
-            connection.execute("DELETE FROM novel_chunks")
-            connection.execute("DELETE FROM novel_sources")
-            connection.execute(
-                "INSERT INTO novel_chunks_fts(novel_chunks_fts) VALUES('rebuild')"
-            )
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.execute("DELETE FROM novel_chunks")
+                connection.execute("DELETE FROM novel_sources")
+                connection.execute(
+                    "INSERT INTO novel_chunks_fts(novel_chunks_fts) VALUES('rebuild')"
+                )
 
     def upsert_chunks(self, chunks: Sequence[NovelChunk]) -> None:
         if not chunks:
@@ -105,63 +108,64 @@ class NovelRagStore:
             chunks_by_source.setdefault(chunk.source_id, []).append(chunk)
 
         updated_at = datetime.now(timezone.utc).isoformat()
-        with self._connect() as connection:
-            for source_chunks in chunks_by_source.values():
-                first_chunk = source_chunks[0]
-                connection.execute(
-                    """
-                    INSERT INTO novel_sources (source_id, title, path, updated_at)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(source_id) DO UPDATE SET
-                        title = excluded.title,
-                        path = excluded.path,
-                        updated_at = excluded.updated_at
-                    """,
-                    (
-                        first_chunk.source_id,
-                        first_chunk.source_title,
-                        first_chunk.source_path,
-                        updated_at,
-                    ),
-                )
-                connection.execute(
-                    "DELETE FROM novel_chunks WHERE source_id = ?",
-                    (first_chunk.source_id,),
-                )
-                connection.executemany(
-                    """
-                    INSERT INTO novel_chunks (
-                        source_id,
-                        chapter_path,
-                        chapter_title,
-                        chunk_index,
-                        text,
-                        search_text
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    [
+        with closing(self._connect()) as connection:
+            with connection:
+                for source_chunks in chunks_by_source.values():
+                    first_chunk = source_chunks[0]
+                    connection.execute(
+                        """
+                        INSERT INTO novel_sources (source_id, title, path, updated_at)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(source_id) DO UPDATE SET
+                            title = excluded.title,
+                            path = excluded.path,
+                            updated_at = excluded.updated_at
+                        """,
                         (
-                            chunk.source_id,
-                            chunk.chapter_path,
-                            chunk.chapter_title,
-                            chunk.chunk_index,
-                            chunk.text,
-                            _search_text(chunk),
+                            first_chunk.source_id,
+                            first_chunk.source_title,
+                            first_chunk.source_path,
+                            updated_at,
+                        ),
+                    )
+                    connection.execute(
+                        "DELETE FROM novel_chunks WHERE source_id = ?",
+                        (first_chunk.source_id,),
+                    )
+                    connection.executemany(
+                        """
+                        INSERT INTO novel_chunks (
+                            source_id,
+                            chapter_path,
+                            chapter_title,
+                            chunk_index,
+                            text,
+                            search_text
                         )
-                        for chunk in source_chunks
-                    ],
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            (
+                                chunk.source_id,
+                                chunk.chapter_path,
+                                chunk.chapter_title,
+                                chunk.chunk_index,
+                                chunk.text,
+                                _search_text(chunk),
+                            )
+                            for chunk in source_chunks
+                        ],
+                    )
+                connection.execute(
+                    "INSERT INTO novel_chunks_fts(novel_chunks_fts) VALUES('rebuild')"
                 )
-            connection.execute(
-                "INSERT INTO novel_chunks_fts(novel_chunks_fts) VALUES('rebuild')"
-            )
 
     def search(self, query: str, limit: int = 5) -> list[NovelSearchResult]:
         fts_query = _fts_query(query)
         if not fts_query or limit <= 0:
             return []
 
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             rows = connection.execute(
                 """
                 SELECT
@@ -205,6 +209,7 @@ _SEARCH_TOKEN_RE = re.compile(
     r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
     r"\uac00-\ud7af]+|[A-Za-z0-9_]+"
 )
+_MAX_FTS_QUERY_TERMS = 24
 _TAG_RE = re.compile(r"<[^>]+>")
 _SCRIPT_STYLE_RE = re.compile(
     r"<(script|style)\b[^>]*>.*?</\1>",
@@ -231,6 +236,7 @@ def rebuild_novel_index(corpus_dir: Path | str, db_path: Path | str) -> NovelInd
     chunk_count = 0
     skipped_files: list[str] = []
     errors: list[str] = []
+    used_source_ids: set[str] = set()
 
     if not corpus_path.exists() or not corpus_path.is_dir():
         return NovelIndexStats(source_count=0, chunk_count=0)
@@ -243,15 +249,17 @@ def rebuild_novel_index(corpus_dir: Path | str, db_path: Path | str) -> NovelInd
             continue
 
         try:
+            source_id = _unique_source_id_from_path(path, used_source_ids)
             chunks = extract_epub_chunks(
                 path,
-                source_id=_source_id_from_path(path),
+                source_id=source_id,
                 source_title=_source_title_from_path(path),
             )
         except Exception as exc:
             errors.append(f"{path.name}: {exc}")
             continue
 
+        used_source_ids.add(source_id)
         store.upsert_chunks(chunks)
         source_count += 1
         chunk_count += len(chunks)
@@ -497,6 +505,16 @@ def _source_id_from_path(path: Path) -> str:
     return source_id or path.stem
 
 
+def _unique_source_id_from_path(path: Path, used_source_ids: set[str]) -> str:
+    base_source_id = _source_id_from_path(path)
+    source_id = base_source_id
+    suffix = 2
+    while source_id in used_source_ids:
+        source_id = f"{base_source_id}-{suffix}"
+        suffix += 1
+    return source_id
+
+
 def _source_title_from_path(path: Path) -> str:
     return path.stem
 
@@ -513,13 +531,18 @@ def _search_text(chunk: NovelChunk) -> str:
 
 
 def _fts_query(query: str) -> str:
-    terms: list[str] = []
+    terms = _unique_terms(_query_tokens(query))[:_MAX_FTS_QUERY_TERMS]
+    return " OR ".join(_quote_fts_token(term) for term in terms)
+
+
+def _query_tokens(query: str) -> list[str]:
+    tokens: list[str] = []
     for token in _iter_search_terms(query):
-        if _is_cjk_token(token) and len(token) > 6:
-            terms.extend(_cjk_ngrams(token, min_size=6, max_size=6))
+        if _is_cjk_token(token) and len(token) > 1:
+            tokens.extend(_ranked_cjk_ngrams(token, min_size=2, max_size=6))
         else:
-            terms.append(token)
-    return " ".join(_quote_fts_token(term) for term in _unique_terms(terms))
+            tokens.append(token)
+    return tokens
 
 
 def _search_tokens(text: str) -> list[str]:
@@ -562,6 +585,16 @@ def _cjk_ngrams(token: str, *, min_size: int, max_size: int) -> list[str]:
     ngrams: list[str] = []
     largest = min(max_size, len(token))
     for size in range(min_size, largest + 1):
+        ngrams.extend(
+            token[start : start + size] for start in range(len(token) - size + 1)
+        )
+    return ngrams
+
+
+def _ranked_cjk_ngrams(token: str, *, min_size: int, max_size: int) -> list[str]:
+    ngrams: list[str] = []
+    largest = min(max_size, len(token))
+    for size in range(largest, min_size - 1, -1):
         ngrams.extend(
             token[start : start + size] for start in range(len(token) - size + 1)
         )
