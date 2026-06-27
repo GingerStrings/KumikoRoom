@@ -221,6 +221,8 @@ _SOURCE_CHARACTER_TERMS = (
     "丽奈",
     "高坂",
     "明日香",
+    "叶月",
+    "绿辉",
     "香织",
     "优子",
     "夏纪",
@@ -235,27 +237,29 @@ _SOURCE_SETTING_TERMS = (
     "黄前久美子",
     "高坂丽奈",
 )
-_SOURCE_ANALYSIS_TERMS = (
+_SOURCE_SPECIFIC_TERMS = (
+    *_SOURCE_CHARACTER_TERMS,
+    *_SOURCE_SETTING_TERMS,
     "小说",
     "原作",
     "剧情",
     "人物关系",
+    "设定",
+    "台词",
+    "片段",
+)
+_BROAD_ANALYSIS_TERMS = (
+    "为什么",
     "关系",
     "性格",
+    "心理",
     "说话方式",
     "语气",
-    "台词",
-    "心理",
+    "人设",
     "动机",
     "章节",
-    "片段",
     "这一段",
     "那一段",
-)
-_SOURCE_CONTEXT_TERMS = (
-    *_SOURCE_CHARACTER_TERMS,
-    *_SOURCE_SETTING_TERMS,
-    *_SOURCE_ANALYSIS_TERMS,
 )
 _SOURCE_FOLLOWUP_TERMS = (
     "为什么",
@@ -291,6 +295,14 @@ _UNRELATED_REQUEST_TERMS = (
     "看看这个文件",
 )
 _SNIPPET_END_PUNCTUATION = "。！？!?；;，,"
+_NOVEL_REFERENCE_RULE_LINES = (
+    "小说参考片段：",
+    "使用规则：",
+    "这些片段只作为事实和性格依据。",
+    "不要长段复述原文。",
+    "如果片段不足以支持结论，要说明依据有限。",
+)
+_MAX_LABEL_PART_CHARS = 36
 
 
 def discover_epubs(corpus_dir: Path) -> list[Path]:
@@ -357,17 +369,23 @@ def should_retrieve_novel_context(
     if not current_text:
         return False
 
-    if _contains_any(current_text, _SOURCE_CONTEXT_TERMS):
+    if _contains_any(current_text, _SOURCE_SPECIFIC_TERMS):
         return True
 
     recent_text = _normalize_text(" ".join(recent_user_messages[-3:])).lower()
-    if not recent_text or not _contains_any(recent_text, _SOURCE_CONTEXT_TERMS):
+    has_recent_source_context = _contains_any(recent_text, _SOURCE_SPECIFIC_TERMS)
+    has_broad_current_signal = _contains_any(
+        current_text,
+        (*_BROAD_ANALYSIS_TERMS, *_SOURCE_FOLLOWUP_TERMS),
+    )
+
+    if not has_recent_source_context:
         return False
 
     if _contains_any(current_text, _UNRELATED_REQUEST_TERMS):
         return False
 
-    return _contains_any(current_text, _SOURCE_FOLLOWUP_TERMS)
+    return has_broad_current_signal
 
 
 def build_novel_reference_context(
@@ -378,18 +396,17 @@ def build_novel_reference_context(
     if not results:
         return ""
 
-    lines = [
-        "小说参考片段：",
-        "这些片段只作为事实和性格依据。",
-        "不要长段复述原文。",
-        "如果片段不足以支持结论，要说明依据有限。",
-    ]
+    max_chars = max(0, max_chars)
+    context = _trim_to_budget("\n".join(_NOVEL_REFERENCE_RULE_LINES), max_chars)
+    if len(context) >= max_chars:
+        return context
+
     seen: set[tuple[str, str, int]] = set()
-    remaining_chars = max(0, max_chars)
+    seen_texts: set[str] = set()
     snippet_count = 0
 
     for result in results:
-        if snippet_count >= 5 or remaining_chars <= 0:
+        if snippet_count >= 5:
             break
 
         result_key = (result.source_id, result.chapter_path, result.chunk_index)
@@ -397,19 +414,33 @@ def build_novel_reference_context(
             continue
         seen.add(result_key)
 
-        snippet = _trim_snippet(result.text, remaining_chars)
-        if not snippet:
+        normalized_text = _normalize_text(result.text)
+        if not normalized_text or normalized_text in seen_texts:
             continue
+        seen_texts.add(normalized_text)
 
-        source_title = result.source_title or result.source_id
+        remaining_chars = max_chars - len(context) - 1
+        if remaining_chars <= 0:
+            break
+
+        source_title = _trim_label_part(result.source_title or result.source_id)
         chapter_title = result.chapter_title or _chapter_title_from_path(
             result.chapter_path
         )
-        lines.append(f"[{source_title} / {chapter_title}] {snippet}")
-        remaining_chars -= len(snippet)
+        chapter_title = _trim_label_part(chapter_title)
+        line = _format_reference_line(
+            source_title=source_title,
+            chapter_title=chapter_title,
+            snippet_text=normalized_text,
+            max_chars=remaining_chars,
+        )
+        if not line:
+            continue
+
+        context = f"{context}\n{line}"
         snippet_count += 1
 
-    return "\n".join(lines) if snippet_count else ""
+    return _trim_to_budget(context, max_chars)
 
 
 def extract_epub_chunks(
@@ -827,6 +858,27 @@ def _contains_any(text: str, terms: Sequence[str]) -> bool:
     return any(term.lower() in text for term in terms)
 
 
+def _format_reference_line(
+    *,
+    source_title: str,
+    chapter_title: str,
+    snippet_text: str,
+    max_chars: int,
+) -> str:
+    label = f"[{source_title} / {chapter_title}] "
+    if len(label) >= max_chars:
+        return _trim_to_budget(label.rstrip(), max_chars)
+
+    snippet = _trim_snippet(snippet_text, max_chars - len(label))
+    if not snippet:
+        return _trim_to_budget(label.rstrip(), max_chars)
+    return f"{label}{snippet}"
+
+
+def _trim_label_part(text: str) -> str:
+    return _trim_to_budget(_normalize_text(text), _MAX_LABEL_PART_CHARS)
+
+
 def _trim_snippet(text: str, max_chars: int) -> str:
     normalized = _normalize_text(text)
     if max_chars <= 0:
@@ -838,7 +890,19 @@ def _trim_snippet(text: str, max_chars: int) -> str:
     cut_index = max(candidate.rfind(mark) for mark in _SNIPPET_END_PUNCTUATION)
     if cut_index >= max(12, max_chars // 2):
         return candidate[: cut_index + 1]
-    return candidate.rstrip("，,；;、") + "..."
+    if max_chars <= 3:
+        return candidate[:max_chars]
+    return candidate[: max_chars - 3].rstrip("，,；;、") + "..."
+
+
+def _trim_to_budget(text: str, max_chars: int) -> str:
+    if max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= 3:
+        return text[:max_chars]
+    return text[: max_chars - 3].rstrip() + "..."
 
 
 def _local_name(tag: str) -> str:

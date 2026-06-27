@@ -605,6 +605,12 @@ def test_retrieval_gate_skips_unrelated_chat_and_music_commands() -> None:
     assert should_retrieve_novel_context("帮我看看这个文件怎么处理") is False
 
 
+def test_retrieval_gate_skips_broad_personality_terms_without_source_context() -> None:
+    assert should_retrieve_novel_context("我和朋友的关系有点复杂") is False
+    assert should_retrieve_novel_context("我最近性格是不是有点别扭") is False
+    assert should_retrieve_novel_context("这个人的心理为什么会这样") is False
+
+
 def test_retrieval_gate_uses_recent_source_context() -> None:
     assert (
         should_retrieve_novel_context(
@@ -648,6 +654,54 @@ def test_build_novel_reference_context_formats_bounded_results() -> None:
 
 def test_build_novel_reference_context_empty_results_returns_empty_string() -> None:
     assert build_novel_reference_context([]) == ""
+
+
+def test_build_novel_reference_context_deduplicates_exact_snippet_text() -> None:
+    results = [
+        NovelSearchResult(
+            source_id="01",
+            source_title="第一卷",
+            chapter_path="a.xhtml",
+            chapter_title="第一章",
+            chunk_index=0,
+            text="久美子重复片段。",
+            rank=-1.0,
+        ),
+        NovelSearchResult(
+            source_id="02",
+            source_title="第二卷",
+            chapter_path="b.xhtml",
+            chapter_title="第二章",
+            chunk_index=3,
+            text="久美子重复片段。",
+            rank=-0.5,
+        ),
+    ]
+
+    context = build_novel_reference_context(results, max_chars=260)
+
+    assert context.count("久美子重复片段") == 1
+
+
+def test_build_novel_reference_context_respects_whole_context_budget() -> None:
+    results = [
+        NovelSearchResult(
+            source_id=str(index),
+            source_title="很长的卷名" * 8,
+            chapter_path=f"chapter{index}.xhtml",
+            chapter_title="很长的章节名" * 8,
+            chunk_index=index,
+            text="久美子很长的片段。" * 40,
+            rank=-float(index + 1),
+        )
+        for index in range(5)
+    ]
+
+    context = build_novel_reference_context(results, max_chars=360)
+
+    assert len(context) <= 360
+    assert "使用规则" in context
+    assert "不要长段复述原文" in context
 
 
 def test_main_rebuild_prints_index_stats(
