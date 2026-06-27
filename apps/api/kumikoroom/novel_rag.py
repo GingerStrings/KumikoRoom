@@ -536,25 +536,24 @@ def _fts_query(query: str) -> str:
 
 
 def _query_tokens(query: str, *, max_terms: int) -> list[str]:
-    tokens: list[str] = []
-    seen: set[str] = set()
+    term_groups: list[list[str]] = []
     for token in _iter_search_terms(query):
-        if len(tokens) >= max_terms:
-            break
         if _is_cjk_token(token) and len(token) > 1:
-            _append_cjk_query_tokens(token, tokens, seen, max_terms=max_terms)
+            term_groups.append(
+                _cjk_query_token_candidates(token, max_terms=max_terms)
+            )
         else:
-            _append_unique_token(token, tokens, seen, max_terms=max_terms)
-    return tokens
+            term_groups.append([token])
+    return _merge_query_token_groups(term_groups, max_terms=max_terms)
 
 
-def _append_cjk_query_tokens(
+def _cjk_query_token_candidates(
     token: str,
-    tokens: list[str],
-    seen: set[str],
     *,
     max_terms: int,
-) -> None:
+) -> list[str]:
+    tokens: list[str] = []
+    seen: set[str] = set()
     for min_size, max_size in ((2, 4), (5, 6)):
         largest = min(max_size, len(token))
         for size in range(min_size, largest + 1):
@@ -566,7 +565,36 @@ def _append_cjk_query_tokens(
                     max_terms=max_terms,
                 )
                 if len(tokens) >= max_terms:
-                    return
+                    return tokens
+    return tokens
+
+
+def _merge_query_token_groups(
+    term_groups: Sequence[Sequence[str]],
+    *,
+    max_terms: int,
+) -> list[str]:
+    tokens: list[str] = []
+    seen: set[str] = set()
+    group_index = 0
+    while len(tokens) < max_terms:
+        added = False
+        for group in term_groups:
+            if group_index >= len(group):
+                continue
+            _append_unique_token(
+                group[group_index],
+                tokens,
+                seen,
+                max_terms=max_terms,
+            )
+            added = True
+            if len(tokens) >= max_terms:
+                return tokens
+        if not added:
+            return tokens
+        group_index += 1
+    return tokens
 
 
 def _sampled_ngram_starts(token_length: int, size: int) -> list[int]:
