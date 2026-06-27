@@ -618,6 +618,12 @@ def test_retrieval_gate_skips_source_names_in_tool_and_music_requests() -> None:
     assert should_retrieve_novel_context("帮我写一段台词") is False
 
 
+def test_retrieval_gate_skips_unrelated_requests_even_with_source_anchors() -> None:
+    assert should_retrieve_novel_context("播放京吹角色歌") is False
+    assert should_retrieve_novel_context("帮我写一段京吹台词") is False
+    assert should_retrieve_novel_context("帮我看看京吹小说这个文件怎么处理") is False
+
+
 def test_retrieval_gate_triggers_for_character_analysis_with_name() -> None:
     assert should_retrieve_novel_context("久美子的性格为什么会这样？") is True
     assert should_retrieve_novel_context("丽奈和久美子的关系为什么这么别扭") is True

@@ -238,9 +238,16 @@ _SOURCE_ANCHOR_TERMS = (
     "原作",
 )
 _STRONG_SOURCE_INTENT_TERMS = (
-    *_SOURCE_ANCHOR_TERMS,
     "剧情分析",
     "人物关系",
+    "什么意思",
+    "怎么理解",
+    "怎么看",
+    "为什么",
+    "关系",
+    "性格",
+    "说话方式",
+    "语气",
 )
 _ANALYSIS_INTENT_TERMS = (
     "为什么",
