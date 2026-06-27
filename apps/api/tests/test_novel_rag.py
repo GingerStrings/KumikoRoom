@@ -641,6 +641,15 @@ def test_retrieval_gate_skips_unrelated_failure_questions_with_why() -> None:
         "帮我写一段久美子为什么这样说的台词",
         "用工具分析京吹人物关系",
         "能推荐一本小说吗",
+        "这本小说的人物关系怎么样",
+        "小说里的角色为什么这样说？",
+        "这部小说有什么推荐吗",
+        "小说怎么写比较好",
+        "请写京吹人物关系分析",
+        "写一下京吹人物关系分析",
+        "生成一段京吹人物关系分析",
+        "京吹小说无法打开怎么办",
+        "京吹小说加载不出来怎么办",
     ],
 )
 def test_retrieval_gate_skips_reviewed_false_positive_cases(message: str) -> None:
