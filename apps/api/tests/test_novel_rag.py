@@ -363,11 +363,24 @@ def test_rebuild_novel_index_reports_broken_epub_and_continues(
     corpus_dir = tmp_path / "corpus"
     corpus_dir.mkdir()
     (corpus_dir / "01.broken.epub").write_bytes(b"not an epub")
+    write_epub(
+        corpus_dir / "02.valid.epub",
+        {
+            "OEBPS/Text/chapter.xhtml": """
+                <html xmlns="http://www.w3.org/1999/xhtml">
+                  <body><p>久美子继续被索引。</p></body>
+                </html>
+            """,
+        },
+    )
     db_path = tmp_path / "rag.sqlite3"
 
     stats = rebuild_novel_index(corpus_dir, db_path)
 
-    assert stats.source_count == 0
-    assert stats.chunk_count == 0
+    assert stats.source_count == 1
+    assert stats.chunk_count == 1
     assert stats.errors
     assert "01.broken.epub" in stats.errors[0]
+    assert (
+        NovelRagStore(db_path).search("久美子", limit=1)[0].source_id == "02-valid"
+    )
