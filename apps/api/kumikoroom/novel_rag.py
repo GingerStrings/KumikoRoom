@@ -45,11 +45,166 @@ class NovelIndexStats:
     errors: tuple[str, ...] = ()
 
 
+class NovelRagStore:
+    def __init__(self, db_path: Path | str) -> None:
+        self.db_path = Path(db_path)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.initialize_schema()
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.db_path)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys = ON")
+        return connection
+
+    def initialize_schema(self) -> None:
+        with self._connect() as connection:
+            connection.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS novel_sources (
+                    source_id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS novel_chunks (
+                    source_id TEXT NOT NULL REFERENCES novel_sources(source_id)
+                        ON DELETE CASCADE,
+                    chapter_path TEXT NOT NULL,
+                    chapter_title TEXT NOT NULL,
+                    chunk_index INTEGER NOT NULL,
+                    text TEXT NOT NULL,
+                    search_text TEXT NOT NULL,
+                    UNIQUE(source_id, chapter_path, chunk_index)
+                );
+
+                CREATE VIRTUAL TABLE IF NOT EXISTS novel_chunks_fts
+                USING fts5(
+                    search_text,
+                    content='novel_chunks',
+                    content_rowid='rowid'
+                );
+                """
+            )
+
+    def clear(self) -> None:
+        with self._connect() as connection:
+            connection.execute("DELETE FROM novel_chunks")
+            connection.execute("DELETE FROM novel_sources")
+            connection.execute(
+                "INSERT INTO novel_chunks_fts(novel_chunks_fts) VALUES('rebuild')"
+            )
+
+    def upsert_chunks(self, chunks: Sequence[NovelChunk]) -> None:
+        if not chunks:
+            return
+
+        chunks_by_source: dict[str, list[NovelChunk]] = {}
+        for chunk in chunks:
+            chunks_by_source.setdefault(chunk.source_id, []).append(chunk)
+
+        updated_at = datetime.now(timezone.utc).isoformat()
+        with self._connect() as connection:
+            for source_chunks in chunks_by_source.values():
+                first_chunk = source_chunks[0]
+                connection.execute(
+                    """
+                    INSERT INTO novel_sources (source_id, title, path, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(source_id) DO UPDATE SET
+                        title = excluded.title,
+                        path = excluded.path,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        first_chunk.source_id,
+                        first_chunk.source_title,
+                        first_chunk.source_path,
+                        updated_at,
+                    ),
+                )
+                connection.execute(
+                    "DELETE FROM novel_chunks WHERE source_id = ?",
+                    (first_chunk.source_id,),
+                )
+                connection.executemany(
+                    """
+                    INSERT INTO novel_chunks (
+                        source_id,
+                        chapter_path,
+                        chapter_title,
+                        chunk_index,
+                        text,
+                        search_text
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            chunk.source_id,
+                            chunk.chapter_path,
+                            chunk.chapter_title,
+                            chunk.chunk_index,
+                            chunk.text,
+                            _search_text(chunk),
+                        )
+                        for chunk in source_chunks
+                    ],
+                )
+            connection.execute(
+                "INSERT INTO novel_chunks_fts(novel_chunks_fts) VALUES('rebuild')"
+            )
+
+    def search(self, query: str, limit: int = 5) -> list[NovelSearchResult]:
+        fts_query = _fts_query(query)
+        if not fts_query or limit <= 0:
+            return []
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    c.source_id,
+                    s.title AS source_title,
+                    c.chapter_path,
+                    c.chapter_title,
+                    c.chunk_index,
+                    c.text,
+                    bm25(novel_chunks_fts) AS rank
+                FROM novel_chunks_fts
+                JOIN novel_chunks AS c ON c.rowid = novel_chunks_fts.rowid
+                JOIN novel_sources AS s ON s.source_id = c.source_id
+                WHERE novel_chunks_fts MATCH ?
+                ORDER BY rank, c.source_id, c.chunk_index
+                LIMIT ?
+                """,
+                (fts_query, limit),
+            ).fetchall()
+
+        return [
+            NovelSearchResult(
+                source_id=row["source_id"],
+                source_title=row["source_title"],
+                chapter_path=row["chapter_path"],
+                chapter_title=row["chapter_title"],
+                chunk_index=row["chunk_index"],
+                text=row["text"],
+                rank=row["rank"],
+            )
+            for row in rows
+        ]
+
+
 _TEXT_EXTENSIONS = (".xhtml", ".html", ".htm")
 _XHTML_BLOCK_TAGS = {"h1", "h2", "h3", "p", "div", "li"}
 _IGNORED_TEXT_TAGS = {"script", "style"}
 _NAVIGATION_STEMS = {"nav", "toc", "contents", "cover"}
 _WHITESPACE_RE = re.compile(r"\s+")
+_SEARCH_TOKEN_RE = re.compile(
+    r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
+    r"\uac00-\ud7af]+|[A-Za-z0-9_]+"
+)
 _TAG_RE = re.compile(r"<[^>]+>")
 _SCRIPT_STYLE_RE = re.compile(
     r"<(script|style)\b[^>]*>.*?</\1>",
@@ -64,6 +219,48 @@ def discover_epubs(corpus_dir: Path) -> list[Path]:
         path
         for path in corpus_dir.iterdir()
         if path.is_file() and path.suffix.lower() == ".epub"
+    )
+
+
+def rebuild_novel_index(corpus_dir: Path | str, db_path: Path | str) -> NovelIndexStats:
+    corpus_path = Path(corpus_dir)
+    store = NovelRagStore(db_path)
+    store.clear()
+
+    source_count = 0
+    chunk_count = 0
+    skipped_files: list[str] = []
+    errors: list[str] = []
+
+    if not corpus_path.exists() or not corpus_path.is_dir():
+        return NovelIndexStats(source_count=0, chunk_count=0)
+
+    for path in sorted(corpus_path.iterdir()):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() != ".epub":
+            skipped_files.append(path.name)
+            continue
+
+        try:
+            chunks = extract_epub_chunks(
+                path,
+                source_id=_source_id_from_path(path),
+                source_title=_source_title_from_path(path),
+            )
+        except Exception as exc:
+            errors.append(f"{path.name}: {exc}")
+            continue
+
+        store.upsert_chunks(chunks)
+        source_count += 1
+        chunk_count += len(chunks)
+
+    return NovelIndexStats(
+        source_count=source_count,
+        chunk_count=chunk_count,
+        skipped_files=tuple(skipped_files),
+        errors=tuple(errors),
     )
 
 
@@ -293,6 +490,86 @@ def _chapter_title_from_path(chapter_path: str) -> str:
 
 def _first_text(paragraphs: Sequence[str]) -> str:
     return paragraphs[0] if paragraphs else ""
+
+
+def _source_id_from_path(path: Path) -> str:
+    source_id = re.sub(r"[^\w-]+", "-", path.stem, flags=re.UNICODE).strip("-")
+    return source_id or path.stem
+
+
+def _source_title_from_path(path: Path) -> str:
+    return path.stem
+
+
+def _search_text(chunk: NovelChunk) -> str:
+    text = " ".join(
+        [
+            chunk.source_title,
+            chunk.chapter_title,
+            chunk.text,
+        ]
+    )
+    return " ".join([text, *_search_tokens(text)])
+
+
+def _fts_query(query: str) -> str:
+    terms: list[str] = []
+    for token in _iter_search_terms(query):
+        if _is_cjk_token(token) and len(token) > 6:
+            terms.extend(_cjk_ngrams(token, min_size=6, max_size=6))
+        else:
+            terms.append(token)
+    return " ".join(_quote_fts_token(term) for term in _unique_terms(terms))
+
+
+def _search_tokens(text: str) -> list[str]:
+    tokens: list[str] = []
+    for token in _iter_search_terms(text):
+        if _is_cjk_token(token):
+            tokens.extend(_cjk_ngrams(token, min_size=1, max_size=6))
+        else:
+            tokens.append(token)
+    return _unique_terms(tokens)
+
+
+def _iter_search_terms(text: str) -> list[str]:
+    return [match.group(0).lower() for match in _SEARCH_TOKEN_RE.finditer(text)]
+
+
+def _unique_terms(terms: Sequence[str]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for term in terms:
+        if term in seen:
+            continue
+        seen.add(term)
+        unique.append(term)
+    return unique
+
+
+def _is_cjk_token(token: str) -> bool:
+    return any(
+        "\u3040" <= char <= "\u30ff"
+        or "\u3400" <= char <= "\u4dbf"
+        or "\u4e00" <= char <= "\u9fff"
+        or "\uf900" <= char <= "\ufaff"
+        or "\uac00" <= char <= "\ud7af"
+        for char in token
+    )
+
+
+def _cjk_ngrams(token: str, *, min_size: int, max_size: int) -> list[str]:
+    ngrams: list[str] = []
+    largest = min(max_size, len(token))
+    for size in range(min_size, largest + 1):
+        ngrams.extend(
+            token[start : start + size] for start in range(len(token) - size + 1)
+        )
+    return ngrams
+
+
+def _quote_fts_token(token: str) -> str:
+    return '"' + token.replace('"', '""') + '"'
 
 
 def _local_name(tag: str) -> str:

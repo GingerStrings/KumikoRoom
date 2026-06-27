@@ -5,8 +5,10 @@ import pytest
 
 from kumikoroom.novel_rag import (
     NovelChunk,
+    NovelRagStore,
     discover_epubs,
     extract_epub_chunks,
+    rebuild_novel_index,
 )
 
 
@@ -286,3 +288,86 @@ def test_chunk_paragraphs_respects_exact_boundary_and_splits_long_paragraph() ->
     chunks = _chunk_paragraphs(["一二三四五六七八九十"], max_chars=4)
 
     assert chunks == ["一二三四", "五六七八", "九十"]
+
+
+def test_store_searches_cjk_terms_with_generated_search_text(tmp_path: Path) -> None:
+    store = NovelRagStore(tmp_path / "novels.sqlite3")
+    store.clear()
+    store.upsert_chunks(
+        [
+            NovelChunk(
+                source_id="01",
+                source_title="第一卷",
+                source_path="local.epub",
+                chapter_path="OEBPS/Text/chapter1.xhtml",
+                chapter_title="第一章",
+                chunk_index=0,
+                text="黄前久美子没有急着回答丽奈的问题。",
+            ),
+            NovelChunk(
+                source_id="02",
+                source_title="第二卷",
+                source_path="local2.epub",
+                chapter_path="OEBPS/Text/chapter2.xhtml",
+                chapter_title="第二章",
+                chunk_index=0,
+                text="这一段只是在说长号声部。",
+            ),
+        ]
+    )
+
+    results = store.search("久美子 丽奈", limit=5)
+
+    assert len(results) == 1
+    assert results[0].source_title == "第一卷"
+    assert "久美子没有急着回答" in results[0].text
+
+
+def test_store_search_empty_query_returns_empty_list(tmp_path: Path) -> None:
+    store = NovelRagStore(tmp_path / "novels.sqlite3")
+
+    assert store.search("   ") == []
+
+
+def test_rebuild_novel_index_indexes_epubs_and_skips_other_files(tmp_path: Path) -> None:
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+    write_epub(
+        corpus_dir / "01.fixture.epub",
+        {
+            "OEBPS/Text/chapter.xhtml": """
+                <html xmlns="http://www.w3.org/1999/xhtml">
+                  <body><p>久美子和丽奈站在一起。</p></body>
+                </html>
+            """,
+        },
+    )
+    (corpus_dir / "ignore.pdf").write_text("ignore", encoding="utf-8")
+    db_path = tmp_path / "rag.sqlite3"
+
+    stats = rebuild_novel_index(corpus_dir, db_path)
+
+    assert stats.source_count == 1
+    assert stats.chunk_count == 1
+    assert stats.skipped_files == ("ignore.pdf",)
+    assert stats.errors == ()
+    assert (
+        NovelRagStore(db_path).search("久美子", limit=1)[0].source_id
+        == "01-fixture"
+    )
+
+
+def test_rebuild_novel_index_reports_broken_epub_and_continues(
+    tmp_path: Path,
+) -> None:
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+    (corpus_dir / "01.broken.epub").write_bytes(b"not an epub")
+    db_path = tmp_path / "rag.sqlite3"
+
+    stats = rebuild_novel_index(corpus_dir, db_path)
+
+    assert stats.source_count == 0
+    assert stats.chunk_count == 0
+    assert stats.errors
+    assert "01.broken.epub" in stats.errors[0]
