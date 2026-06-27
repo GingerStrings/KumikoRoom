@@ -215,6 +215,82 @@ _SCRIPT_STYLE_RE = re.compile(
     r"<(script|style)\b[^>]*>.*?</\1>",
     re.IGNORECASE | re.DOTALL,
 )
+_SOURCE_CHARACTER_TERMS = (
+    "久美子",
+    "黄前",
+    "丽奈",
+    "高坂",
+    "明日香",
+    "香织",
+    "优子",
+    "夏纪",
+    "秀一",
+    "奏",
+)
+_SOURCE_SETTING_TERMS = (
+    "京吹",
+    "吹响",
+    "上低音号",
+    "北宇治",
+    "黄前久美子",
+    "高坂丽奈",
+)
+_SOURCE_ANALYSIS_TERMS = (
+    "小说",
+    "原作",
+    "剧情",
+    "人物关系",
+    "关系",
+    "性格",
+    "说话方式",
+    "语气",
+    "台词",
+    "心理",
+    "动机",
+    "章节",
+    "片段",
+    "这一段",
+    "那一段",
+)
+_SOURCE_CONTEXT_TERMS = (
+    *_SOURCE_CHARACTER_TERMS,
+    *_SOURCE_SETTING_TERMS,
+    *_SOURCE_ANALYSIS_TERMS,
+)
+_SOURCE_FOLLOWUP_TERMS = (
+    "为什么",
+    "怎么",
+    "怎样",
+    "这样",
+    "那她",
+    "那他",
+    "她",
+    "他",
+    "这段",
+    "那段",
+    "这一段",
+    "那一段",
+    "关系",
+    "性格",
+    "语气",
+    "说话",
+    "剧情",
+)
+_UNRELATED_REQUEST_TERMS = (
+    "播放",
+    "放一首",
+    "听歌",
+    "周杰伦",
+    "文件",
+    "目录",
+    "路径",
+    "工具",
+    "app",
+    "应用",
+    "处理这个",
+    "看看这个文件",
+)
+_SNIPPET_END_PUNCTUATION = "。！？!?；;，,"
 
 
 def discover_epubs(corpus_dir: Path) -> list[Path]:
@@ -270,6 +346,70 @@ def rebuild_novel_index(corpus_dir: Path | str, db_path: Path | str) -> NovelInd
         skipped_files=tuple(skipped_files),
         errors=tuple(errors),
     )
+
+
+def should_retrieve_novel_context(
+    message: str,
+    *,
+    recent_user_messages: Sequence[str] = (),
+) -> bool:
+    current_text = _normalize_text(message).lower()
+    if not current_text:
+        return False
+
+    if _contains_any(current_text, _SOURCE_CONTEXT_TERMS):
+        return True
+
+    recent_text = _normalize_text(" ".join(recent_user_messages[-3:])).lower()
+    if not recent_text or not _contains_any(recent_text, _SOURCE_CONTEXT_TERMS):
+        return False
+
+    if _contains_any(current_text, _UNRELATED_REQUEST_TERMS):
+        return False
+
+    return _contains_any(current_text, _SOURCE_FOLLOWUP_TERMS)
+
+
+def build_novel_reference_context(
+    results: Sequence[NovelSearchResult],
+    *,
+    max_chars: int = 1800,
+) -> str:
+    if not results:
+        return ""
+
+    lines = [
+        "小说参考片段：",
+        "这些片段只作为事实和性格依据。",
+        "不要长段复述原文。",
+        "如果片段不足以支持结论，要说明依据有限。",
+    ]
+    seen: set[tuple[str, str, int]] = set()
+    remaining_chars = max(0, max_chars)
+    snippet_count = 0
+
+    for result in results:
+        if snippet_count >= 5 or remaining_chars <= 0:
+            break
+
+        result_key = (result.source_id, result.chapter_path, result.chunk_index)
+        if result_key in seen:
+            continue
+        seen.add(result_key)
+
+        snippet = _trim_snippet(result.text, remaining_chars)
+        if not snippet:
+            continue
+
+        source_title = result.source_title or result.source_id
+        chapter_title = result.chapter_title or _chapter_title_from_path(
+            result.chapter_path
+        )
+        lines.append(f"[{source_title} / {chapter_title}] {snippet}")
+        remaining_chars -= len(snippet)
+        snippet_count += 1
+
+    return "\n".join(lines) if snippet_count else ""
 
 
 def extract_epub_chunks(
@@ -683,6 +823,24 @@ def _quote_fts_token(token: str) -> str:
     return '"' + token.replace('"', '""') + '"'
 
 
+def _contains_any(text: str, terms: Sequence[str]) -> bool:
+    return any(term.lower() in text for term in terms)
+
+
+def _trim_snippet(text: str, max_chars: int) -> str:
+    normalized = _normalize_text(text)
+    if max_chars <= 0:
+        return ""
+    if len(normalized) <= max_chars:
+        return normalized
+
+    candidate = normalized[:max_chars].rstrip()
+    cut_index = max(candidate.rfind(mark) for mark in _SNIPPET_END_PUNCTUATION)
+    if cut_index >= max(12, max_chars // 2):
+        return candidate[: cut_index + 1]
+    return candidate.rstrip("，,；;、") + "..."
+
+
 def _local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1].lower()
 
@@ -705,3 +863,35 @@ def _visible_element_text(element: ElementTree.Element) -> str:
 
 def _normalize_text(text: str) -> str:
     return _WHITESPACE_RE.sub(" ", text).strip()
+
+
+def load_settings():
+    from kumikoroom.config import load_settings as _load_settings
+
+    return _load_settings()
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = ArgumentParser(prog="python -m kumikoroom.novel_rag")
+    parser.add_argument("command", nargs="?")
+    args = parser.parse_args(argv)
+
+    if args.command != "rebuild":
+        parser.print_usage(sys.stderr)
+        return 2
+
+    settings = load_settings()
+    stats = rebuild_novel_index(settings.novel_corpus_dir, settings.novel_rag_db_path)
+    print(f"Indexed sources: {stats.source_count}")
+    print(f"Indexed chunks: {stats.chunk_count}")
+    print(f"Skipped files: {len(stats.skipped_files)}")
+    for name in stats.skipped_files:
+        print(f"  skipped: {name}")
+    print(f"Errors: {len(stats.errors)}")
+    for error in stats.errors:
+        print(f"  error: {error}")
+    return 1 if stats.errors else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

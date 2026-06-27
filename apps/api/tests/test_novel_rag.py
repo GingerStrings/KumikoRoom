@@ -7,10 +7,15 @@ import pytest
 from kumikoroom import novel_rag
 from kumikoroom.novel_rag import (
     NovelChunk,
+    NovelIndexStats,
     NovelRagStore,
+    NovelSearchResult,
+    build_novel_reference_context,
     discover_epubs,
     extract_epub_chunks,
+    main,
     rebuild_novel_index,
+    should_retrieve_novel_context,
 )
 
 
@@ -585,3 +590,106 @@ def test_rebuild_novel_index_reports_broken_epub_and_continues(
     assert (
         NovelRagStore(db_path).search("久美子", limit=1)[0].source_id == "02-valid"
     )
+
+
+def test_retrieval_gate_triggers_for_source_and_persona_questions() -> None:
+    assert should_retrieve_novel_context("久美子的说话方式为什么会这样？") is True
+    assert should_retrieve_novel_context("京吹小说里丽奈和久美子的关系怎么样") is True
+    assert should_retrieve_novel_context("北宇治这一段剧情是什么") is True
+
+
+def test_retrieval_gate_skips_unrelated_chat_and_music_commands() -> None:
+    assert should_retrieve_novel_context("你好") is False
+    assert should_retrieve_novel_context("我今天有点累") is False
+    assert should_retrieve_novel_context("播放 晴天 周杰伦") is False
+    assert should_retrieve_novel_context("帮我看看这个文件怎么处理") is False
+
+
+def test_retrieval_gate_uses_recent_source_context() -> None:
+    assert (
+        should_retrieve_novel_context(
+            "那她为什么这样说？",
+            recent_user_messages=["刚才我们在聊久美子和明日香"],
+        )
+        is True
+    )
+
+
+def test_build_novel_reference_context_formats_bounded_results() -> None:
+    results = [
+        NovelSearchResult(
+            source_id="01",
+            source_title="第一卷",
+            chapter_path="OEBPS/Text/chapter1.xhtml",
+            chapter_title="第一章",
+            chunk_index=0,
+            text="久美子先沉默了一下，然后才回答。她没有把话说得很满。",
+            rank=-1.0,
+        ),
+        NovelSearchResult(
+            source_id="11",
+            source_title="最终乐章前篇",
+            chapter_path="OEBPS/Text/chapter9.xhtml",
+            chapter_title="第九章",
+            chunk_index=2,
+            text="丽奈的名字出现在这一段里。",
+            rank=-0.5,
+        ),
+    ]
+
+    context = build_novel_reference_context(results, max_chars=120)
+
+    assert "小说参考片段" in context
+    assert "[第一卷 / 第一章]" in context
+    assert "久美子先沉默了一下" in context
+    assert "不要长段复述原文" in context
+    assert len(context) < 420
+
+
+def test_build_novel_reference_context_empty_results_returns_empty_string() -> None:
+    assert build_novel_reference_context([]) == ""
+
+
+def test_main_rebuild_prints_index_stats(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    settings = type(
+        "Settings",
+        (),
+        {
+            "novel_corpus_dir": tmp_path / "corpus",
+            "novel_rag_db_path": tmp_path / "rag.sqlite3",
+        },
+    )()
+    calls: list[tuple[Path, Path]] = []
+
+    def fake_load_settings() -> object:
+        return settings
+
+    def fake_rebuild_novel_index(
+        corpus_dir: Path | str,
+        db_path: Path | str,
+    ) -> NovelIndexStats:
+        calls.append((Path(corpus_dir), Path(db_path)))
+        return NovelIndexStats(
+            source_count=2,
+            chunk_count=7,
+            skipped_files=("notes.txt",),
+            errors=(),
+        )
+
+    monkeypatch.setattr(novel_rag, "load_settings", fake_load_settings, raising=False)
+    monkeypatch.setattr(novel_rag, "rebuild_novel_index", fake_rebuild_novel_index)
+
+    exit_code = main(["rebuild"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert calls == [(settings.novel_corpus_dir, settings.novel_rag_db_path)]
+    assert "Indexed sources: 2" in output
+    assert "Indexed chunks: 7" in output
+    assert "Skipped files: 1" in output
+    assert "  skipped: notes.txt" in output
+    assert "Errors: 0" in output
