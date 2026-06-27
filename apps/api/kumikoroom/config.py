@@ -20,9 +20,9 @@ class ApiSettings:
     deepseek_model: str
     deepseek_base_url: str
     memory_db_path: Path
-    novel_corpus_dir: Path
-    novel_rag_db_path: Path
-    novel_rag_enabled: bool
+    novel_corpus_dir: Path = DEFAULT_NOVEL_CORPUS_DIR
+    novel_rag_db_path: Path = DEFAULT_NOVEL_RAG_DB_PATH
+    novel_rag_enabled: bool = True
 
     @property
     def is_deepseek_configured(self) -> bool:

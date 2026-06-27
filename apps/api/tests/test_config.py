@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from kumikoroom.config import (
+    ApiSettings,
     LlmRuntimeConfig,
     load_settings,
     runtime_config_from_llm_config,
@@ -294,3 +295,17 @@ def test_invalid_novel_rag_enabled_raises_value_error(monkeypatch) -> None:
 
     with pytest.raises(ValueError, match="KUMIKOROOM_NOVEL_RAG_ENABLED"):
         load_settings()
+
+
+def test_api_settings_direct_constructor_uses_novel_rag_defaults() -> None:
+    settings = ApiSettings(
+        llm_provider="mock",
+        deepseek_api_key=None,
+        deepseek_model="model",
+        deepseek_base_url="https://example.com",
+        memory_db_path=Path("memory.sqlite3"),
+    )
+
+    assert settings.novel_corpus_dir == Path(r"D:\555\codex\jc")
+    assert settings.novel_rag_db_path == Path("user-data/rag/kumiko-novels.sqlite3")
+    assert settings.novel_rag_enabled is True
