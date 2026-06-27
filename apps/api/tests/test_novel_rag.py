@@ -350,6 +350,31 @@ def test_store_searches_natural_cjk_question_with_extra_words(
     assert "久美子和丽奈站在一起" in results[0].text
 
 
+def test_store_searches_natural_cjk_question_with_different_connectives(
+    tmp_path: Path,
+) -> None:
+    store = NovelRagStore(tmp_path / "novels.sqlite3")
+    store.clear()
+    store.upsert_chunks(
+        [
+            NovelChunk(
+                source_id="01",
+                source_title="第一卷",
+                source_path="local.epub",
+                chapter_path="chapter.xhtml",
+                chapter_title="第一章",
+                chunk_index=0,
+                text="久美子与丽奈站在一起，谁都没有先把话说满。",
+            )
+        ]
+    )
+
+    results = store.search("久美子和丽奈的关系为什么这样", limit=5)
+
+    assert len(results) == 1
+    assert "久美子与丽奈站在一起" in results[0].text
+
+
 def test_store_search_empty_query_returns_empty_list(tmp_path: Path) -> None:
     store = NovelRagStore(tmp_path / "novels.sqlite3")
 

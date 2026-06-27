@@ -531,18 +531,55 @@ def _search_text(chunk: NovelChunk) -> str:
 
 
 def _fts_query(query: str) -> str:
-    terms = _unique_terms(_query_tokens(query))[:_MAX_FTS_QUERY_TERMS]
+    terms = _query_tokens(query, max_terms=_MAX_FTS_QUERY_TERMS)
     return " OR ".join(_quote_fts_token(term) for term in terms)
 
 
-def _query_tokens(query: str) -> list[str]:
+def _query_tokens(query: str, *, max_terms: int) -> list[str]:
     tokens: list[str] = []
+    seen: set[str] = set()
     for token in _iter_search_terms(query):
+        if len(tokens) >= max_terms:
+            break
         if _is_cjk_token(token) and len(token) > 1:
-            tokens.extend(_ranked_cjk_ngrams(token, min_size=2, max_size=6))
+            _append_cjk_query_tokens(token, tokens, seen, max_terms=max_terms)
         else:
-            tokens.append(token)
+            _append_unique_token(token, tokens, seen, max_terms=max_terms)
     return tokens
+
+
+def _append_cjk_query_tokens(
+    token: str,
+    tokens: list[str],
+    seen: set[str],
+    *,
+    max_terms: int,
+) -> None:
+    for min_size, max_size in ((2, 4), (5, 6)):
+        largest = min(max_size, len(token))
+        for size in range(min_size, largest + 1):
+            for start in range(len(token) - size + 1):
+                _append_unique_token(
+                    token[start : start + size],
+                    tokens,
+                    seen,
+                    max_terms=max_terms,
+                )
+                if len(tokens) >= max_terms:
+                    return
+
+
+def _append_unique_token(
+    token: str,
+    tokens: list[str],
+    seen: set[str],
+    *,
+    max_terms: int,
+) -> None:
+    if token in seen or len(tokens) >= max_terms:
+        return
+    seen.add(token)
+    tokens.append(token)
 
 
 def _search_tokens(text: str) -> list[str]:
@@ -585,16 +622,6 @@ def _cjk_ngrams(token: str, *, min_size: int, max_size: int) -> list[str]:
     ngrams: list[str] = []
     largest = min(max_size, len(token))
     for size in range(min_size, largest + 1):
-        ngrams.extend(
-            token[start : start + size] for start in range(len(token) - size + 1)
-        )
-    return ngrams
-
-
-def _ranked_cjk_ngrams(token: str, *, min_size: int, max_size: int) -> list[str]:
-    ngrams: list[str] = []
-    largest = min(max_size, len(token))
-    for size in range(largest, min_size - 1, -1):
         ngrams.extend(
             token[start : start + size] for start in range(len(token) - size + 1)
         )
