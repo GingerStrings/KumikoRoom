@@ -650,6 +650,18 @@ def test_retrieval_gate_skips_unrelated_failure_questions_with_why() -> None:
         "生成一段京吹人物关系分析",
         "京吹小说无法打开怎么办",
         "京吹小说加载不出来怎么办",
+        "京吹",
+        "京吹小说",
+        "我喜欢京吹",
+        "刚看完京吹小说",
+        "京吹小说下载失败怎么办",
+        "京吹小说解析失败怎么办",
+        "京吹小说导入失败怎么办",
+        "京吹小说出错怎么办",
+        "下载京吹小说",
+        "搜索京吹小说",
+        "推荐京吹小说吗",
+        "上低音号怎么吹响",
     ],
 )
 def test_retrieval_gate_skips_reviewed_false_positive_cases(message: str) -> None:

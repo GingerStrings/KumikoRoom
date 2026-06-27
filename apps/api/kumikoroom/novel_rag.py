@@ -281,6 +281,10 @@ _UNRELATED_REQUEST_TERMS = (
     "文件",
     "目录",
     "路径",
+    "下载",
+    "搜索",
+    "导入",
+    "解析",
     "工具",
     "app",
     "应用",
@@ -312,7 +316,11 @@ _UNRELATED_FAILURE_TERMS = (
     "播放失败",
     "加载失败",
     "加载不出来",
+    "下载失败",
+    "解析失败",
+    "导入失败",
     "失败",
+    "出错",
     "报错",
     "错误",
     "接口",
@@ -327,6 +335,10 @@ _OPERATIONAL_FAILURE_TERMS = (
     "播放失败",
     "加载失败",
     "加载不出来",
+    "下载失败",
+    "解析失败",
+    "导入失败",
+    "出错",
     "报错",
     "接口",
     "崩溃",
@@ -423,7 +435,7 @@ def should_retrieve_novel_context(
     if has_unrelated_request:
         return False
 
-    if has_source_anchor:
+    if has_source_anchor and has_analysis_intent:
         return True
 
     recent_text = _normalize_text(" ".join(recent_user_messages[-3:])).lower()
