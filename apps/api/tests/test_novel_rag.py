@@ -141,6 +141,108 @@ def test_extract_epub_chunks_uses_opf_spine_order_and_skips_nav(
     assert all("目录" not in chunk.text for chunk in chunks)
 
 
+def test_extract_epub_chunks_skips_nav_in_spine_and_toc_fallback(
+    tmp_path: Path,
+) -> None:
+    spine_epub = tmp_path / "spine-nav.epub"
+    write_epub(
+        spine_epub,
+        {
+            "OEBPS/content.opf": """
+                <package xmlns="http://www.idpf.org/2007/opf">
+                  <manifest>
+                    <item id="nav" href="Text/nav.xhtml" media-type="application/xhtml+xml" properties="nav" />
+                    <item id="toc" href="Text/toc.xhtml" media-type="application/xhtml+xml" />
+                    <item id="chapter" href="Text/chapter.xhtml" media-type="application/xhtml+xml" />
+                  </manifest>
+                  <spine>
+                    <itemref idref="nav" linear="no" />
+                    <itemref idref="toc" linear="no" />
+                    <itemref idref="chapter" />
+                  </spine>
+                </package>
+            """,
+            "OEBPS/Text/nav.xhtml": """
+                <html xmlns="http://www.w3.org/1999/xhtml"><body><p>导航目录不应进入索引。</p></body></html>
+            """,
+            "OEBPS/Text/toc.xhtml": """
+                <html xmlns="http://www.w3.org/1999/xhtml"><body><p>TOC 目录不应进入索引。</p></body></html>
+            """,
+            "OEBPS/Text/chapter.xhtml": """
+                <html xmlns="http://www.w3.org/1999/xhtml"><body><h1>正文章</h1><p>久美子正文。</p></body></html>
+            """,
+        },
+    )
+
+    chunks = extract_epub_chunks(
+        spine_epub,
+        source_id="spine-nav",
+        source_title="Spine Nav",
+        max_chars=80,
+    )
+
+    joined = "\n".join(chunk.text for chunk in chunks)
+    assert [chunk.chapter_title for chunk in chunks] == ["正文章"]
+    assert "久美子正文" in joined
+    assert "导航目录" not in joined
+    assert "TOC 目录" not in joined
+
+    fallback_epub = tmp_path / "fallback-nav.epub"
+    write_epub(
+        fallback_epub,
+        {
+            "OEBPS/Text/nav.xhtml": """
+                <html xmlns="http://www.w3.org/1999/xhtml"><body><p>fallback 导航目录。</p></body></html>
+            """,
+            "OEBPS/Text/toc.xhtml": """
+                <html xmlns="http://www.w3.org/1999/xhtml"><body><p>fallback TOC。</p></body></html>
+            """,
+            "OEBPS/Text/chapter.xhtml": """
+                <html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Fallback 正文</h1><p>丽奈正文。</p></body></html>
+            """,
+        },
+    )
+
+    fallback_chunks = extract_epub_chunks(
+        fallback_epub,
+        source_id="fallback-nav",
+        source_title="Fallback Nav",
+        max_chars=80,
+    )
+    fallback_text = "\n".join(chunk.text for chunk in fallback_chunks)
+    assert "丽奈正文" in fallback_text
+    assert "fallback 导航目录" not in fallback_text
+    assert "fallback TOC" not in fallback_text
+
+
+def test_extract_epub_chunks_omits_script_and_style_text(tmp_path: Path) -> None:
+    epub_path = tmp_path / "script-style.epub"
+    write_epub(
+        epub_path,
+        {
+            "OEBPS/Text/chapter.xhtml": """
+                <html xmlns="http://www.w3.org/1999/xhtml">
+                  <body>
+                    <p>久美子正文<script>secret script text</script><style>secret style text</style></p>
+                  </body>
+                </html>
+            """,
+        },
+    )
+
+    chunks = extract_epub_chunks(
+        epub_path,
+        source_id="script-style",
+        source_title="Script Style",
+        max_chars=80,
+    )
+
+    text = "\n".join(chunk.text for chunk in chunks)
+    assert "久美子正文" in text
+    assert "secret script text" not in text
+    assert "secret style text" not in text
+
+
 def test_extract_epub_chunks_reads_common_block_tags_without_parent_duplicates(
     tmp_path: Path,
 ) -> None:

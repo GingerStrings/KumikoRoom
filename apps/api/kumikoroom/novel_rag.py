@@ -47,6 +47,8 @@ class NovelIndexStats:
 
 _TEXT_EXTENSIONS = (".xhtml", ".html", ".htm")
 _XHTML_BLOCK_TAGS = {"h1", "h2", "h3", "p", "div", "li"}
+_IGNORED_TEXT_TAGS = {"script", "style"}
+_NAVIGATION_STEMS = {"nav", "toc", "contents", "cover"}
 _WHITESPACE_RE = re.compile(r"\s+")
 _TAG_RE = re.compile(r"<[^>]+>")
 _SCRIPT_STYLE_RE = re.compile(
@@ -102,7 +104,11 @@ def _epub_text_paths(archive: ZipFile) -> list[str]:
     spine_paths = _opf_spine_text_paths(archive, archive_names)
     if spine_paths:
         return spine_paths
-    return sorted(name for name in archive_names if _is_text_path(name))
+    return sorted(
+        name
+        for name in archive_names
+        if _is_text_path(name) and not _is_navigation_path(name)
+    )
 
 
 def _opf_spine_text_paths(archive: ZipFile, archive_names: set[str]) -> list[str]:
@@ -113,15 +119,23 @@ def _opf_spine_text_paths(archive: ZipFile, archive_names: set[str]) -> list[str
             continue
 
         manifest_paths: dict[str, str] = {}
+        navigation_idrefs: set[str] = set()
         spine_idrefs: list[str] = []
         for element in root.iter():
             tag = _local_name(element.tag)
             if tag == "item":
                 item_id = element.attrib.get("id")
                 href = element.attrib.get("href")
+                if item_id and _has_property_token(
+                    element.attrib.get("properties"), "nav"
+                ):
+                    navigation_idrefs.add(item_id)
+                    continue
                 if item_id and href:
                     manifest_paths[item_id] = _resolve_epub_href(opf_path, href)
             elif tag == "itemref":
+                if element.attrib.get("linear", "yes").strip().lower() == "no":
+                    continue
                 idref = element.attrib.get("idref")
                 if idref:
                     spine_idrefs.append(idref)
@@ -129,6 +143,8 @@ def _opf_spine_text_paths(archive: ZipFile, archive_names: set[str]) -> list[str
         spine_paths: list[str] = []
         seen: set[str] = set()
         for idref in spine_idrefs:
+            if idref in navigation_idrefs:
+                continue
             chapter_path = manifest_paths.get(idref)
             if not chapter_path:
                 spine_paths = []
@@ -139,6 +155,8 @@ def _opf_spine_text_paths(archive: ZipFile, archive_names: set[str]) -> list[str
             if not _is_text_path(chapter_path):
                 spine_paths = []
                 break
+            if _is_navigation_path(chapter_path):
+                continue
             if chapter_path not in seen:
                 spine_paths.append(chapter_path)
                 seen.add(chapter_path)
@@ -179,6 +197,18 @@ def _is_text_path(path: str) -> bool:
     return path.lower().endswith(_TEXT_EXTENSIONS)
 
 
+def _is_navigation_path(path: str) -> bool:
+    stem = posixpath.splitext(posixpath.basename(path))[0].lower()
+    return stem in _NAVIGATION_STEMS
+
+
+def _has_property_token(properties: str | None, token: str) -> bool:
+    if not properties:
+        return False
+    expected = token.lower()
+    return any(part.lower() == expected for part in properties.split())
+
+
 def _extract_xhtml_paragraphs(raw: bytes) -> tuple[str, list[str]]:
     decoded = raw.decode("utf-8", errors="ignore")
     try:
@@ -191,18 +221,18 @@ def _extract_xhtml_paragraphs(raw: bytes) -> tuple[str, list[str]]:
     title = ""
     for element in root.iter():
         tag = _local_name(element.tag)
-        if tag in {"script", "style"}:
+        if tag in _IGNORED_TEXT_TAGS:
             continue
         if tag not in _XHTML_BLOCK_TAGS or _has_descendant_block(element):
             continue
         if tag in {"h1", "h2", "h3"}:
-            text = _normalize_text("".join(element.itertext()))
+            text = _normalize_text(_visible_element_text(element))
             if text and not title:
                 title = text
             if text:
                 paragraphs.append(text)
         else:
-            text = _normalize_text("".join(element.itertext()))
+            text = _normalize_text(_visible_element_text(element))
             if text:
                 paragraphs.append(text)
     if not paragraphs:
@@ -274,6 +304,15 @@ def _has_descendant_block(element: ElementTree.Element) -> bool:
         descendant is not element and _local_name(descendant.tag) in _XHTML_BLOCK_TAGS
         for descendant in element.iter()
     )
+
+
+def _visible_element_text(element: ElementTree.Element) -> str:
+    parts = [element.text or ""]
+    for child in element:
+        if _local_name(child.tag) not in _IGNORED_TEXT_TAGS:
+            parts.append(_visible_element_text(child))
+        parts.append(child.tail or "")
+    return "".join(parts)
 
 
 def _normalize_text(text: str) -> str:
