@@ -227,28 +227,22 @@ _SOURCE_CHARACTER_TERMS = (
     "优子",
     "夏纪",
     "秀一",
-    "奏",
 )
-_SOURCE_SETTING_TERMS = (
+_SOURCE_ANCHOR_TERMS = (
     "京吹",
+    "吹响吧",
     "吹响",
     "上低音号",
     "北宇治",
-    "黄前久美子",
-    "高坂丽奈",
-)
-_SOURCE_SPECIFIC_TERMS = (
-    *_SOURCE_CHARACTER_TERMS,
-    *_SOURCE_SETTING_TERMS,
     "小说",
     "原作",
-    "剧情",
-    "人物关系",
-    "设定",
-    "台词",
-    "片段",
 )
-_BROAD_ANALYSIS_TERMS = (
+_STRONG_SOURCE_INTENT_TERMS = (
+    *_SOURCE_ANCHOR_TERMS,
+    "剧情分析",
+    "人物关系",
+)
+_ANALYSIS_INTENT_TERMS = (
     "为什么",
     "关系",
     "性格",
@@ -258,6 +252,11 @@ _BROAD_ANALYSIS_TERMS = (
     "人设",
     "动机",
     "章节",
+    "人物关系",
+    "设定",
+    "剧情",
+    "片段",
+    "台词",
     "这一段",
     "那一段",
 )
@@ -293,10 +292,19 @@ _UNRELATED_REQUEST_TERMS = (
     "应用",
     "处理这个",
     "看看这个文件",
+    "帮我看看",
+    "帮我写",
+    "写一段",
+    "写段",
+    "编一段",
+    "创作",
+    "角色歌",
+    "合奏怎么练",
+    "怎么练",
 )
 _SNIPPET_END_PUNCTUATION = "。！？!?；;，,"
+_NOVEL_REFERENCE_TITLE = "小说参考片段："
 _NOVEL_REFERENCE_RULE_LINES = (
-    "小说参考片段：",
     "使用规则：",
     "这些片段只作为事实和性格依据。",
     "不要长段复述原文。",
@@ -369,20 +377,38 @@ def should_retrieve_novel_context(
     if not current_text:
         return False
 
-    if _contains_any(current_text, _SOURCE_SPECIFIC_TERMS):
+    has_source_anchor = _contains_any(current_text, _SOURCE_ANCHOR_TERMS)
+    has_character_name = _contains_any(current_text, _SOURCE_CHARACTER_TERMS)
+    has_analysis_intent = _contains_any(current_text, _ANALYSIS_INTENT_TERMS)
+    has_unrelated_request = _contains_any(current_text, _UNRELATED_REQUEST_TERMS)
+    has_strong_source_intent = _contains_any(
+        current_text,
+        _STRONG_SOURCE_INTENT_TERMS,
+    )
+
+    if has_unrelated_request and not has_strong_source_intent:
+        return False
+
+    if has_source_anchor:
         return True
 
     recent_text = _normalize_text(" ".join(recent_user_messages[-3:])).lower()
-    has_recent_source_context = _contains_any(recent_text, _SOURCE_SPECIFIC_TERMS)
+    has_recent_source_context = _contains_any(
+        recent_text,
+        (*_SOURCE_ANCHOR_TERMS, *_SOURCE_CHARACTER_TERMS),
+    )
     has_broad_current_signal = _contains_any(
         current_text,
-        (*_BROAD_ANALYSIS_TERMS, *_SOURCE_FOLLOWUP_TERMS),
+        (*_ANALYSIS_INTENT_TERMS, *_SOURCE_FOLLOWUP_TERMS),
     )
+
+    if has_character_name and has_analysis_intent:
+        return True
 
     if not has_recent_source_context:
         return False
 
-    if _contains_any(current_text, _UNRELATED_REQUEST_TERMS):
+    if has_unrelated_request:
         return False
 
     return has_broad_current_signal
@@ -397,9 +423,14 @@ def build_novel_reference_context(
         return ""
 
     max_chars = max(0, max_chars)
-    context = _trim_to_budget("\n".join(_NOVEL_REFERENCE_RULE_LINES), max_chars)
+    rules_block = "\n".join(_NOVEL_REFERENCE_RULE_LINES)
+    context = _trim_to_budget(_NOVEL_REFERENCE_TITLE, max_chars)
     if len(context) >= max_chars:
         return context
+
+    rules_suffix = f"\n\n{rules_block}"
+    if len(context) + len(rules_suffix) >= max_chars:
+        return _trim_to_budget(f"{context}{rules_suffix}", max_chars)
 
     seen: set[tuple[str, str, int]] = set()
     seen_texts: set[str] = set()
@@ -419,7 +450,7 @@ def build_novel_reference_context(
             continue
         seen_texts.add(normalized_text)
 
-        remaining_chars = max_chars - len(context) - 1
+        remaining_chars = max_chars - len(context) - len(rules_suffix) - 1
         if remaining_chars <= 0:
             break
 
@@ -440,7 +471,7 @@ def build_novel_reference_context(
         context = f"{context}\n{line}"
         snippet_count += 1
 
-    return _trim_to_budget(context, max_chars)
+    return _trim_to_budget(f"{context}{rules_suffix}", max_chars)
 
 
 def extract_epub_chunks(

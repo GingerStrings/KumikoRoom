@@ -611,6 +611,18 @@ def test_retrieval_gate_skips_broad_personality_terms_without_source_context() -
     assert should_retrieve_novel_context("这个人的心理为什么会这样") is False
 
 
+def test_retrieval_gate_skips_source_names_in_tool_and_music_requests() -> None:
+    assert should_retrieve_novel_context("久美子，帮我看看这个文件怎么处理") is False
+    assert should_retrieve_novel_context("播放久美子的角色歌") is False
+    assert should_retrieve_novel_context("今天合奏怎么练比较好") is False
+    assert should_retrieve_novel_context("帮我写一段台词") is False
+
+
+def test_retrieval_gate_triggers_for_character_analysis_with_name() -> None:
+    assert should_retrieve_novel_context("久美子的性格为什么会这样？") is True
+    assert should_retrieve_novel_context("丽奈和久美子的关系为什么这么别扭") is True
+
+
 def test_retrieval_gate_uses_recent_source_context() -> None:
     assert (
         should_retrieve_novel_context(
@@ -704,6 +716,25 @@ def test_build_novel_reference_context_respects_whole_context_budget() -> None:
     assert "不要长段复述原文" in context
 
 
+def test_build_novel_reference_context_lists_snippets_before_rules() -> None:
+    context = build_novel_reference_context(
+        [
+            NovelSearchResult(
+                source_id="01",
+                source_title="第一卷",
+                chapter_path="chapter.xhtml",
+                chapter_title="第一章",
+                chunk_index=0,
+                text="久美子先沉默了一下。",
+                rank=-1.0,
+            )
+        ],
+        max_chars=360,
+    )
+
+    assert context.index("久美子先沉默了一下") < context.index("使用规则")
+
+
 def test_main_rebuild_prints_index_stats(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -747,3 +778,32 @@ def test_main_rebuild_prints_index_stats(
     assert "Skipped files: 1" in output
     assert "  skipped: notes.txt" in output
     assert "Errors: 0" in output
+
+
+def test_main_rebuild_returns_one_when_index_has_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    class FakeSettings:
+        novel_corpus_dir = tmp_path / "corpus"
+        novel_rag_db_path = tmp_path / "rag.sqlite3"
+
+    def fake_load_settings() -> FakeSettings:
+        return FakeSettings()
+
+    def fake_rebuild_novel_index(corpus_dir: Path, db_path: Path) -> NovelIndexStats:
+        return NovelIndexStats(
+            source_count=0,
+            chunk_count=0,
+            skipped_files=("ignore.pdf",),
+            errors=("broken.epub: bad zip",),
+        )
+
+    monkeypatch.setattr(novel_rag, "load_settings", fake_load_settings)
+    monkeypatch.setattr(novel_rag, "rebuild_novel_index", fake_rebuild_novel_index)
+
+    assert novel_rag.main(["rebuild"]) == 1
+    output = capsys.readouterr().out
+    assert "Errors: 1" in output
+    assert "error: broken.epub: bad zip" in output
