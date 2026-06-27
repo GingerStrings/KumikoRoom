@@ -558,7 +558,7 @@ def _append_cjk_query_tokens(
     for min_size, max_size in ((2, 4), (5, 6)):
         largest = min(max_size, len(token))
         for size in range(min_size, largest + 1):
-            for start in range(len(token) - size + 1):
+            for start in _sampled_ngram_starts(len(token), size):
                 _append_unique_token(
                     token[start : start + size],
                     tokens,
@@ -567,6 +567,29 @@ def _append_cjk_query_tokens(
                 )
                 if len(tokens) >= max_terms:
                     return
+
+
+def _sampled_ngram_starts(token_length: int, size: int) -> list[int]:
+    max_start = token_length - size
+    if max_start < 0:
+        return []
+
+    starts: list[int] = []
+    starts.extend(range(0, min(max_start, 4) + 1))
+    starts.extend(range(max(0, max_start - 6), max_start + 1))
+    starts.extend([max_start // 2, max_start // 4, (max_start * 3) // 4])
+    return _unique_ints(starts)
+
+
+def _unique_ints(values: Sequence[int]) -> list[int]:
+    seen: set[int] = set()
+    unique: list[int] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+    return unique
 
 
 def _append_unique_token(
