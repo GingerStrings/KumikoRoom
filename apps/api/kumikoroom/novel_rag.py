@@ -358,10 +358,18 @@ _OPERATIONAL_FAILURE_TERMS = (
 _PERSONA_ADDRESS_SEPARATORS = ("，", ",", "、", "：", ":", " ")
 _USER_PERSONAL_CONTEXT_TERMS = (
     "我和",
+    "我跟",
     "我的",
     "我最近",
     "朋友",
+    "好友",
     "你觉得我",
+)
+_INSTRUMENT_USAGE_PATTERNS = (
+    "上低音号怎么吹",
+    "上低音号为什么吹",
+    "上低音号吹响",
+    "上低音号吹不响",
 )
 _SNIPPET_END_PUNCTUATION = "。！？!?；;，,"
 _NOVEL_REFERENCE_TITLE = "小说参考片段："
@@ -450,6 +458,9 @@ def should_retrieve_novel_context(
     )
 
     if has_operational_failure:
+        return False
+
+    if _contains_any(current_text, _INSTRUMENT_USAGE_PATTERNS):
         return False
 
     if _has_persona_address(current_text) and has_user_personal_context:

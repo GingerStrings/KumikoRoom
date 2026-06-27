@@ -672,6 +672,8 @@ def test_retrieval_gate_skips_unrelated_failure_questions_with_why() -> None:
         "京吹小说为什么加载不了",
         "京吹小说为什么不能打开",
         "京吹小说为什么没法打开",
+        "上低音号为什么吹不响",
+        "久美子，我跟好友的关系为什么这么别扭",
     ],
 )
 def test_retrieval_gate_skips_reviewed_false_positive_cases(message: str) -> None:
