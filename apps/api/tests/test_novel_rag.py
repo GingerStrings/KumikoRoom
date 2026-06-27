@@ -701,6 +701,20 @@ def test_retrieval_gate_skips_task4_false_positive_variants(message: str) -> Non
     assert should_retrieve_novel_context(message) is False
 
 
+@pytest.mark.parametrize(
+    "message",
+    [
+        "久美子你觉得我和朋友的关系为什么这么别扭",
+        "久美子你觉得我的性格为什么这么别扭",
+        "久美子我最近性格为什么这么别扭",
+    ],
+)
+def test_retrieval_gate_skips_unpunctuated_kumiko_address(
+    message: str,
+) -> None:
+    assert should_retrieve_novel_context(message) is False
+
+
 def test_retrieval_gate_skips_failure_followup_after_source_context() -> None:
     assert (
         should_retrieve_novel_context(

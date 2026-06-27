@@ -377,6 +377,7 @@ _OPERATIONAL_FAILURE_SUBJECT_TERMS = (
     "播放",
 )
 _PERSONA_ADDRESS_SEPARATORS = ("，", ",", "、", "：", ":", " ", "啊", "呀")
+_PERSONA_ADDRESS_CONTINUATION_PREFIXES = ("你", "我")
 _USER_PERSONAL_CONTEXT_TERMS = (
     "我和",
     "我跟",
@@ -1030,11 +1031,16 @@ def _is_instrument_usage_question(text: str) -> bool:
 
 
 def _has_persona_address(text: str) -> bool:
-    return any(
-        text.startswith(f"{term}{separator}")
-        for term in _SOURCE_CHARACTER_TERMS
-        for separator in _PERSONA_ADDRESS_SEPARATORS
-    )
+    for term in _SOURCE_CHARACTER_TERMS:
+        if not text.startswith(term):
+            continue
+
+        suffix = text[len(term) :]
+        if suffix.startswith(_PERSONA_ADDRESS_SEPARATORS):
+            return True
+        if suffix.startswith(_PERSONA_ADDRESS_CONTINUATION_PREFIXES):
+            return True
+    return False
 
 
 def _format_reference_line(
