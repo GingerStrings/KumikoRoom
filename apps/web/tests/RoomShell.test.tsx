@@ -1227,6 +1227,36 @@ describe("RoomShell", () => {
     expect(apiMocks.postChat).toHaveBeenCalledTimes(1);
   });
 
+  it("marks Kumiko replies that used novel RAG references", async () => {
+    apiMocks.postChat.mockResolvedValueOnce(
+      makeChatResponse({
+        reply: {
+          id: "reply-rag",
+          role: "kumiko",
+          content: "那次全国大赛的 soli 是丽奈和真由。"
+        },
+        novelRag: {
+          used: true,
+          query: "久美子 三年级 全国大赛 soli",
+          sources: ["决意的最终乐章 / 全国大赛"],
+          reason: "source question"
+        }
+      })
+    );
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), {
+      target: { value: "你三年级的时候全国大赛的soli是谁和谁吹的" }
+    });
+    fireEvent.click(getComposerSubmit());
+
+    const timeline = getTimeline();
+    expect(await within(timeline).findByText("那次全国大赛的 soli 是丽奈和真由。")).toBeTruthy();
+    const badge = await within(timeline).findByText("参考原作 · 1 段");
+    expect(badge.getAttribute("title")).toContain("久美子 三年级 全国大赛 soli");
+  });
+
   it("sends confirmation text through chat and applies the returned play action", async () => {
     apiMocks.postChat
       .mockResolvedValueOnce(

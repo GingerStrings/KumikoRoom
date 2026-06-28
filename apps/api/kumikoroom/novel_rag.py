@@ -302,6 +302,7 @@ _NOVEL_REFERENCE_TITLE = "小说参考片段："
 _NOVEL_REFERENCE_RULE_LINES = (
     "使用规则：",
     "这些片段只作为事实和性格依据。",
+    "回答时保持久美子的第一人称；避免“小说里的设定是”“原作中的久美子”这类抽离说法。",
     "不要长段复述原文。",
     "如果片段不足以支持结论，要说明依据有限。",
 )
@@ -377,6 +378,10 @@ def parse_novel_rag_decision(raw: str, fallback_query: str) -> NovelRagDecision:
 
     if not isinstance(document, dict):
         raise NovelRagRoutingError("response is not a JSON object")
+
+    extra_keys = set(document) - {"use_novel_rag", "query", "reason"}
+    if extra_keys:
+        raise NovelRagRoutingError("response has unexpected keys")
 
     use_novel_rag = document.get("use_novel_rag")
     if not isinstance(use_novel_rag, bool):

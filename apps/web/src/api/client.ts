@@ -243,6 +243,7 @@ interface ChatResponseApi {
   session: ChatSessionApi | null;
   client_actions?: RoomClientActionApi[];
   agent_trace?: AgentTraceApi;
+  novel_rag?: NovelRagTraceApi;
 }
 
 interface ChatSessionApi {
@@ -395,6 +396,13 @@ interface AgentTraceApi {
   }>;
 }
 
+interface NovelRagTraceApi {
+  used?: boolean;
+  query?: string | null;
+  sources?: string[];
+  reason?: string | null;
+}
+
 function mapRoomState(value: RoomStateApi): RoomState {
   return {
     appName: value.app_name,
@@ -512,7 +520,19 @@ function mapChatResponse(value: ChatResponseApi): ChatResponse {
     clientActions: (value.client_actions ?? []).map(mapRoomClientAction).filter(isRoomClientAction),
     agentTrace: {
       toolCalls: value.agent_trace?.tool_calls ?? []
-    }
+    },
+    novelRag: mapNovelRagTrace(value.novel_rag)
+  };
+}
+
+function mapNovelRagTrace(value: NovelRagTraceApi | undefined): ChatResponse["novelRag"] {
+  return {
+    used: value?.used === true,
+    query: typeof value?.query === "string" ? value.query : null,
+    sources: Array.isArray(value?.sources)
+      ? value.sources.filter((source): source is string => typeof source === "string")
+      : [],
+    reason: typeof value?.reason === "string" ? value.reason : null
   };
 }
 

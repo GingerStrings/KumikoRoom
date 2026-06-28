@@ -38,6 +38,7 @@ from kumikoroom.llm import (
 )
 from kumikoroom.memory import MemoryStore, extract_memories
 from kumikoroom.novel_rag import (
+    NovelSearchResult,
     NovelRagRouter,
     NovelRagStore,
     build_novel_reference_context,
@@ -53,6 +54,7 @@ from kumikoroom.schemas import (
     MusicAgentPlaylist,
     MusicAgentState,
     MusicAgentTrack,
+    NovelRagTraceOut,
     ProviderStatusOut,
     RoomClientActionOut,
 )
@@ -68,6 +70,12 @@ class AgentTurnResult:
     provider_status: ProviderStatus
     client_actions: list[RoomClientActionOut]
     agent_trace: AgentTraceOut
+
+
+@dataclass(frozen=True)
+class NovelContextResult:
+    context: str
+    trace: NovelRagTraceOut
 
 
 class ConversationManager:
@@ -159,7 +167,10 @@ class ConversationManager:
             role="user",
             content=message,
         )
-        messages = self._build_messages(payload, saved_user_message.content)
+        messages, novel_rag_trace = self._build_messages_with_trace(
+            payload,
+            saved_user_message.content,
+        )
 
         try:
             result = self._run_agent_turn(messages, payload.music_state)
@@ -204,6 +215,7 @@ class ConversationManager:
             session=_session_out(session),
             client_actions=result.client_actions,
             agent_trace=result.agent_trace,
+            novel_rag=novel_rag_trace,
         )
 
     def _resolve_session(self, session_id: str | None) -> ChatSession:
@@ -212,6 +224,13 @@ class ConversationManager:
         return self.session_store.ensure_default_session()
 
     def _build_messages(self, payload: ChatIn, message: str) -> list[LLMMessage]:
+        return self._build_messages_with_trace(payload, message)[0]
+
+    def _build_messages_with_trace(
+        self,
+        payload: ChatIn,
+        message: str,
+    ) -> tuple[list[LLMMessage], NovelRagTraceOut]:
         system_parts = [build_persona_prompt(payload.persona_strength).strip()]
 
         memories = self.memory_store.list_recent(limit=8)
@@ -222,8 +241,8 @@ class ConversationManager:
             system_parts.append("\n".join(memory_lines))
 
         novel_context = self._novel_context(payload, message)
-        if novel_context:
-            system_parts.append(novel_context)
+        if novel_context.context:
+            system_parts.append(novel_context.context)
 
         room_state_context = _room_state_context(payload)
         if room_state_context:
@@ -242,15 +261,16 @@ class ConversationManager:
         ]
         messages.extend(_recent_messages(payload))
         messages.append({"role": "user", "content": message})
-        return messages
+        return messages, novel_context.trace
 
-    def _novel_context(self, payload: ChatIn, message: str) -> str:
+    def _novel_context(self, payload: ChatIn, message: str) -> NovelContextResult:
+        empty_trace = NovelRagTraceOut()
         if (
             not self.settings.novel_rag_enabled
             or self.novel_rag_router is None
             or self.novel_rag_store is None
         ):
-            return ""
+            return NovelContextResult("", empty_trace)
 
         recent_user_messages = [
             content
@@ -266,19 +286,43 @@ class ConversationManager:
             )
         except Exception:
             _logger.exception("novel RAG routing failed")
-            return ""
+            return NovelContextResult("", empty_trace)
 
         query = decision.query.strip()
         if not decision.use_novel_rag or not query:
-            return ""
+            return NovelContextResult(
+                "",
+                NovelRagTraceOut(
+                    used=False,
+                    query=query or None,
+                    reason=decision.reason or None,
+                ),
+            )
 
         try:
             results = self.novel_rag_store.search(query, limit=5)
         except Exception:
             _logger.exception("novel RAG search failed")
-            return ""
+            return NovelContextResult(
+                "",
+                NovelRagTraceOut(
+                    used=False,
+                    query=query,
+                    reason=decision.reason or None,
+                ),
+            )
 
-        return build_novel_reference_context(results)
+        context = build_novel_reference_context(results)
+        sources = _novel_source_labels(results)
+        return NovelContextResult(
+            context,
+            NovelRagTraceOut(
+                used=bool(context and sources),
+                query=query,
+                sources=sources,
+                reason=decision.reason or None,
+            ),
+        )
 
     def _run_agent_turn(
         self,
@@ -365,6 +409,7 @@ class ConversationManager:
             session=_session_out(session),
             client_actions=[],
             agent_trace=AgentTraceOut(),
+            novel_rag=NovelRagTraceOut(),
         )
 
 
@@ -573,6 +618,24 @@ def _current_track(title: str | None, artist: str | None) -> str:
     if artist:
         return artist
     return ""
+
+
+def _novel_source_labels(results: list[NovelSearchResult]) -> list[str]:
+    labels: list[str] = []
+    seen: set[str] = set()
+    for result in results:
+        source_title = (result.source_title or result.source_id).strip()
+        chapter_title = (result.chapter_title or _chapter_label_from_path(result.chapter_path)).strip()
+        label = f"{source_title} / {chapter_title}" if chapter_title else source_title
+        if label and label not in seen:
+            seen.add(label)
+            labels.append(label)
+    return labels
+
+
+def _chapter_label_from_path(path: str) -> str:
+    filename = path.rsplit("/", 1)[-1]
+    return filename.rsplit(".", 1)[0]
 
 
 __all__ = ["ConversationManager"]

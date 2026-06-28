@@ -576,9 +576,13 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
       }
 
       const storedSessionId = response.session?.id ?? submittedSessionId;
+      const kumikoReply: ChatMessage = {
+        ...response.reply,
+        novelRag: response.novelRag
+      };
 
       setProviderStatus(response.providerStatus);
-      setMessages((current) => [...current, response.reply]);
+      setMessages((current) => [...current, kumikoReply]);
       applyRoomClientActions(response.clientActions);
       if (storedSessionId) {
         setSessionMessages((current) => [
@@ -1683,6 +1687,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                 const isShort = message.content.trim().length <= 24;
                 const isPending = pendingOutgoingMessageId === message.id;
                 const isFailed = failedOutgoing?.id === message.id;
+                const novelRagBadge = isUser ? null : getNovelRagBadge(message.novelRag);
                 const messageClassName = [
                   "message",
                   isUser ? "me" : "",
@@ -1700,6 +1705,11 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                       <div className="meta">
                         <span>{isUser ? "你" : initialState.character.displayName}</span>
                         <span>{getMessageStatusLabel(isUser, isPending, isFailed)}</span>
+                        {novelRagBadge ? (
+                          <span className="novel-rag-badge" title={novelRagBadge.title}>
+                            {novelRagBadge.label}
+                          </span>
+                        ) : null}
                       </div>
                       <MarkdownBubble content={message.content} />
                       {isFailed ? (
@@ -2628,6 +2638,24 @@ function getMessageStatusLabel(isUser: boolean, isPending: boolean, isFailed: bo
   if (isPending) return "发送中";
 
   return "刚刚";
+}
+
+function getNovelRagBadge(
+  novelRag: ChatMessage["novelRag"]
+): { label: string; title: string } | null {
+  if (!novelRag?.used) return null;
+
+  const sourceCount = Math.max(1, novelRag.sources.length);
+  const titleParts = [
+    novelRag.query ? `检索：${novelRag.query}` : null,
+    novelRag.sources.length > 0 ? `来源：${novelRag.sources.join("；")}` : null,
+    novelRag.reason ? `原因：${novelRag.reason}` : null
+  ].filter((part): part is string => Boolean(part));
+
+  return {
+    label: `参考原作 · ${sourceCount} 段`,
+    title: titleParts.join("\n") || "本轮回答参考了本地小说片段"
+  };
 }
 
 function storedToChatMessage(message: StoredChatMessage): ChatMessage {

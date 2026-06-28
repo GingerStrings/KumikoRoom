@@ -150,6 +150,13 @@ class AgentTraceOut(BaseModel):
     tool_calls: list[dict[str, str | bool]] = Field(default_factory=list)
 
 
+class NovelRagTraceOut(BaseModel):
+    used: bool = False
+    query: str | None = None
+    sources: list[str] = Field(default_factory=list)
+    reason: str | None = None
+
+
 class LLMConfigIn(BaseModel):
     provider: LlmProviderKind
     base_url: str | None = None
@@ -366,3 +373,4 @@ class ChatOut(BaseModel):
     session: ChatSessionOut | None = None
     client_actions: list[RoomClientActionOut] = Field(default_factory=list)
     agent_trace: AgentTraceOut = Field(default_factory=AgentTraceOut)
+    novel_rag: NovelRagTraceOut = Field(default_factory=NovelRagTraceOut)

@@ -1362,7 +1362,7 @@ def test_manager_includes_novel_context_when_router_opts_in(
     )
     provider = FakeProvider("Kumiko reply")
 
-    ConversationManager(
+    response = ConversationManager(
         settings=load_settings(),
         provider=provider,
         novel_rag_router=router,
@@ -1400,6 +1400,10 @@ def test_manager_includes_novel_context_when_router_opts_in(
     assert "響け！ユーフォニアム / 第1章" in system_text
     assert "久美子は少し間を置いてから" in system_text
     assert "使用规则" in system_text
+    assert response.novel_rag.used is True
+    assert response.novel_rag.query == "久美子 说话方式"
+    assert response.novel_rag.reason == "source helps"
+    assert response.novel_rag.sources == ["響け！ユーフォニアム / 第1章"]
 
 
 def test_manager_skips_novel_search_when_router_opts_out(
@@ -1423,7 +1427,7 @@ def test_manager_skips_novel_search_when_router_opts_out(
     )
     provider = FakeProvider("Kumiko reply")
 
-    ConversationManager(
+    response = ConversationManager(
         settings=load_settings(),
         provider=provider,
         novel_rag_router=router,
@@ -1433,6 +1437,8 @@ def test_manager_skips_novel_search_when_router_opts_out(
     assert len(router.calls) == 1
     assert store.calls == []
     assert "小说参考片段" not in provider.messages[0]["content"]
+    assert response.novel_rag.used is False
+    assert response.novel_rag.reason == "casual"
 
 
 def test_manager_continues_when_novel_router_or_search_fails(

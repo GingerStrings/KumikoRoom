@@ -33,6 +33,7 @@ export interface ChatMessage {
   id: string;
   role: "user" | "kumiko";
   content: string;
+  novelRag?: NovelRagTrace;
 }
 
 export interface ChatSession {
@@ -240,6 +241,13 @@ export interface AgentTrace {
   }>;
 }
 
+export interface NovelRagTrace {
+  used: boolean;
+  query: string | null;
+  sources: string[];
+  reason: string | null;
+}
+
 export interface ChatResponse {
   reply: ChatMessage;
   expression: CharacterState["expression"];
@@ -249,6 +257,7 @@ export interface ChatResponse {
   session: ChatSession | null;
   clientActions: RoomClientAction[];
   agentTrace: AgentTrace;
+  novelRag: NovelRagTrace;
 }
 
 export type RecommendationIntent =

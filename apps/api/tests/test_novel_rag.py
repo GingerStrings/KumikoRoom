@@ -673,6 +673,17 @@ def test_parse_novel_rag_decision_rejects_fences_or_trailing_prose() -> None:
         )
 
 
+def test_parse_novel_rag_decision_rejects_extra_keys() -> None:
+    with pytest.raises(NovelRagRoutingError):
+        parse_novel_rag_decision(
+            (
+                '{"use_novel_rag": false, "query": "", '
+                '"reason": "casual", "confidence": 0.9}'
+            ),
+            fallback_query="久美子",
+        )
+
+
 def test_router_uses_provider_decision_for_source_question() -> None:
     provider = FakeRouterProvider(
         [
@@ -771,12 +782,14 @@ def test_build_novel_reference_context_formats_bounded_results() -> None:
         ),
     ]
 
-    context = build_novel_reference_context(results, max_chars=120)
+    context = build_novel_reference_context(results, max_chars=260)
 
     assert "小说参考片段" in context
     assert "[第一卷 / 第一章]" in context
     assert "久美子先沉默了一下" in context
     assert "不要长段复述原文" in context
+    assert "久美子的第一人称" in context
+    assert "小说里的设定是" in context
     assert len(context) < 420
 
 

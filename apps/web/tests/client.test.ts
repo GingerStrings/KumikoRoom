@@ -293,7 +293,13 @@ describe("room API client", () => {
               created_at: "2026-06-06T23:00:00Z"
             }
           ],
-          session: null
+          session: null,
+          novel_rag: {
+            used: true,
+            query: "久美子 soli",
+            sources: ["决意的最终乐章 / 全国大赛"],
+            reason: "source question"
+          }
         })
     }));
     vi.stubGlobal("fetch", fetchMock);
@@ -319,7 +325,13 @@ describe("room API client", () => {
       ],
       session: null,
       clientActions: [],
-      agentTrace: { toolCalls: [] }
+      agentTrace: { toolCalls: [] },
+      novelRag: {
+        used: true,
+        query: "久美子 soli",
+        sources: ["决意的最终乐章 / 全国大赛"],
+        reason: "source question"
+      }
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
