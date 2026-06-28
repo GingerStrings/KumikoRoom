@@ -693,6 +693,11 @@ def test_retrieval_gate_skips_reviewed_false_positive_cases(message: str) -> Non
         "久美子呀，我最近性格为什么这么别扭",
         "上低音号为什么这么难吹",
         "上低音号为什么不好吹",
+        "写点京吹人物关系分析",
+        "帮我找京吹人物关系分析",
+        "搜一下京吹人物关系分析",
+        "上低音号吹起来为什么这么累",
+        "上低音号吹法为什么这么难",
         "京吹小说为什么失败",
         "京吹小说为什么错误",
     ],
@@ -730,11 +735,28 @@ def test_retrieval_gate_skips_failure_followup_after_source_context() -> None:
         )
         is False
     )
+    assert (
+        should_retrieve_novel_context(
+            "为什么加载不动？",
+            recent_user_messages=["我们刚才聊了京吹小说"],
+        )
+        is False
+    )
 
 
 def test_retrieval_gate_triggers_for_character_analysis_with_name() -> None:
     assert should_retrieve_novel_context("久美子的性格为什么会这样？") is True
     assert should_retrieve_novel_context("丽奈和久美子的关系为什么这么别扭") is True
+
+
+def test_retrieval_gate_skips_bare_pronoun_followup_after_source_context() -> None:
+    assert (
+        should_retrieve_novel_context(
+            "她今天几点来？",
+            recent_user_messages=["刚才我们在聊久美子和明日香"],
+        )
+        is False
+    )
 
 
 def test_retrieval_gate_uses_recent_source_context() -> None:
