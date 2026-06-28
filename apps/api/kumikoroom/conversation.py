@@ -93,6 +93,7 @@ class ConversationManager:
             )
         else:
             self.runtime_config = runtime_config_from_settings(self.settings)
+        provider_was_injected = provider is not None
         self.provider = provider or build_provider(
             runtime_config=self.runtime_config
         )
@@ -109,13 +110,18 @@ class ConversationManager:
         if self.settings.novel_rag_enabled:
             if novel_rag_router is not None:
                 self.novel_rag_router = novel_rag_router
-            elif self.runtime_config.provider != "mock":
+            elif not provider_was_injected and self.runtime_config.provider != "mock":
                 self.novel_rag_router = NovelRagRouter(self.provider)
 
             if novel_rag_store is not None:
                 self.novel_rag_store = novel_rag_store
             elif self.settings.novel_rag_db_path.exists():
-                self.novel_rag_store = NovelRagStore(self.settings.novel_rag_db_path)
+                try:
+                    self.novel_rag_store = NovelRagStore(
+                        self.settings.novel_rag_db_path
+                    )
+                except Exception:
+                    _logger.exception("novel RAG store initialization failed")
         self.planner_timeout_seconds = planner_timeout_seconds
 
     def plan_auto_dj_queries(
@@ -247,10 +253,12 @@ class ConversationManager:
             return ""
 
         recent_user_messages = [
-            recent.content.strip()
-            for recent in payload.recent_messages[-6:]
-            if recent.role == "user" and recent.content.strip()
-        ]
+            content
+            for recent in payload.recent_messages
+            if recent.role == "user"
+            for content in [recent.content.strip()]
+            if content
+        ][-6:]
         try:
             decision = self.novel_rag_router.route(
                 message,
@@ -260,11 +268,12 @@ class ConversationManager:
             _logger.exception("novel RAG routing failed")
             return ""
 
-        if not decision.use_novel_rag or not decision.query.strip():
+        query = decision.query.strip()
+        if not decision.use_novel_rag or not query:
             return ""
 
         try:
-            results = self.novel_rag_store.search(decision.query, limit=5)
+            results = self.novel_rag_store.search(query, limit=5)
         except Exception:
             _logger.exception("novel RAG search failed")
             return ""

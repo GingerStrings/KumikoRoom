@@ -47,6 +47,24 @@ class FakeProvider:
         )
 
 
+class RecordingProvider:
+    def __init__(self, content="Kumiko reply"):
+        self.calls = []
+        self.content = content
+
+    def generate(self, messages, **kwargs):
+        self.calls.append({"messages": messages, "kwargs": kwargs})
+        return LLMResult(
+            content=self.content,
+            provider_status=ProviderStatus(
+                provider="deepseek",
+                model="deepseek-v4-flash",
+                configured=True,
+                label="DeepSeek deepseek-v4-flash",
+            ),
+        )
+
+
 class UnavailableProvider:
     def generate(self, messages, tools=None, tool_choice=None):
         raise ProviderUnavailable("provider unavailable")
@@ -1201,6 +1219,126 @@ def test_manager_includes_existing_memories_in_system_prompt(
     assert "用户喜欢安静的钢琴。" in system_text
 
 
+def test_manager_does_not_auto_route_novel_rag_with_injected_provider(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("KUMIKOROOM_MEMORY_DB_PATH", str(tmp_path / "memory.sqlite3"))
+    rag_path = tmp_path / "existing-rag.sqlite3"
+    rag_path.touch()
+    settings = replace(
+        load_settings(),
+        llm_provider="deepseek",
+        deepseek_api_key="test-key",
+        novel_rag_db_path=rag_path,
+    )
+    provider = RecordingProvider()
+
+    ConversationManager(settings=settings, provider=provider).chat(
+        ChatIn(message="久美子在小说里是什么样？", memory_enabled=False)
+    )
+
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["kwargs"] == {
+        "tools": room_agent_tool_specs(),
+        "tool_choice": "auto",
+    }
+    assert "小说参考片段" not in provider.calls[0]["messages"][0]["content"]
+
+
+def test_manager_routes_with_recent_six_user_messages_oldest_first(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("KUMIKOROOM_MEMORY_DB_PATH", str(tmp_path / "memory.sqlite3"))
+    router = FakeNovelRouter(NovelRagDecision(False, "", reason="skip"))
+    store = FakeNovelStore()
+
+    ConversationManager(
+        settings=load_settings(),
+        provider=FakeProvider("Kumiko reply"),
+        novel_rag_router=router,
+        novel_rag_store=store,
+    ).chat(
+        ChatIn(
+            message="继续说久美子",
+            memory_enabled=False,
+            recent_messages=[
+                ChatMessageOut(id="u1", role="user", content="用户 1"),
+                ChatMessageOut(id="a1", role="assistant", content="助手 1"),
+                ChatMessageOut(id="u2", role="user", content="用户 2"),
+                ChatMessageOut(id="k1", role="kumiko", content="久美子 1"),
+                ChatMessageOut(id="u3", role="user", content="用户 3"),
+                ChatMessageOut(id="a2", role="assistant", content="助手 2"),
+                ChatMessageOut(id="u4", role="user", content="用户 4"),
+                ChatMessageOut(id="k2", role="kumiko", content="久美子 2"),
+                ChatMessageOut(id="u5", role="user", content="用户 5"),
+                ChatMessageOut(id="u6", role="user", content="用户 6"),
+                ChatMessageOut(id="a3", role="assistant", content="助手 3"),
+                ChatMessageOut(id="u7", role="user", content="用户 7"),
+                ChatMessageOut(id="u8", role="user", content="用户 8"),
+            ],
+        )
+    )
+
+    assert router.calls == [
+        {
+            "message": "继续说久美子",
+            "recent_user_messages": [
+                "用户 3",
+                "用户 4",
+                "用户 5",
+                "用户 6",
+                "用户 7",
+                "用户 8",
+            ],
+        }
+    ]
+
+
+def test_manager_searches_novel_rag_with_trimmed_query(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("KUMIKOROOM_MEMORY_DB_PATH", str(tmp_path / "memory.sqlite3"))
+    router = FakeNovelRouter(
+        NovelRagDecision(True, "  久美子 性格  ", reason="source helps")
+    )
+    store = FakeNovelStore()
+
+    ConversationManager(
+        settings=load_settings(),
+        provider=FakeProvider("Kumiko reply"),
+        novel_rag_router=router,
+        novel_rag_store=store,
+    ).chat(ChatIn(message="久美子是什么性格？", memory_enabled=False))
+
+    assert store.calls == [{"query": "久美子 性格", "limit": 5}]
+
+
+def test_manager_continues_when_auto_novel_store_initialization_fails(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("KUMIKOROOM_MEMORY_DB_PATH", str(tmp_path / "memory.sqlite3"))
+    rag_path = tmp_path / "rag.sqlite3"
+    rag_path.touch()
+    settings = replace(load_settings(), novel_rag_db_path=rag_path)
+    provider = FakeProvider("Kumiko reply")
+
+    def fail_store_init(db_path):
+        raise RuntimeError("store unavailable")
+
+    monkeypatch.setattr("kumikoroom.conversation.NovelRagStore", fail_store_init)
+
+    response = ConversationManager(settings=settings, provider=provider).chat(
+        ChatIn(message="久美子的小说设定？", memory_enabled=False)
+    )
+
+    assert response.reply.content == "Kumiko reply"
+    assert "小说参考片段" not in provider.messages[0]["content"]
+
+
 def test_manager_includes_novel_context_when_router_opts_in(
     monkeypatch,
     tmp_path,
@@ -1249,6 +1387,7 @@ def test_manager_includes_novel_context_when_router_opts_in(
         {
             "message": "久美子在小说里说话有什么特点？",
             "recent_user_messages": [
+                "太早的消息",
                 "前面问过性格",
                 "也想看原作依据",
                 "关注她的说话方式",
