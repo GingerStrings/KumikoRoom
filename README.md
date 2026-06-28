@@ -103,6 +103,17 @@ $env:KUMIKOROOM_MEMORY_DB_PATH="user-data/memory/kumikoroom-memory.sqlite3"
 
 Do not commit `.env`, `.env.local`, API keys, or SQLite memory databases.
 
+## Local Novel RAG
+
+KumikoRoom can build a local-only SQLite index from local Hibike! Euphonium / Kumiko EPUB files for persona and source grounding.
+
+```powershell
+cd apps\api
+python -m kumikoroom.novel_rag rebuild
+```
+
+The default corpus directory is `D:\555\codex\jc` when it exists, and you can override it with `KUMIKOROOM_NOVEL_CORPUS_DIR`. The generated index defaults to `user-data/rag/kumiko-novels.sqlite3`, which is ignored by git. Set `KUMIKOROOM_NOVEL_RAG_ENABLED=false` to disable local novel RAG.
+
 ## Testing
 
 API tests:

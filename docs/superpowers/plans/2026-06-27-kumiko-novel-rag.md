@@ -43,7 +43,7 @@
 - Modify: `apps/api/tests/test_config.py`
 - Modify: `.env.example`
 
-- [ ] **Step 1: Write failing config tests**
+- [x] **Step 1: Write failing config tests**
 
 Append these tests to `apps/api/tests/test_config.py`:
 
@@ -104,7 +104,7 @@ def test_invalid_novel_rag_enabled_raises_value_error(monkeypatch) -> None:
         load_settings()
 ```
 
-- [ ] **Step 2: Run config tests to verify they fail**
+- [x] **Step 2: Run config tests to verify they fail**
 
 Run:
 
@@ -115,7 +115,7 @@ python -m pytest tests/test_config.py -q
 
 Expected: FAIL with `AttributeError` for `novel_corpus_dir`, `novel_rag_db_path`, or `novel_rag_enabled`.
 
-- [ ] **Step 3: Add settings fields and parser**
+- [x] **Step 3: Add settings fields and parser**
 
 In `apps/api/kumikoroom/config.py`, add these constants near the existing defaults:
 
@@ -170,7 +170,7 @@ def _env_bool(name: str, default: bool) -> bool:
     )
 ```
 
-- [ ] **Step 4: Isolate RAG env vars in tests**
+- [x] **Step 4: Isolate RAG env vars in tests**
 
 In `apps/api/tests/conftest.py`, extend the env deletion loop:
 
@@ -193,7 +193,7 @@ Then set test-only RAG paths after the memory DB path:
     )
 ```
 
-- [ ] **Step 5: Document env variables**
+- [x] **Step 5: Document env variables**
 
 Append this block to `.env.example`:
 
@@ -204,7 +204,7 @@ KUMIKOROOM_NOVEL_RAG_DB_PATH=user-data/rag/kumiko-novels.sqlite3
 KUMIKOROOM_NOVEL_RAG_ENABLED=true
 ```
 
-- [ ] **Step 6: Run config tests to verify they pass**
+- [x] **Step 6: Run config tests to verify they pass**
 
 Run:
 
@@ -215,7 +215,7 @@ python -m pytest tests/test_config.py -q
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add apps/api/kumikoroom/config.py apps/api/tests/conftest.py apps/api/tests/test_config.py .env.example
@@ -228,7 +228,7 @@ git commit -m "feat: add novel RAG settings"
 - Create: `apps/api/kumikoroom/novel_rag.py`
 - Create: `apps/api/tests/test_novel_rag.py`
 
-- [ ] **Step 1: Write failing EPUB extraction tests**
+- [x] **Step 1: Write failing EPUB extraction tests**
 
 Create `apps/api/tests/test_novel_rag.py` with:
 
@@ -333,7 +333,7 @@ def test_extract_epub_chunks_uses_fallback_for_malformed_xhtml(tmp_path: Path) -
     assert "久美子没有急着接话" in chunks[0].text
 ```
 
-- [ ] **Step 2: Run tests to verify module is missing**
+- [x] **Step 2: Run tests to verify module is missing**
 
 Run:
 
@@ -344,7 +344,7 @@ python -m pytest tests/test_novel_rag.py -q
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'kumikoroom.novel_rag'`.
 
-- [ ] **Step 3: Add data model and EPUB helpers**
+- [x] **Step 3: Add data model and EPUB helpers**
 
 Create `apps/api/kumikoroom/novel_rag.py` with:
 
@@ -527,7 +527,7 @@ def _normalize_text(text: str) -> str:
 
 This file will grow in later tasks. Keep the imports that later tasks use so patching stays small.
 
-- [ ] **Step 4: Run extraction tests**
+- [x] **Step 4: Run extraction tests**
 
 Run:
 
@@ -538,7 +538,7 @@ python -m pytest tests/test_novel_rag.py -q
 
 Expected: PASS for the four tests in this file.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add apps/api/kumikoroom/novel_rag.py apps/api/tests/test_novel_rag.py
@@ -551,7 +551,7 @@ git commit -m "feat: extract local novel EPUB text"
 - Modify: `apps/api/kumikoroom/novel_rag.py`
 - Modify: `apps/api/tests/test_novel_rag.py`
 
-- [ ] **Step 1: Write failing index and search tests**
+- [x] **Step 1: Write failing index and search tests**
 
 Append to `apps/api/tests/test_novel_rag.py`:
 
@@ -637,7 +637,7 @@ def test_rebuild_novel_index_reports_broken_epub_and_continues(tmp_path: Path) -
     assert "01.broken.epub" in stats.errors[0]
 ```
 
-- [ ] **Step 2: Run tests to verify missing store**
+- [x] **Step 2: Run tests to verify missing store**
 
 Run:
 
@@ -648,7 +648,7 @@ python -m pytest tests/test_novel_rag.py -q
 
 Expected: FAIL with `ImportError` or `AttributeError` for `NovelRagStore` and `rebuild_novel_index`.
 
-- [ ] **Step 3: Add FTS5 store and rebuild implementation**
+- [x] **Step 3: Add FTS5 store and rebuild implementation**
 
 Append this code to `apps/api/kumikoroom/novel_rag.py`:
 
@@ -889,7 +889,7 @@ def _search_tokens(text: str) -> list[str]:
     return tokens
 ```
 
-- [ ] **Step 4: Run novel RAG tests**
+- [x] **Step 4: Run novel RAG tests**
 
 Run:
 
@@ -900,7 +900,7 @@ python -m pytest tests/test_novel_rag.py -q
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add apps/api/kumikoroom/novel_rag.py apps/api/tests/test_novel_rag.py
@@ -913,7 +913,7 @@ git commit -m "feat: index novel chunks with sqlite fts"
 - Modify: `apps/api/kumikoroom/novel_rag.py`
 - Modify: `apps/api/tests/test_novel_rag.py`
 
-- [ ] **Step 1: Write failing router, parser, and formatter tests**
+- [x] **Step 1: Write failing router, parser, and formatter tests**
 
 Append to `apps/api/tests/test_novel_rag.py`:
 
@@ -1088,7 +1088,7 @@ def test_build_novel_reference_context_empty_results_returns_empty_string() -> N
     assert build_novel_reference_context([]) == ""
 ```
 
-- [ ] **Step 2: Run tests to verify missing functions**
+- [x] **Step 2: Run tests to verify missing functions**
 
 Run:
 
@@ -1099,7 +1099,7 @@ python -m pytest tests/test_novel_rag.py -q
 
 Expected: FAIL with missing imports for `NovelRagDecision`, `NovelRagRouter`, `NovelRagRoutingError`, and `parse_novel_rag_decision`.
 
-- [ ] **Step 3: Add router parser and provider-backed router**
+- [x] **Step 3: Add router parser and provider-backed router**
 
 Add these pieces to `apps/api/kumikoroom/novel_rag.py`:
 
@@ -1110,7 +1110,7 @@ Add these pieces to `apps/api/kumikoroom/novel_rag.py`:
 - `NovelRagRouter(provider, timeout_seconds=8.0)`, calling `provider.generate(messages, timeout=timeout_seconds)`, returning the parsed decision, and falling back to a false `NovelRagDecision` with a short reason on empty input, provider failure, parse failure, or malformed JSON.
 - Do not inspect the message for local yes/no route rules. The provider JSON controls the route.
 
-- [ ] **Step 4: Keep formatter behavior**
+- [x] **Step 4: Keep formatter behavior**
 
 Keep or append:
 
@@ -1170,7 +1170,7 @@ def _trim_snippet(text: str, *, max_chars: int) -> str:
     return trimmed.rstrip() + "…"
 ```
 
-- [ ] **Step 5: Add CLI command**
+- [x] **Step 5: Add CLI command**
 
 Append to `apps/api/kumikoroom/novel_rag.py`:
 
@@ -1206,7 +1206,7 @@ if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
 ```
 
-- [ ] **Step 6: Run focused tests and CLI smoke check**
+- [x] **Step 6: Run focused tests and CLI smoke check**
 
 Run:
 
@@ -1221,7 +1221,7 @@ Expected:
 - pytest PASS.
 - CLI prints counts. In the isolated test shell it may show `Indexed sources: 0` if `D:\555\codex\jc` is unavailable or env vars point elsewhere.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add apps/api/kumikoroom/novel_rag.py apps/api/tests/test_novel_rag.py
@@ -1234,7 +1234,7 @@ git commit -m "feat: format novel retrieval context"
 - Modify: `apps/api/kumikoroom/conversation.py`
 - Modify: `apps/api/tests/test_conversation.py`
 
-- [ ] **Step 1: Write failing conversation tests**
+- [x] **Step 1: Write failing conversation tests**
 
 Append to `apps/api/tests/test_conversation.py`:
 
@@ -1358,7 +1358,7 @@ def test_manager_continues_when_router_or_novel_search_fails(monkeypatch, tmp_pa
     assert "小说参考片段" not in provider.messages[0]["content"]
 ```
 
-- [ ] **Step 2: Run tests to verify constructor argument is missing**
+- [x] **Step 2: Run tests to verify constructor argument is missing**
 
 Run:
 
@@ -1369,7 +1369,7 @@ python -m pytest tests/test_conversation.py::test_manager_includes_novel_context
 
 Expected: FAIL with `TypeError: ConversationManager.__init__() got an unexpected keyword argument 'novel_rag_router'`.
 
-- [ ] **Step 3: Add imports and constructor collaborator**
+- [x] **Step 3: Add imports and constructor collaborator**
 
 In `apps/api/kumikoroom/conversation.py`, add imports:
 
@@ -1391,23 +1391,28 @@ Extend `ConversationManager.__init__` signature:
 After session store initialization, add:
 
 ```python
-        self.novel_rag_router = novel_rag_router
-        self.novel_rag_store = novel_rag_store
-        if (
-            self.novel_rag_store is None
-            and self.settings.novel_rag_enabled
-            and self.settings.novel_rag_db_path.exists()
-        ):
-            self.novel_rag_store = NovelRagStore(self.settings.novel_rag_db_path)
-        if (
-            self.novel_rag_router is None
-            and self.novel_rag_store is not None
-            and self.settings.novel_rag_enabled
-        ):
-            self.novel_rag_router = NovelRagRouter(self.provider)
+        self.novel_rag_router: NovelRagRouter | None = None
+        self.novel_rag_store: NovelRagStore | None = None
+        if self.settings.novel_rag_enabled:
+            if novel_rag_router is not None:
+                self.novel_rag_router = novel_rag_router
+            elif not provider_was_injected and self.runtime_config.provider != "mock":
+                self.novel_rag_router = NovelRagRouter(self.provider)
+
+            if novel_rag_store is not None:
+                self.novel_rag_store = novel_rag_store
+            elif self.settings.novel_rag_db_path.exists():
+                try:
+                    self.novel_rag_store = NovelRagStore(
+                        self.settings.novel_rag_db_path
+                    )
+                except Exception:
+                    _logger.exception("novel RAG store initialization failed")
 ```
 
-- [ ] **Step 4: Add prompt context helper**
+Final strategy: `NovelRagStore` may still be auto-created when local RAG is enabled and the SQLite DB file exists, with initialization failures degrading silently. `NovelRagRouter` is auto-created only when no provider was explicitly injected and the runtime provider is not mock. When a caller injects a provider explicitly, it must also inject a router explicitly if novel routing is desired.
+
+- [x] **Step 4: Add prompt context helper**
 
 In `_build_messages()`, after the memory block and before room state:
 
@@ -1448,7 +1453,7 @@ Add this method to `ConversationManager`:
         return build_novel_reference_context(results)
 ```
 
-- [ ] **Step 5: Run focused conversation tests**
+- [x] **Step 5: Run focused conversation tests**
 
 Run:
 
@@ -1459,7 +1464,7 @@ python -m pytest tests/test_conversation.py::test_manager_includes_novel_context
 
 Expected: PASS.
 
-- [ ] **Step 6: Run the full conversation test file**
+- [x] **Step 6: Run the full conversation test file**
 
 Run:
 
@@ -1470,7 +1475,7 @@ python -m pytest tests/test_conversation.py -q
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```powershell
 git add apps/api/kumikoroom/conversation.py apps/api/tests/test_conversation.py
@@ -1483,7 +1488,7 @@ git commit -m "feat: add novel context to chat prompts"
 - Modify: `apps/api/kumikoroom/persona.py`
 - Modify: `apps/api/tests/test_persona.py`
 
-- [ ] **Step 1: Write failing persona logic test**
+- [x] **Step 1: Write failing persona logic test**
 
 Add this test to `apps/api/tests/test_persona.py` before the prompt-size test:
 
@@ -1505,7 +1510,7 @@ Update the compact-size assertion:
     assert len(prompt) < 1800
 ```
 
-- [ ] **Step 2: Run persona tests to verify failure**
+- [x] **Step 2: Run persona tests to verify failure**
 
 Run:
 
@@ -1516,7 +1521,7 @@ python -m pytest tests/test_persona.py -q
 
 Expected: FAIL because the prompt lacks the speaking logic phrases.
 
-- [ ] **Step 3: Add compact logic card**
+- [x] **Step 3: Add compact logic card**
 
 In `apps/api/kumikoroom/persona.py`, add this constant after `_CORE_PROFILE`:
 
@@ -1536,7 +1541,7 @@ Append it to both prompt variants before `_CORE_PROFILE`:
 """ + _SPEAKING_LOGIC + "\n" + _CORE_PROFILE
 ```
 
-- [ ] **Step 4: Run persona tests**
+- [x] **Step 4: Run persona tests**
 
 Run:
 
@@ -1547,7 +1552,7 @@ python -m pytest tests/test_persona.py -q
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add apps/api/kumikoroom/persona.py apps/api/tests/test_persona.py
@@ -1561,7 +1566,7 @@ git commit -m "feat: tighten Kumiko speaking logic"
 - Modify: `README.zh-CN.md`
 - Modify: `docs/superpowers/plans/2026-06-27-kumiko-novel-rag.md` only to tick completed boxes during execution
 
-- [ ] **Step 1: Add README instructions**
+- [x] **Step 1: Add README instructions**
 
 Add this short section to `README.md` near the model/memory configuration material:
 
@@ -1656,7 +1661,7 @@ npm test
 
 Expected: PASS. If frontend or desktop tests fail for an unrelated existing reason, capture the failing command and first relevant error lines.
 
-- [ ] **Step 7: Commit docs and final verification**
+- [x] **Step 7: Commit docs and final verification**
 
 ```powershell
 git add README.md README.zh-CN.md docs/superpowers/plans/2026-06-27-kumiko-novel-rag.md

@@ -103,6 +103,17 @@ $env:KUMIKOROOM_MEMORY_DB_PATH="user-data/memory/kumikoroom-memory.sqlite3"
 
 不要提交 `.env`、`.env.local`、API Key 或 SQLite 记忆数据库。
 
+## 本地小说 RAG
+
+KumikoRoom 可以从本地《吹响吧！上低音号》/ 久美子相关 EPUB 建立只在本机使用的 SQLite 索引，用来辅助人物语气和原作来源 grounding。
+
+```powershell
+cd apps\api
+python -m kumikoroom.novel_rag rebuild
+```
+
+默认语料目录是存在时的 `D:\555\codex\jc`，可以用 `KUMIKOROOM_NOVEL_CORPUS_DIR` 覆盖。索引默认写到 `user-data/rag/kumiko-novels.sqlite3`，这个路径已被 git 忽略。设置 `KUMIKOROOM_NOVEL_RAG_ENABLED=false` 可以关闭本地小说 RAG。
+
 ## 测试
 
 API 测试：
