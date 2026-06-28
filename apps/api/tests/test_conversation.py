@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ from kumikoroom.llm import (
     ProviderUnavailable,
 )
 from kumikoroom.memory import MemoryStore
+from kumikoroom.novel_rag import NovelRagDecision, NovelSearchResult
 import kumikoroom.agent_tools as agent_tools
 from kumikoroom.agent_tools import (
     RoomAgentToolContext,
@@ -129,6 +131,37 @@ class FakeSessionStore:
         )
         self.saved.append(message)
         return message
+
+
+class FakeNovelRouter:
+    def __init__(self, decision=None, error: Exception | None = None):
+        self.decision = decision or NovelRagDecision(False, "", reason="skip")
+        self.error = error
+        self.calls = []
+
+    def route(self, message, *, recent_user_messages=()):
+        self.calls.append(
+            {
+                "message": message,
+                "recent_user_messages": list(recent_user_messages),
+            }
+        )
+        if self.error is not None:
+            raise self.error
+        return self.decision
+
+
+class FakeNovelStore:
+    def __init__(self, results=None, error: Exception | None = None):
+        self.results = list(results or [])
+        self.error = error
+        self.calls = []
+
+    def search(self, query, limit=5):
+        self.calls.append({"query": query, "limit": limit})
+        if self.error is not None:
+            raise self.error
+        return self.results
 
 
 def music_track_fixture(
@@ -1166,6 +1199,176 @@ def test_manager_includes_existing_memories_in_system_prompt(
     system_text = provider.messages[0]["content"]
     assert "参考记忆" in system_text
     assert "用户喜欢安静的钢琴。" in system_text
+
+
+def test_manager_includes_novel_context_when_router_opts_in(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("KUMIKOROOM_MEMORY_DB_PATH", str(tmp_path / "memory.sqlite3"))
+    router = FakeNovelRouter(
+        NovelRagDecision(True, "久美子 说话方式", reason="source helps")
+    )
+    store = FakeNovelStore(
+        [
+            NovelSearchResult(
+                source_id="vol1",
+                source_title="響け！ユーフォニアム",
+                chapter_path="chapter-01.xhtml",
+                chapter_title="第1章",
+                chunk_index=3,
+                text="久美子は少し間を置いてから、相手の顔色を見ながら言葉を選んだ。",
+                rank=0.12,
+            )
+        ]
+    )
+    provider = FakeProvider("Kumiko reply")
+
+    ConversationManager(
+        settings=load_settings(),
+        provider=provider,
+        novel_rag_router=router,
+        novel_rag_store=store,
+    ).chat(
+        ChatIn(
+            message="久美子在小说里说话有什么特点？",
+            memory_enabled=False,
+            recent_messages=[
+                ChatMessageOut(id="old", role="user", content="太早的消息"),
+                ChatMessageOut(id="u1", role="user", content="前面问过性格"),
+                ChatMessageOut(id="k1", role="kumiko", content="嗯，我想想。"),
+                ChatMessageOut(id="blank", role="user", content="   "),
+                ChatMessageOut(id="u2", role="user", content="也想看原作依据"),
+                ChatMessageOut(id="a1", role="assistant", content="可以。"),
+                ChatMessageOut(id="u3", role="user", content="关注她的说话方式"),
+            ],
+        )
+    )
+
+    assert router.calls == [
+        {
+            "message": "久美子在小说里说话有什么特点？",
+            "recent_user_messages": [
+                "前面问过性格",
+                "也想看原作依据",
+                "关注她的说话方式",
+            ],
+        }
+    ]
+    assert store.calls == [{"query": "久美子 说话方式", "limit": 5}]
+    system_text = provider.messages[0]["content"]
+    assert "小说参考片段" in system_text
+    assert "響け！ユーフォニアム / 第1章" in system_text
+    assert "久美子は少し間を置いてから" in system_text
+    assert "使用规则" in system_text
+
+
+def test_manager_skips_novel_search_when_router_opts_out(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("KUMIKOROOM_MEMORY_DB_PATH", str(tmp_path / "memory.sqlite3"))
+    router = FakeNovelRouter(NovelRagDecision(False, "", reason="casual"))
+    store = FakeNovelStore(
+        [
+            NovelSearchResult(
+                source_id="vol1",
+                source_title="響け！ユーフォニアム",
+                chapter_path="chapter-01.xhtml",
+                chapter_title="第1章",
+                chunk_index=1,
+                text="should not appear",
+                rank=0.2,
+            )
+        ]
+    )
+    provider = FakeProvider("Kumiko reply")
+
+    ConversationManager(
+        settings=load_settings(),
+        provider=provider,
+        novel_rag_router=router,
+        novel_rag_store=store,
+    ).chat(ChatIn(message="今晚聊点轻松的", memory_enabled=False))
+
+    assert len(router.calls) == 1
+    assert store.calls == []
+    assert "小说参考片段" not in provider.messages[0]["content"]
+
+
+def test_manager_continues_when_novel_router_or_search_fails(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("KUMIKOROOM_MEMORY_DB_PATH", str(tmp_path / "memory.sqlite3"))
+
+    router_error = FakeNovelRouter(error=RuntimeError("router down"))
+    router_error_store = FakeNovelStore()
+    router_error_provider = FakeProvider("Kumiko reply")
+    router_error_response = ConversationManager(
+        settings=load_settings(),
+        provider=router_error_provider,
+        novel_rag_router=router_error,
+        novel_rag_store=router_error_store,
+    ).chat(ChatIn(message="久美子的原作性格呢？", memory_enabled=False))
+
+    assert router_error_response.reply.content == "Kumiko reply"
+    assert len(router_error.calls) == 1
+    assert router_error_store.calls == []
+    assert "小说参考片段" not in router_error_provider.messages[0]["content"]
+
+    search_error_router = FakeNovelRouter(
+        NovelRagDecision(True, "久美子 性格", reason="source helps")
+    )
+    search_error_store = FakeNovelStore(error=RuntimeError("search down"))
+    search_error_provider = FakeProvider("Kumiko reply")
+    search_error_response = ConversationManager(
+        settings=load_settings(),
+        provider=search_error_provider,
+        novel_rag_router=search_error_router,
+        novel_rag_store=search_error_store,
+    ).chat(ChatIn(message="久美子的原作性格呢？", memory_enabled=False))
+
+    assert search_error_response.reply.content == "Kumiko reply"
+    assert len(search_error_router.calls) == 1
+    assert search_error_store.calls == [{"query": "久美子 性格", "limit": 5}]
+    assert "小说参考片段" not in search_error_provider.messages[0]["content"]
+
+
+def test_manager_skips_novel_rag_when_disabled(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("KUMIKOROOM_MEMORY_DB_PATH", str(tmp_path / "memory.sqlite3"))
+    settings = replace(load_settings(), novel_rag_enabled=False)
+    router = FakeNovelRouter(
+        NovelRagDecision(True, "久美子 说话方式", reason="source helps")
+    )
+    store = FakeNovelStore(
+        [
+            NovelSearchResult(
+                source_id="vol1",
+                source_title="響け！ユーフォニアム",
+                chapter_path="chapter-01.xhtml",
+                chapter_title="第1章",
+                chunk_index=1,
+                text="should not appear",
+                rank=0.2,
+            )
+        ]
+    )
+    provider = FakeProvider("Kumiko reply")
+
+    ConversationManager(
+        settings=settings,
+        provider=provider,
+        novel_rag_router=router,
+        novel_rag_store=store,
+    ).chat(ChatIn(message="久美子的原作性格呢？", memory_enabled=False))
+
+    assert router.calls == []
+    assert store.calls == []
+    assert "小说参考片段" not in provider.messages[0]["content"]
 
 
 def test_manager_includes_listening_context_in_system_prompt(

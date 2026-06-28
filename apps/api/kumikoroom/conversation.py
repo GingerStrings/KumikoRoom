@@ -37,6 +37,11 @@ from kumikoroom.llm import (
     unconfigured_runtime_status,
 )
 from kumikoroom.memory import MemoryStore, extract_memories
+from kumikoroom.novel_rag import (
+    NovelRagRouter,
+    NovelRagStore,
+    build_novel_reference_context,
+)
 from kumikoroom.persona import build_persona_prompt
 from kumikoroom.schemas import (
     ChatIn,
@@ -72,6 +77,8 @@ class ConversationManager:
         provider: LLMProvider | None = None,
         memory_store: MemoryStore | None = None,
         session_store: SessionStore | None = None,
+        novel_rag_router: NovelRagRouter | None = None,
+        novel_rag_store: NovelRagStore | None = None,
         llm_config=None,
         initialize_stores: bool = True,
         planner_timeout_seconds: float = 45.0,
@@ -97,6 +104,18 @@ class ConversationManager:
         else:
             self.memory_store = None
             self.session_store = None
+        self.novel_rag_router: NovelRagRouter | None = None
+        self.novel_rag_store: NovelRagStore | None = None
+        if self.settings.novel_rag_enabled:
+            if novel_rag_router is not None:
+                self.novel_rag_router = novel_rag_router
+            elif self.runtime_config.provider != "mock":
+                self.novel_rag_router = NovelRagRouter(self.provider)
+
+            if novel_rag_store is not None:
+                self.novel_rag_store = novel_rag_store
+            elif self.settings.novel_rag_db_path.exists():
+                self.novel_rag_store = NovelRagStore(self.settings.novel_rag_db_path)
         self.planner_timeout_seconds = planner_timeout_seconds
 
     def plan_auto_dj_queries(
@@ -196,6 +215,10 @@ class ConversationManager:
                 memory_lines.append(f"- [{memory.category}] {memory.text}")
             system_parts.append("\n".join(memory_lines))
 
+        novel_context = self._novel_context(payload, message)
+        if novel_context:
+            system_parts.append(novel_context)
+
         room_state_context = _room_state_context(payload)
         if room_state_context:
             system_parts.append(room_state_context)
@@ -214,6 +237,39 @@ class ConversationManager:
         messages.extend(_recent_messages(payload))
         messages.append({"role": "user", "content": message})
         return messages
+
+    def _novel_context(self, payload: ChatIn, message: str) -> str:
+        if (
+            not self.settings.novel_rag_enabled
+            or self.novel_rag_router is None
+            or self.novel_rag_store is None
+        ):
+            return ""
+
+        recent_user_messages = [
+            recent.content.strip()
+            for recent in payload.recent_messages[-6:]
+            if recent.role == "user" and recent.content.strip()
+        ]
+        try:
+            decision = self.novel_rag_router.route(
+                message,
+                recent_user_messages=recent_user_messages,
+            )
+        except Exception:
+            _logger.exception("novel RAG routing failed")
+            return ""
+
+        if not decision.use_novel_rag or not decision.query.strip():
+            return ""
+
+        try:
+            results = self.novel_rag_store.search(decision.query, limit=5)
+        except Exception:
+            _logger.exception("novel RAG search failed")
+            return ""
+
+        return build_novel_reference_context(results)
 
     def _run_agent_turn(
         self,
