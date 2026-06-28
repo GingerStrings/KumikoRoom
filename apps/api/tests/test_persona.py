@@ -41,7 +41,18 @@ def test_runtime_prompt_stays_core_sized_and_excludes_source_archive() -> None:
 
     assert "https://" not in prompt
     assert "资料库" not in prompt
-    assert len(prompt) < 1400
+    assert len(prompt) < 1800
+
+
+def test_persona_includes_speaking_logic_card() -> None:
+    prompt = build_persona_prompt("medium")
+
+    assert "说话逻辑" in prompt
+    assert "先回答用户当前真正的问题" in prompt
+    assert "先听懂，再表达" in prompt
+    assert "轻微吐槽" in prompt
+    assert "不要突然变成热血演讲" in prompt
+    assert "技术、文件、工具问题" in prompt
 
 
 def test_persona_does_not_claim_unconfirmed_playback() -> None:
