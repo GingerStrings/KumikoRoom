@@ -1598,7 +1598,7 @@ python -m kumikoroom.novel_rag rebuild
 默认语料目录是存在时的 `D:\555\codex\jc`。可以用 `KUMIKOROOM_NOVEL_CORPUS_DIR` 覆盖。索引默认写到 `user-data/rag/kumiko-novels.sqlite3`，这个路径已经被 git 忽略。
 ````
 
-- [ ] **Step 2: Run focused backend tests**
+- [x] **Step 2: Run focused backend tests**
 
 Run:
 
@@ -1609,7 +1609,7 @@ python -m pytest tests/test_config.py tests/test_novel_rag.py tests/test_persona
 
 Expected: PASS.
 
-- [ ] **Step 3: Run full API test suite**
+- [x] **Step 3: Run full API test suite**
 
 Run:
 
@@ -1620,7 +1620,7 @@ python -m pytest -q
 
 Expected: PASS. If permission warnings appear for old pytest cache folders, record them in the final handoff only when they affect the exit code.
 
-- [ ] **Step 4: Rebuild the real local index**
+- [x] **Step 4: Rebuild the real local index**
 
 Run:
 
@@ -1631,7 +1631,7 @@ python -m kumikoroom.novel_rag rebuild
 
 Expected in this workspace: indexed source count should be `12`; chunk count should be greater than `0`; unrelated PDFs/images/videos in `D:\555\codex\jc` should be skipped.
 
-- [ ] **Step 5: Smoke test search against the real index**
+- [x] **Step 5: Smoke test search against the real index**
 
 Run this inline Python command:
 
@@ -1642,16 +1642,23 @@ from kumikoroom.novel_rag import NovelRagStore
 
 settings = load_settings()
 store = NovelRagStore(settings.novel_rag_db_path)
-results = store.search("久美子 丽奈 性格", limit=3)
+query = "\u4e45\u7f8e\u5b50 \u4e3d\u5948 \u6027\u683c"
+results = store.search(query, limit=3)
 print(len(results))
 for result in results:
-    print(result.source_title, result.chapter_title, result.text[:80])
+    print(
+        result.source_title.encode("unicode_escape").decode("ascii"),
+        result.chapter_title.encode("unicode_escape").decode("ascii"),
+        result.text[:80].encode("unicode_escape").decode("ascii"),
+    )
 '@ | python -
 ```
 
-Expected: prints at least one result with a source title and snippet text.
+Expected: prints at least one result with a source title and snippet text. The
+Unicode escapes avoid PowerShell pipe encoding turning CJK text into question
+marks.
 
-- [ ] **Step 6: Run workspace tests if time allows**
+- [x] **Step 6: Run workspace tests if time allows**
 
 Run from repo root:
 
