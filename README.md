@@ -112,7 +112,7 @@ cd apps\api
 python -m kumikoroom.novel_rag rebuild
 ```
 
-The default corpus directory is `D:\555\codex\jc` when it exists, and you can override it with `KUMIKOROOM_NOVEL_CORPUS_DIR`. The generated index defaults to `user-data/rag/kumiko-novels.sqlite3`, which is ignored by git. Set `KUMIKOROOM_NOVEL_RAG_ENABLED=false` to disable local novel RAG.
+The corpus directory defaults to `D:\555\codex\jc`; if that path is missing, rebuild indexes zero sources. You can override it with `KUMIKOROOM_NOVEL_CORPUS_DIR`. The generated index defaults to `user-data/rag/kumiko-novels.sqlite3`, which is ignored by git. Set `KUMIKOROOM_NOVEL_RAG_ENABLED=false` to disable local novel RAG.
 
 ## Testing
 
