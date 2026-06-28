@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import html
+import json
+import logging
 import posixpath
 import re
 import sqlite3
@@ -14,6 +16,11 @@ from typing import Sequence
 from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
+
+from kumikoroom.llm import LLMMessage, LLMProvider
+
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -44,6 +51,58 @@ class NovelIndexStats:
     chunk_count: int
     skipped_files: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class NovelRagDecision:
+    use_novel_rag: bool
+    query: str
+    reason: str = ""
+
+
+class NovelRagRoutingError(RuntimeError):
+    """Raised when the novel RAG router returns malformed JSON."""
+
+
+class NovelRagRouter:
+    def __init__(
+        self,
+        provider: LLMProvider,
+        *,
+        timeout_seconds: float = 8.0,
+    ) -> None:
+        self.provider = provider
+        self.timeout_seconds = timeout_seconds
+
+    def route(
+        self,
+        message: str,
+        *,
+        recent_user_messages: Sequence[str] = (),
+    ) -> NovelRagDecision:
+        fallback_query = _normalize_text(message)
+        if not fallback_query:
+            return NovelRagDecision(False, "", reason="empty message")
+
+        try:
+            result = self.provider.generate(
+                build_novel_rag_router_messages(
+                    message,
+                    recent_user_messages=recent_user_messages,
+                ),
+                timeout=self.timeout_seconds,
+            )
+            return parse_novel_rag_decision(
+                result.content,
+                fallback_query=fallback_query,
+            )
+        except Exception as exc:
+            _logger.info("novel RAG router skipped retrieval: %s", exc)
+            return NovelRagDecision(
+                False,
+                "",
+                reason=_trim_to_budget(f"router failed: {exc}", _ROUTER_REASON_MAX),
+            )
 
 
 class NovelRagStore:
@@ -215,202 +274,29 @@ _SCRIPT_STYLE_RE = re.compile(
     r"<(script|style)\b[^>]*>.*?</\1>",
     re.IGNORECASE | re.DOTALL,
 )
-_SOURCE_CHARACTER_TERMS = (
-    "久美子",
-    "黄前",
-    "丽奈",
-    "高坂",
-    "明日香",
-    "叶月",
-    "绿辉",
-    "香织",
-    "优子",
-    "夏纪",
-    "秀一",
-)
-_SOURCE_ANCHOR_TERMS = (
-    "京吹",
-    "吹响吧",
-    "吹响",
-    "上低音号",
-    "北宇治",
-    "原作",
-)
-_ANALYSIS_INTENT_TERMS = (
-    "为什么",
-    "关系",
-    "性格",
-    "心理",
-    "说话方式",
-    "语气",
-    "人设",
-    "动机",
-    "章节",
-    "人物关系",
-    "设定",
-    "剧情",
-    "片段",
-    "台词",
-    "这一段",
-    "那一段",
-)
-_SOURCE_FOLLOWUP_TERMS = (
-    "为什么",
-    "怎么",
-    "怎样",
-    "这样",
-    "那她",
-    "那他",
-    "这段",
-    "那段",
-    "这一段",
-    "那一段",
-    "关系",
-    "性格",
-    "语气",
-    "说话",
-    "剧情",
-)
-_UNRELATED_REQUEST_TERMS = (
-    "播放",
-    "放一首",
-    "听歌",
-    "周杰伦",
-    "文件",
-    "目录",
-    "路径",
-    "下载",
-    "搜索",
-    "导入",
-    "解析",
-    "工具",
-    "app",
-    "应用",
-    "处理这个",
-    "看看这个文件",
-    "帮我看看",
-    "帮我写",
-    "帮我找",
-    "推荐",
-    "请写",
-    "给我写",
-    "写京吹",
-    "写点",
-    "写个",
-    "写一段",
-    "写一下",
-    "写一篇",
-    "写段",
-    "编一段",
-    "生成",
-    "创作",
-    "角色歌",
-    "合奏怎么练",
-    "怎么练",
-    "怎么写比较好",
-    "推荐一下",
-    "有没有推荐",
-    "推荐一本",
-    "推荐一部",
-    "一本小说",
-    "一部小说",
-    "找一下",
-    "搜一下",
-)
-_UNRELATED_FAILURE_TERMS = (
-    "打不开",
-    "无法打开",
-    "没声音",
-    "没有声音",
-    "播放失败",
-    "加载失败",
-    "加载不出来",
-    "加载不了",
-    "加载不动",
-    "不能打开",
-    "没法打开",
-    "下载失败",
-    "解析失败",
-    "导入失败",
-    "失败",
-    "出错",
-    "报错",
-    "错误",
-    "接口",
-    "崩溃",
-    "卡住",
-)
-_OPERATIONAL_FAILURE_TERMS = (
-    "打不开",
-    "无法打开",
-    "没声音",
-    "没有声音",
-    "播放失败",
-    "加载失败",
-    "加载不出来",
-    "加载不了",
-    "加载不动",
-    "不能打开",
-    "没法打开",
-    "下载失败",
-    "解析失败",
-    "导入失败",
-    "出错",
-    "报错",
-    "接口",
-    "崩溃",
-    "卡住",
-)
-_GENERIC_OPERATIONAL_FAILURE_TERMS = (
-    "失败",
-    "错误",
-)
-_OPERATIONAL_FAILURE_SUBJECT_TERMS = (
-    "小说",
-    "文件",
-    "app",
-    "应用",
-    "工具",
-    "接口",
-    "加载",
-    "下载",
-    "解析",
-    "导入",
-    "打开",
-    "播放",
-)
-_PERSONA_ADDRESS_SEPARATORS = ("，", ",", "、", "：", ":", " ", "啊", "呀")
-_PERSONA_ADDRESS_CONTINUATION_PREFIXES = ("你", "我")
-_USER_PERSONAL_CONTEXT_TERMS = (
-    "我和",
-    "我跟",
-    "我的",
-    "我最近",
-    "朋友",
-    "好友",
-    "你觉得我",
-)
-_MUSIC_TERMS = (
-    "音乐",
-    "歌曲",
-    "角色歌",
-    "角色曲",
-    "的歌",
-)
-_MUSIC_APPRECIATION_TERMS = (
-    "好听",
-    "动听",
-)
-_INSTRUMENT_USAGE_TERMS = (
-    "怎么吹",
-    "为什么吹",
-    "吹起来",
-    "吹法",
-    "吹响",
-    "吹不响",
-    "难吹",
-    "不好吹",
-)
+_ROUTER_QUERY_MIN = 2
+_ROUTER_QUERY_MAX = 200
+_ROUTER_REASON_MAX = 200
+_ROUTER_RECENT_MESSAGE_LIMIT = 6
+_ROUTER_MESSAGE_MAX_CHARS = 500
+_ROUTER_RECENT_MESSAGE_MAX_CHARS = 240
+_ROUTER_SYSTEM_PROMPT = """\
+You are KumikoRoom's local Hibike! Euphonium / Kumiko novel RAG intent router.
+Decide freely whether local novel excerpts would help answer the current user
+message. Use novel RAG when source text could help with original/source
+character interpretation, relationships, speech/persona, plot, scenes,
+passages, or factual details. Skip casual chat, file/tool/playback/music/
+search/download/recommend/write commands, and user-personal advice addressed
+to Kumiko.
+
+Return JSON only. Output one bare JSON object with no prose, markdown fences,
+comments, or trailing text. Use exactly this shape:
+{"use_novel_rag": boolean, "query": string, "reason": string}
+
+If use_novel_rag is true, query must be a concise search query for local novel
+retrieval, 2-200 characters. If false, query may be an empty string. Keep reason
+short.
+"""
 _SNIPPET_END_PUNCTUATION = "。！？!?；;，,"
 _NOVEL_REFERENCE_TITLE = "小说参考片段："
 _NOVEL_REFERENCE_RULE_LINES = (
@@ -477,67 +363,89 @@ def rebuild_novel_index(corpus_dir: Path | str, db_path: Path | str) -> NovelInd
     )
 
 
-def should_retrieve_novel_context(
+def parse_novel_rag_decision(raw: str, fallback_query: str) -> NovelRagDecision:
+    text = raw.strip()
+    if not text or not text.startswith("{"):
+        raise NovelRagRoutingError("response is not a bare JSON object")
+    if not text.endswith("}"):
+        raise NovelRagRoutingError("response has trailing prose after JSON")
+
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise NovelRagRoutingError(f"invalid JSON: {exc}") from exc
+
+    if not isinstance(document, dict):
+        raise NovelRagRoutingError("response is not a JSON object")
+
+    use_novel_rag = document.get("use_novel_rag")
+    if not isinstance(use_novel_rag, bool):
+        raise NovelRagRoutingError("use_novel_rag must be a boolean")
+
+    raw_reason = document.get("reason", "")
+    if raw_reason is None:
+        raw_reason = ""
+    if not isinstance(raw_reason, str):
+        raise NovelRagRoutingError("reason must be a string")
+    reason = _trim_to_budget(_normalize_text(raw_reason), _ROUTER_REASON_MAX)
+
+    raw_query = document.get("query", "")
+    if raw_query is None:
+        raw_query = ""
+    if not isinstance(raw_query, str):
+        raise NovelRagRoutingError("query must be a string")
+
+    if not use_novel_rag:
+        return NovelRagDecision(False, "", reason=reason)
+
+    query = _normalize_text(raw_query)
+    if _valid_router_query(query):
+        return NovelRagDecision(True, query, reason=reason)
+
+    fallback = _normalize_text(fallback_query)
+    if _valid_router_query(fallback):
+        return NovelRagDecision(True, fallback, reason=reason)
+
+    raise NovelRagRoutingError("query missing or out of bounds")
+
+
+def build_novel_rag_router_messages(
     message: str,
     *,
     recent_user_messages: Sequence[str] = (),
-) -> bool:
-    current_text = _normalize_text(message).lower()
-    if not current_text:
-        return False
+) -> list[LLMMessage]:
+    recent_lines = []
+    for index, recent in enumerate(
+        recent_user_messages[-_ROUTER_RECENT_MESSAGE_LIMIT:],
+        start=1,
+    ):
+        text = _trim_to_budget(
+            _normalize_text(recent),
+            _ROUTER_RECENT_MESSAGE_MAX_CHARS,
+        )
+        if text:
+            recent_lines.append(f"{index}. {text}")
 
-    has_source_anchor = _contains_any(current_text, _SOURCE_ANCHOR_TERMS)
-    has_character_name = _contains_any(current_text, _SOURCE_CHARACTER_TERMS)
-    has_analysis_intent = _contains_any(current_text, _ANALYSIS_INTENT_TERMS)
-    has_unrelated_request = _contains_any(current_text, _UNRELATED_REQUEST_TERMS)
-    has_unrelated_failure = _contains_any(current_text, _UNRELATED_FAILURE_TERMS)
-    has_operational_failure = _has_operational_failure(current_text)
-    has_user_personal_context = _contains_any(
-        current_text,
-        _USER_PERSONAL_CONTEXT_TERMS,
+    recent_block = "\n".join(recent_lines) if recent_lines else "(none)"
+    current_message = _trim_to_budget(
+        _normalize_text(message),
+        _ROUTER_MESSAGE_MAX_CHARS,
     )
-
-    if has_operational_failure:
-        return False
-
-    if _has_music_appreciation(current_text):
-        return False
-
-    if _is_instrument_usage_question(current_text):
-        return False
-
-    if _has_persona_address(current_text) and has_user_personal_context:
-        return False
-
-    if has_unrelated_request and has_unrelated_failure:
-        return False
-
-    if has_unrelated_request:
-        return False
-
-    if has_source_anchor and has_analysis_intent:
-        return True
-
-    recent_text = _normalize_text(" ".join(recent_user_messages[-3:])).lower()
-    has_recent_source_context = _contains_any(
-        recent_text,
-        (*_SOURCE_ANCHOR_TERMS, *_SOURCE_CHARACTER_TERMS),
+    user_prompt = (
+        "Recent user messages (oldest first, up to 6):\n"
+        f"{recent_block}\n\n"
+        "Current user message:\n"
+        f"{current_message}\n\n"
+        "Return JSON only."
     )
-    has_broad_current_signal = _contains_any(
-        current_text,
-        (*_ANALYSIS_INTENT_TERMS, *_SOURCE_FOLLOWUP_TERMS),
-    )
+    return [
+        {"role": "system", "content": _ROUTER_SYSTEM_PROMPT},
+        {"role": "user", "content": user_prompt},
+    ]
 
-    if has_character_name and has_analysis_intent:
-        return True
 
-    if not has_recent_source_context:
-        return False
-
-    if has_unrelated_request:
-        return False
-
-    return has_broad_current_signal
+def _valid_router_query(query: str) -> bool:
+    return _ROUTER_QUERY_MIN <= len(query) <= _ROUTER_QUERY_MAX
 
 
 def build_novel_reference_context(
@@ -1009,43 +917,6 @@ def _cjk_ngrams(token: str, *, min_size: int, max_size: int) -> list[str]:
 
 def _quote_fts_token(token: str) -> str:
     return '"' + token.replace('"', '""') + '"'
-
-
-def _contains_any(text: str, terms: Sequence[str]) -> bool:
-    return any(term.lower() in text for term in terms)
-
-
-def _has_music_appreciation(text: str) -> bool:
-    return _contains_any(text, _MUSIC_TERMS) and _contains_any(
-        text,
-        _MUSIC_APPRECIATION_TERMS,
-    )
-
-
-def _has_operational_failure(text: str) -> bool:
-    if _contains_any(text, _OPERATIONAL_FAILURE_TERMS):
-        return True
-    return _contains_any(
-        text,
-        _GENERIC_OPERATIONAL_FAILURE_TERMS,
-    ) and _contains_any(text, _OPERATIONAL_FAILURE_SUBJECT_TERMS)
-
-
-def _is_instrument_usage_question(text: str) -> bool:
-    return "上低音号" in text and _contains_any(text, _INSTRUMENT_USAGE_TERMS)
-
-
-def _has_persona_address(text: str) -> bool:
-    for term in _SOURCE_CHARACTER_TERMS:
-        if not text.startswith(term):
-            continue
-
-        suffix = text[len(term) :]
-        if suffix.startswith(_PERSONA_ADDRESS_SEPARATORS):
-            return True
-        if suffix.startswith(_PERSONA_ADDRESS_CONTINUATION_PREFIXES):
-            return True
-    return False
 
 
 def _format_reference_line(

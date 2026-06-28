@@ -5,17 +5,21 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pytest
 
 from kumikoroom import novel_rag
+from kumikoroom.llm import LLMMessage, LLMResult, ProviderStatus
 from kumikoroom.novel_rag import (
     NovelChunk,
     NovelIndexStats,
+    NovelRagDecision,
+    NovelRagRouter,
+    NovelRagRoutingError,
     NovelRagStore,
     NovelSearchResult,
     build_novel_reference_context,
     discover_epubs,
     extract_epub_chunks,
     main,
+    parse_novel_rag_decision,
     rebuild_novel_index,
-    should_retrieve_novel_context,
 )
 
 
@@ -592,181 +596,157 @@ def test_rebuild_novel_index_reports_broken_epub_and_continues(
     )
 
 
-def test_retrieval_gate_triggers_for_source_and_persona_questions() -> None:
-    assert should_retrieve_novel_context("久美子的说话方式为什么会这样？") is True
-    assert should_retrieve_novel_context("京吹小说里丽奈和久美子的关系怎么样") is True
-    assert should_retrieve_novel_context("北宇治这一段剧情是什么") is True
+class FakeRouterProvider:
+    def __init__(
+        self,
+        responses: list[str] | None = None,
+        *,
+        error: Exception | None = None,
+    ) -> None:
+        self.responses = responses or []
+        self.error = error
+        self.calls: list[dict[str, object]] = []
+
+    def generate(
+        self,
+        messages: list[LLMMessage],
+        tools: list[dict[str, object]] | None = None,
+        tool_choice: str | None = None,
+        timeout: float | None = None,
+    ) -> LLMResult:
+        self.calls.append(
+            {
+                "messages": messages,
+                "tools": tools,
+                "tool_choice": tool_choice,
+                "timeout": timeout,
+            }
+        )
+        if self.error is not None:
+            raise self.error
+        return LLMResult(
+            content=self.responses.pop(0),
+            provider_status=ProviderStatus(
+                provider="mock",
+                model=None,
+                configured=True,
+                label="mock",
+            ),
+        )
 
 
-def test_retrieval_gate_skips_unrelated_chat_and_music_commands() -> None:
-    assert should_retrieve_novel_context("你好") is False
-    assert should_retrieve_novel_context("我今天有点累") is False
-    assert should_retrieve_novel_context("播放 晴天 周杰伦") is False
-    assert should_retrieve_novel_context("帮我看看这个文件怎么处理") is False
+def test_parse_novel_rag_decision_accepts_true_json() -> None:
+    decision = parse_novel_rag_decision(
+        '{"use_novel_rag": true, "query": "久美子 说话方式 性格", "reason": "source question"}',
+        fallback_query="fallback query",
+    )
+
+    assert decision == NovelRagDecision(
+        use_novel_rag=True,
+        query="久美子 说话方式 性格",
+        reason="source question",
+    )
 
 
-def test_retrieval_gate_skips_broad_personality_terms_without_source_context() -> None:
-    assert should_retrieve_novel_context("我和朋友的关系有点复杂") is False
-    assert should_retrieve_novel_context("我最近性格是不是有点别扭") is False
-    assert should_retrieve_novel_context("这个人的心理为什么会这样") is False
+def test_parse_novel_rag_decision_accepts_false_without_query() -> None:
+    decision = parse_novel_rag_decision(
+        '{"use_novel_rag": false, "reason": "casual"}',
+        fallback_query="久美子",
+    )
+
+    assert decision.use_novel_rag is False
+    assert decision.query == ""
+    assert decision.reason == "casual"
 
 
-def test_retrieval_gate_skips_source_names_in_tool_and_music_requests() -> None:
-    assert should_retrieve_novel_context("久美子，帮我看看这个文件怎么处理") is False
-    assert should_retrieve_novel_context("播放久美子的角色歌") is False
-    assert should_retrieve_novel_context("今天合奏怎么练比较好") is False
-    assert should_retrieve_novel_context("帮我写一段台词") is False
+def test_parse_novel_rag_decision_rejects_fences_or_trailing_prose() -> None:
+    with pytest.raises(NovelRagRoutingError):
+        parse_novel_rag_decision(
+            '```json\n{"use_novel_rag": true, "query": "久美子"}\n```',
+            fallback_query="久美子",
+        )
+
+    with pytest.raises(NovelRagRoutingError):
+        parse_novel_rag_decision(
+            '{"use_novel_rag": true, "query": "久美子"}\nextra',
+            fallback_query="久美子",
+        )
 
 
-def test_retrieval_gate_skips_unrelated_requests_even_with_source_anchors() -> None:
-    assert should_retrieve_novel_context("播放京吹角色歌") is False
-    assert should_retrieve_novel_context("帮我写一段京吹台词") is False
-    assert should_retrieve_novel_context("帮我看看京吹小说这个文件怎么处理") is False
+def test_router_uses_provider_decision_for_source_question() -> None:
+    provider = FakeRouterProvider(
+        [
+            '{"use_novel_rag": true, "query": "久美子 说话方式", "reason": "source question"}'
+        ]
+    )
 
+    decision = NovelRagRouter(provider, timeout_seconds=3.5).route(
+        "久美子的说话方式为什么会这样？",
+        recent_user_messages=("之前聊到丽奈", "刚才说北宇治"),
+    )
 
-def test_retrieval_gate_skips_unrelated_failure_questions_with_why() -> None:
-    assert should_retrieve_novel_context("帮我看看京吹小说这个文件为什么打不开") is False
-    assert should_retrieve_novel_context("播放京吹角色歌为什么没声音") is False
-    assert should_retrieve_novel_context("播放久美子的角色歌为什么没声音") is False
-
-
-@pytest.mark.parametrize(
-    "message",
-    [
-        "京吹小说为什么打不开",
-        "京吹小说加载失败怎么办",
-        "久美子的歌为什么没声音",
-        "久美子的角色曲为什么没声音",
-        "帮我写一段京吹人物关系分析",
-        "帮我写一段久美子为什么这样说的台词",
-        "用工具分析京吹人物关系",
-        "能推荐一本小说吗",
-        "这本小说的人物关系怎么样",
-        "小说里的角色为什么这样说？",
-        "这部小说有什么推荐吗",
-        "小说怎么写比较好",
-        "请写京吹人物关系分析",
-        "写一下京吹人物关系分析",
-        "生成一段京吹人物关系分析",
-        "京吹小说无法打开怎么办",
-        "京吹小说加载不出来怎么办",
-        "京吹",
-        "京吹小说",
-        "我喜欢京吹",
-        "刚看完京吹小说",
-        "京吹小说下载失败怎么办",
-        "京吹小说解析失败怎么办",
-        "京吹小说导入失败怎么办",
-        "京吹小说出错怎么办",
-        "下载京吹小说",
-        "搜索京吹小说",
-        "推荐京吹小说吗",
-        "上低音号怎么吹响",
-        "久美子，我和朋友的关系为什么这么别扭",
-        "久美子，你觉得我和朋友的关系怎么样",
-        "久美子，我最近性格为什么这么别扭",
-        "写京吹人物关系分析",
-        "给我写一篇京吹人物关系分析",
-        "推荐一下京吹人物关系分析",
-        "有没有推荐的京吹人物关系分析",
-        "京吹小说为什么加载不了",
-        "京吹小说为什么不能打开",
-        "京吹小说为什么没法打开",
-        "上低音号为什么吹不响",
-        "久美子，我跟好友的关系为什么这么别扭",
-    ],
-)
-def test_retrieval_gate_skips_reviewed_false_positive_cases(message: str) -> None:
-    assert should_retrieve_novel_context(message) is False
-
-
-@pytest.mark.parametrize(
-    "message",
-    [
-        "推荐京吹人物关系分析",
-        "请推荐京吹人物关系分析",
-        "写个京吹人物关系分析",
-        "找一下京吹人物关系分析",
-        "京吹音乐为什么这么好听",
-        "久美子的歌为什么这么好听",
-        "久美子啊，我和朋友的关系为什么这么别扭",
-        "久美子呀，我最近性格为什么这么别扭",
-        "上低音号为什么这么难吹",
-        "上低音号为什么不好吹",
-        "写点京吹人物关系分析",
-        "帮我找京吹人物关系分析",
-        "搜一下京吹人物关系分析",
-        "上低音号吹起来为什么这么累",
-        "上低音号吹法为什么这么难",
-        "京吹小说为什么失败",
-        "京吹小说为什么错误",
-    ],
-)
-def test_retrieval_gate_skips_task4_false_positive_variants(message: str) -> None:
-    assert should_retrieve_novel_context(message) is False
+    assert decision.use_novel_rag is True
+    assert decision.query == "久美子 说话方式"
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["timeout"] == 3.5
+    prompt_text = "\n\n".join(
+        message["content"] or ""
+        for message in provider.calls[0]["messages"]  # type: ignore[index]
+    )
+    assert "JSON only" in prompt_text
+    assert "之前聊到丽奈" in prompt_text
+    assert "刚才说北宇治" in prompt_text
 
 
 @pytest.mark.parametrize(
     "message",
     [
-        "久美子你觉得我和朋友的关系为什么这么别扭",
-        "久美子你觉得我的性格为什么这么别扭",
-        "久美子我最近性格为什么这么别扭",
+        "播放京吹角色歌为什么没声音",
+        "久美子你觉得我和朋友的关系怎么样",
     ],
 )
-def test_retrieval_gate_skips_unpunctuated_kumiko_address(
+def test_router_uses_provider_decision_to_skip_false_positive_like_commands(
     message: str,
 ) -> None:
-    assert should_retrieve_novel_context(message) is False
-
-
-def test_retrieval_gate_skips_failure_followup_after_source_context() -> None:
-    assert (
-        should_retrieve_novel_context(
-            "为什么打不开？",
-            recent_user_messages=["我们刚才聊了京吹小说"],
-        )
-        is False
-    )
-    assert (
-        should_retrieve_novel_context(
-            "为什么加载不了？",
-            recent_user_messages=["我们刚才聊了京吹小说"],
-        )
-        is False
-    )
-    assert (
-        should_retrieve_novel_context(
-            "为什么加载不动？",
-            recent_user_messages=["我们刚才聊了京吹小说"],
-        )
-        is False
+    provider = FakeRouterProvider(
+        ['{"use_novel_rag": false, "reason": "provider skipped"}']
     )
 
+    decision = NovelRagRouter(provider).route(message)
 
-def test_retrieval_gate_triggers_for_character_analysis_with_name() -> None:
-    assert should_retrieve_novel_context("久美子的性格为什么会这样？") is True
-    assert should_retrieve_novel_context("丽奈和久美子的关系为什么这么别扭") is True
+    assert decision.use_novel_rag is False
+    assert decision.query == ""
+    assert provider.calls
 
 
-def test_retrieval_gate_skips_bare_pronoun_followup_after_source_context() -> None:
-    assert (
-        should_retrieve_novel_context(
-            "她今天几点来？",
-            recent_user_messages=["刚才我们在聊久美子和明日香"],
-        )
-        is False
+def test_router_allows_provider_to_override_old_rules() -> None:
+    provider = FakeRouterProvider(
+        [
+            '{"use_novel_rag": true, "query": "京吹 角色歌 场景", "reason": "provider wants source"}'
+        ]
     )
 
+    decision = NovelRagRouter(provider).route("播放京吹角色歌为什么没声音")
 
-def test_retrieval_gate_uses_recent_source_context() -> None:
-    assert (
-        should_retrieve_novel_context(
-            "那她为什么这样说？",
-            recent_user_messages=["刚才我们在聊久美子和明日香"],
-        )
-        is True
-    )
+    assert decision.use_novel_rag is True
+    assert decision.query == "京吹 角色歌 场景"
+
+
+@pytest.mark.parametrize(
+    "provider",
+    [
+        FakeRouterProvider(error=RuntimeError("provider down")),
+        FakeRouterProvider(["not json"]),
+    ],
+)
+def test_router_falls_back_to_skip_on_provider_or_parse_failure(
+    provider: FakeRouterProvider,
+) -> None:
+    decision = NovelRagRouter(provider).route("久美子的性格为什么会这样？")
+
+    assert decision.use_novel_rag is False
+    assert decision.query == ""
+    assert decision.reason
 
 
 def test_build_novel_reference_context_formats_bounded_results() -> None:

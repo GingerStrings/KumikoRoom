@@ -4,7 +4,7 @@
 
 **Goal:** Add local novel-backed RAG and a tighter Kumiko persona logic card so source-detail answers are grounded and everyday replies stay character-consistent.
 
-**Architecture:** Add a backend-only `novel_rag.py` module for EPUB extraction, local SQLite FTS5 indexing, retrieval gating, and prompt-context formatting. Wire it into `ConversationManager` as an optional collaborator that silently skips when no local index exists. Keep frontend and chat request schemas unchanged for this slice.
+**Architecture:** Add a backend-only `novel_rag.py` module for EPUB extraction, local SQLite FTS5 indexing, LLM-driven RAG intent routing, and prompt-context formatting. Wire it into `ConversationManager` through an optional `NovelRagRouter`/`NovelRagStore` pair that silently skips when routing or search is unavailable. Keep frontend and chat request schemas unchanged for this slice.
 
 **Tech Stack:** Python 3.11, FastAPI backend, standard-library `zipfile`, `xml.etree.ElementTree`, `sqlite3` with FTS5, pytest.
 
@@ -13,11 +13,11 @@
 ## File Structure
 
 - Create `apps/api/kumikoroom/novel_rag.py`
-  - Owns novel chunk data classes, EPUB discovery/extraction, SQLite FTS5 schema, search, retrieval gate, prompt-context formatting, rebuild command.
+  - Owns novel chunk data classes, EPUB discovery/extraction, SQLite FTS5 schema, search, LLM RAG router, prompt-context formatting, rebuild command.
 - Modify `apps/api/kumikoroom/config.py`
   - Adds local RAG defaults and env-backed settings.
 - Modify `apps/api/kumikoroom/conversation.py`
-  - Adds optional `NovelRagStore` collaborator and appends formatted novel context after user memory.
+  - Adds optional `NovelRagRouter` and `NovelRagStore` collaborators, then appends formatted novel context after user memory when the router opts in.
 - Modify `apps/api/kumikoroom/persona.py`
   - Adds a compact always-on speaking logic card to the existing core prompt.
 - Modify `apps/api/tests/conftest.py`
@@ -25,9 +25,9 @@
 - Modify `apps/api/tests/test_config.py`
   - Covers new defaults and env overrides.
 - Create `apps/api/tests/test_novel_rag.py`
-  - Covers fixture EPUB extraction, indexing, search, gate, formatter, and rebuild stats.
+  - Covers fixture EPUB extraction, indexing, search, LLM router/parser, formatter, and rebuild stats.
 - Modify `apps/api/tests/test_conversation.py`
-  - Covers prompt assembly with RAG hits, gate skips, disabled/missing index, and search failure fallback.
+  - Covers prompt assembly with RAG hits, router skips, disabled/missing index, route failure fallback, and search failure fallback.
 - Modify `apps/api/tests/test_persona.py`
   - Covers persona logic card and updated compact prompt size.
 - Modify `.env.example`
@@ -907,44 +907,150 @@ git add apps/api/kumikoroom/novel_rag.py apps/api/tests/test_novel_rag.py
 git commit -m "feat: index novel chunks with sqlite fts"
 ```
 
-## Task 4: Retrieval Gate, Context Formatter, and CLI
+## Task 4: LLM Novel RAG Router, Context Formatter, and CLI
 
 **Files:**
 - Modify: `apps/api/kumikoroom/novel_rag.py`
 - Modify: `apps/api/tests/test_novel_rag.py`
 
-- [ ] **Step 1: Write failing gate and formatter tests**
+- [ ] **Step 1: Write failing router, parser, and formatter tests**
 
 Append to `apps/api/tests/test_novel_rag.py`:
 
 ```python
+from kumikoroom.llm import LLMMessage, LLMResult, ProviderStatus
 from kumikoroom.novel_rag import (
+    NovelRagDecision,
+    NovelRagRouter,
+    NovelRagRoutingError,
+    NovelSearchResult,
     build_novel_reference_context,
-    should_retrieve_novel_context,
+    parse_novel_rag_decision,
 )
 
 
-def test_retrieval_gate_triggers_for_source_and_persona_questions() -> None:
-    assert should_retrieve_novel_context("久美子的说话方式为什么会这样？") is True
-    assert should_retrieve_novel_context("京吹小说里丽奈和久美子的关系怎么样") is True
-    assert should_retrieve_novel_context("北宇治这一段剧情是什么") is True
+class FakeRouterProvider:
+    def __init__(self, responses=None, *, error=None):
+        self.responses = responses or []
+        self.error = error
+        self.calls = []
 
-
-def test_retrieval_gate_skips_unrelated_chat_and_music_commands() -> None:
-    assert should_retrieve_novel_context("你好") is False
-    assert should_retrieve_novel_context("我今天有点累") is False
-    assert should_retrieve_novel_context("播放 晴天 周杰伦") is False
-    assert should_retrieve_novel_context("帮我看看这个文件怎么处理") is False
-
-
-def test_retrieval_gate_uses_recent_source_context() -> None:
-    assert (
-        should_retrieve_novel_context(
-            "那她为什么这样说？",
-            recent_user_messages=["刚才我们在聊久美子和明日香"],
+    def generate(
+        self,
+        messages: list[LLMMessage],
+        tools=None,
+        tool_choice=None,
+        timeout=None,
+    ) -> LLMResult:
+        self.calls.append({"messages": messages, "timeout": timeout})
+        if self.error is not None:
+            raise self.error
+        return LLMResult(
+            content=self.responses.pop(0),
+            provider_status=ProviderStatus(
+                provider="mock",
+                model=None,
+                configured=True,
+                label="mock",
+            ),
         )
-        is True
+
+
+def test_parse_novel_rag_decision_accepts_true_json() -> None:
+    decision = parse_novel_rag_decision(
+        '{"use_novel_rag": true, "query": "久美子 说话方式 性格", "reason": "source question"}',
+        fallback_query="fallback query",
     )
+
+    assert decision == NovelRagDecision(
+        use_novel_rag=True,
+        query="久美子 说话方式 性格",
+        reason="source question",
+    )
+
+
+def test_parse_novel_rag_decision_accepts_false_without_query() -> None:
+    decision = parse_novel_rag_decision(
+        '{"use_novel_rag": false, "reason": "casual"}',
+        fallback_query="久美子",
+    )
+
+    assert decision.use_novel_rag is False
+    assert decision.query == ""
+    assert decision.reason == "casual"
+
+
+def test_parse_novel_rag_decision_rejects_fences_or_trailing_prose() -> None:
+    with pytest.raises(NovelRagRoutingError):
+        parse_novel_rag_decision(
+            '```json\n{"use_novel_rag": true, "query": "久美子"}\n```',
+            fallback_query="久美子",
+        )
+
+    with pytest.raises(NovelRagRoutingError):
+        parse_novel_rag_decision(
+            '{"use_novel_rag": true, "query": "久美子"}\nextra',
+            fallback_query="久美子",
+        )
+
+
+def test_router_uses_provider_decision_for_source_question() -> None:
+    provider = FakeRouterProvider(
+        [
+            '{"use_novel_rag": true, "query": "久美子 说话方式", "reason": "source question"}'
+        ]
+    )
+
+    decision = NovelRagRouter(provider, timeout_seconds=3.5).route(
+        "久美子的说话方式为什么会这样？",
+        recent_user_messages=("之前聊到丽奈", "刚才说北宇治"),
+    )
+
+    assert decision.use_novel_rag is True
+    assert decision.query == "久美子 说话方式"
+    assert len(provider.calls) == 1
+    assert provider.calls[0]["timeout"] == 3.5
+    prompt_text = "\n\n".join(
+        message["content"] or "" for message in provider.calls[0]["messages"]
+    )
+    assert "JSON only" in prompt_text
+    assert "之前聊到丽奈" in prompt_text
+    assert "刚才说北宇治" in prompt_text
+
+
+def test_router_uses_provider_decision_to_skip_false_positive_like_commands() -> None:
+    provider = FakeRouterProvider(
+        ['{"use_novel_rag": false, "reason": "provider skipped"}']
+    )
+
+    decision = NovelRagRouter(provider).route("播放京吹角色歌为什么没声音")
+
+    assert decision.use_novel_rag is False
+    assert decision.query == ""
+    assert provider.calls
+
+
+def test_router_allows_provider_to_override_old_rules() -> None:
+    provider = FakeRouterProvider(
+        [
+            '{"use_novel_rag": true, "query": "京吹 角色歌 场景", "reason": "provider wants source"}'
+        ]
+    )
+
+    decision = NovelRagRouter(provider).route("播放京吹角色歌为什么没声音")
+
+    assert decision.use_novel_rag is True
+    assert decision.query == "京吹 角色歌 场景"
+
+
+def test_router_falls_back_to_skip_on_provider_or_parse_failure() -> None:
+    provider = FakeRouterProvider(["not json"])
+
+    decision = NovelRagRouter(provider).route("久美子的性格为什么会这样？")
+
+    assert decision.use_novel_rag is False
+    assert decision.query == ""
+    assert decision.reason
 
 
 def test_build_novel_reference_context_formats_bounded_results() -> None:
@@ -991,75 +1097,24 @@ cd apps\api
 python -m pytest tests/test_novel_rag.py -q
 ```
 
-Expected: FAIL with missing imports for `should_retrieve_novel_context` and `build_novel_reference_context`.
+Expected: FAIL with missing imports for `NovelRagDecision`, `NovelRagRouter`, `NovelRagRoutingError`, and `parse_novel_rag_decision`.
 
-- [ ] **Step 3: Add gate and formatter**
+- [ ] **Step 3: Add router parser and provider-backed router**
 
-Append to `apps/api/kumikoroom/novel_rag.py`:
+Add these pieces to `apps/api/kumikoroom/novel_rag.py`:
+
+- `NovelRagDecision(use_novel_rag: bool, query: str, reason: str = "")`.
+- `NovelRagRoutingError` for strict parse/validation failures.
+- `parse_novel_rag_decision(raw, fallback_query)`, accepting one bare JSON object only, requiring boolean `use_novel_rag`, requiring a normalized 2-200 character query when true, using a valid fallback query only when needed, and bounding optional `reason` to 200 chars.
+- `build_novel_rag_router_messages(message, recent_user_messages)`, with a local Hibike/Kumiko RAG router system prompt, JSON-only output requirements, current message, and the last 6 recent user messages in oldest-first order.
+- `NovelRagRouter(provider, timeout_seconds=8.0)`, calling `provider.generate(messages, timeout=timeout_seconds)`, returning the parsed decision, and falling back to a false `NovelRagDecision` with a short reason on empty input, provider failure, parse failure, or malformed JSON.
+- Do not inspect the message for local yes/no route rules. The provider JSON controls the route.
+
+- [ ] **Step 4: Keep formatter behavior**
+
+Keep or append:
 
 ```python
-_SOURCE_CONTEXT_TERMS = (
-    "京吹",
-    "吹响吧",
-    "上低音号",
-    "北宇治",
-    "久美子",
-    "丽奈",
-    "明日香",
-    "秀一",
-    "叶月",
-    "绿辉",
-    "奏",
-    "小说",
-    "原作",
-    "剧情",
-    "人物关系",
-    "设定",
-    "台词",
-    "片段",
-    "性格",
-    "说话方式",
-    "为什么",
-    "像她",
-    "人设",
-    "语气",
-)
-_GREETING_ONLY = {"你好", "嗨", "hello", "hi", "晚上好", "早上好"}
-_UNRELATED_COMMAND_TERMS = (
-    "播放",
-    "放歌",
-    "找歌",
-    "文件",
-    "目录",
-    "接口",
-    "报错",
-)
-
-
-def should_retrieve_novel_context(
-    message: str,
-    *,
-    recent_user_messages: Sequence[str] = (),
-) -> bool:
-    text = _normalize_text(message)
-    if not text:
-        return False
-    if text.lower() in _GREETING_ONLY:
-        return False
-
-    combined = "\n".join([text, *recent_user_messages])
-    has_source_signal = any(term in combined for term in _SOURCE_CONTEXT_TERMS)
-    if not has_source_signal:
-        return False
-
-    current_has_source_signal = any(term in text for term in _SOURCE_CONTEXT_TERMS)
-    current_is_unrelated_command = any(term in text for term in _UNRELATED_COMMAND_TERMS)
-    if current_is_unrelated_command and not current_has_source_signal:
-        return False
-
-    return True
-
-
 def build_novel_reference_context(
     results: Sequence[NovelSearchResult],
     *,
@@ -1115,7 +1170,7 @@ def _trim_snippet(text: str, *, max_chars: int) -> str:
     return trimmed.rstrip() + "…"
 ```
 
-- [ ] **Step 4: Add CLI command**
+- [ ] **Step 5: Add CLI command**
 
 Append to `apps/api/kumikoroom/novel_rag.py`:
 
@@ -1151,7 +1206,7 @@ if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
 ```
 
-- [ ] **Step 5: Run focused tests and CLI smoke check**
+- [ ] **Step 6: Run focused tests and CLI smoke check**
 
 Run:
 
@@ -1166,14 +1221,14 @@ Expected:
 - pytest PASS.
 - CLI prints counts. In the isolated test shell it may show `Indexed sources: 0` if `D:\555\codex\jc` is unavailable or env vars point elsewhere.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```powershell
 git add apps/api/kumikoroom/novel_rag.py apps/api/tests/test_novel_rag.py
 git commit -m "feat: format novel retrieval context"
 ```
 
-## Task 5: ConversationManager Integration
+## Task 5: ConversationManager Integration with NovelRagRouter
 
 **Files:**
 - Modify: `apps/api/kumikoroom/conversation.py`
@@ -1184,7 +1239,22 @@ git commit -m "feat: format novel retrieval context"
 Append to `apps/api/tests/test_conversation.py`:
 
 ```python
-from kumikoroom.novel_rag import NovelSearchResult
+from kumikoroom.novel_rag import NovelRagDecision, NovelSearchResult
+
+
+class FakeNovelRagRouter:
+    def __init__(self, decision=None, *, fail=False):
+        self.decision = decision or NovelRagDecision(False, "", reason="skip")
+        self.fail = fail
+        self.calls = []
+
+    def route(self, message, *, recent_user_messages=()):
+        self.calls.append(
+            {"message": message, "recent_user_messages": tuple(recent_user_messages)}
+        )
+        if self.fail:
+            raise RuntimeError("route failed")
+        return self.decision
 
 
 class FakeNovelRagStore:
@@ -1200,9 +1270,16 @@ class FakeNovelRagStore:
         return self.results
 
 
-def test_manager_includes_novel_context_for_source_question(monkeypatch, tmp_path) -> None:
+def test_manager_includes_novel_context_when_router_uses_rag(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("KUMIKOROOM_MEMORY_DB_PATH", str(tmp_path / "memory.sqlite3"))
     provider = FakeProvider()
+    router = FakeNovelRagRouter(
+        NovelRagDecision(
+            True,
+            "久美子 说话方式",
+            reason="source question",
+        )
+    )
     novel_store = FakeNovelRagStore(
         [
             NovelSearchResult(
@@ -1220,23 +1297,26 @@ def test_manager_includes_novel_context_for_source_question(monkeypatch, tmp_pat
     ConversationManager(
         settings=load_settings(),
         provider=provider,
+        novel_rag_router=router,
         novel_rag_store=novel_store,
     ).chat(ChatIn(message="久美子的说话方式为什么会这样？", memory_enabled=False))
 
     system_text = provider.messages[0]["content"]
-    assert novel_store.calls
+    assert router.calls
+    assert novel_store.calls == [{"query": "久美子 说话方式", "limit": 5}]
     assert "小说参考片段" in system_text
     assert "[第一卷 / 第一章]" in system_text
     assert "久美子先沉默了一下" in system_text
     assert "不要长段复述原文" in system_text
 
 
-def test_manager_skips_novel_search_for_unrelated_music_command(
+def test_manager_skips_novel_search_when_router_declines(
     monkeypatch,
     tmp_path,
 ) -> None:
     monkeypatch.setenv("KUMIKOROOM_MEMORY_DB_PATH", str(tmp_path / "memory.sqlite3"))
     provider = FakeProvider()
+    router = FakeNovelRagRouter(NovelRagDecision(False, "", reason="provider skipped"))
     novel_store = FakeNovelRagStore(
         [
             NovelSearchResult(
@@ -1254,20 +1334,23 @@ def test_manager_skips_novel_search_for_unrelated_music_command(
     ConversationManager(
         settings=load_settings(),
         provider=provider,
+        novel_rag_router=router,
         novel_rag_store=novel_store,
     ).chat(ChatIn(message="播放 晴天 周杰伦", memory_enabled=False))
 
+    assert router.calls
     assert novel_store.calls == []
     assert "小说参考片段" not in provider.messages[0]["content"]
 
 
-def test_manager_continues_when_novel_search_fails(monkeypatch, tmp_path) -> None:
+def test_manager_continues_when_router_or_novel_search_fails(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("KUMIKOROOM_MEMORY_DB_PATH", str(tmp_path / "memory.sqlite3"))
     provider = FakeProvider()
 
     response = ConversationManager(
         settings=load_settings(),
         provider=provider,
+        novel_rag_router=FakeNovelRagRouter(fail=True),
         novel_rag_store=FakeNovelRagStore(fail=True),
     ).chat(ChatIn(message="久美子在原作里是什么性格？", memory_enabled=False))
 
@@ -1281,10 +1364,10 @@ Run:
 
 ```powershell
 cd apps\api
-python -m pytest tests/test_conversation.py::test_manager_includes_novel_context_for_source_question -q
+python -m pytest tests/test_conversation.py::test_manager_includes_novel_context_when_router_uses_rag -q
 ```
 
-Expected: FAIL with `TypeError: ConversationManager.__init__() got an unexpected keyword argument 'novel_rag_store'`.
+Expected: FAIL with `TypeError: ConversationManager.__init__() got an unexpected keyword argument 'novel_rag_router'`.
 
 - [ ] **Step 3: Add imports and constructor collaborator**
 
@@ -1292,21 +1375,23 @@ In `apps/api/kumikoroom/conversation.py`, add imports:
 
 ```python
 from kumikoroom.novel_rag import (
+    NovelRagRouter,
     NovelRagStore,
     build_novel_reference_context,
-    should_retrieve_novel_context,
 )
 ```
 
 Extend `ConversationManager.__init__` signature:
 
 ```python
+        novel_rag_router: NovelRagRouter | None = None,
         novel_rag_store: NovelRagStore | None = None,
 ```
 
 After session store initialization, add:
 
 ```python
+        self.novel_rag_router = novel_rag_router
         self.novel_rag_store = novel_rag_store
         if (
             self.novel_rag_store is None
@@ -1314,6 +1399,12 @@ After session store initialization, add:
             and self.settings.novel_rag_db_path.exists()
         ):
             self.novel_rag_store = NovelRagStore(self.settings.novel_rag_db_path)
+        if (
+            self.novel_rag_router is None
+            and self.novel_rag_store is not None
+            and self.settings.novel_rag_enabled
+        ):
+            self.novel_rag_router = NovelRagRouter(self.provider)
 ```
 
 - [ ] **Step 4: Add prompt context helper**
@@ -1330,7 +1421,7 @@ Add this method to `ConversationManager`:
 
 ```python
     def _novel_context(self, payload: ChatIn, message: str) -> str:
-        if self.novel_rag_store is None:
+        if self.novel_rag_router is None or self.novel_rag_store is None:
             return ""
 
         recent_user_messages = [
@@ -1338,15 +1429,19 @@ Add this method to `ConversationManager`:
             for recent in payload.recent_messages[-6:]
             if recent.role == "user" and recent.content.strip()
         ]
-        if not should_retrieve_novel_context(
-            message,
-            recent_user_messages=recent_user_messages,
-        ):
+        try:
+            decision = self.novel_rag_router.route(
+                message,
+                recent_user_messages=recent_user_messages,
+            )
+        except Exception:
+            _logger.exception("novel RAG routing failed")
+            return ""
+        if not decision.use_novel_rag:
             return ""
 
-        query = "\n".join([message, *recent_user_messages])
         try:
-            results = self.novel_rag_store.search(query, limit=5)
+            results = self.novel_rag_store.search(decision.query, limit=5)
         except Exception:
             _logger.exception("novel RAG search failed")
             return ""
@@ -1359,7 +1454,7 @@ Run:
 
 ```powershell
 cd apps\api
-python -m pytest tests/test_conversation.py::test_manager_includes_novel_context_for_source_question tests/test_conversation.py::test_manager_skips_novel_search_for_unrelated_music_command tests/test_conversation.py::test_manager_continues_when_novel_search_fails -q
+python -m pytest tests/test_conversation.py::test_manager_includes_novel_context_when_router_uses_rag tests/test_conversation.py::test_manager_skips_novel_search_when_router_declines tests/test_conversation.py::test_manager_continues_when_router_or_novel_search_fails -q
 ```
 
 Expected: PASS.
@@ -1570,7 +1665,7 @@ git commit -m "docs: explain local novel RAG"
 
 ## Self-Review Notes
 
-- Spec coverage: configuration, EPUB extraction, local-only FTS index, conservative retrieval gate, bounded prompt context, persona logic card, no frontend change, failure fallback, and tests all have tasks.
+- Spec coverage: configuration, EPUB extraction, local-only FTS index, LLM-driven retrieval routing, bounded prompt context, persona logic card, no frontend change, failure fallback, and tests all have tasks.
 - No live LLM calls are required for test coverage.
 - The plan uses a synthetic EPUB fixture and does not commit local novel excerpts.
 - The real index path stays under `user-data/rag/`, already ignored by git through `user-data/` and `*.sqlite3`.
