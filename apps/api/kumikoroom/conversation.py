@@ -240,10 +240,6 @@ class ConversationManager:
                 memory_lines.append(f"- [{memory.category}] {memory.text}")
             system_parts.append("\n".join(memory_lines))
 
-        novel_context = self._novel_context(payload, message)
-        if novel_context.context:
-            system_parts.append(novel_context.context)
-
         room_state_context = _room_state_context(payload)
         if room_state_context:
             system_parts.append(room_state_context)
@@ -255,6 +251,10 @@ class ConversationManager:
         music_state_context = _music_state_context(payload)
         if music_state_context:
             system_parts.append(music_state_context)
+
+        novel_context = self._novel_context(payload, message)
+        if novel_context.context:
+            system_parts.append(novel_context.context)
 
         messages: list[LLMMessage] = [
             {"role": "system", "content": "\n\n".join(system_parts)}

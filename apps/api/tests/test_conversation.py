@@ -1406,6 +1406,62 @@ def test_manager_includes_novel_context_when_router_opts_in(
     assert response.novel_rag.sources == ["響け！ユーフォニアム / 第1章"]
 
 
+def test_manager_places_novel_context_after_music_context_when_both_present(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("KUMIKOROOM_MEMORY_DB_PATH", str(tmp_path / "memory.sqlite3"))
+    router = FakeNovelRouter(
+        NovelRagDecision(True, "三日月之舞 全国大会", reason="source helps")
+    )
+    store = FakeNovelStore(
+        [
+            NovelSearchResult(
+                source_id="final",
+                source_title="决意的最终乐章",
+                chapter_path="chapter-final.xhtml",
+                chapter_title="北宇治干部记录",
+                chunk_index=2,
+                text=(
+                    "曲子我也记得哦，北宇治的自由曲前年是‘东海岸风景画’，"
+                    "去年是‘利兹与青鸟’。"
+                ),
+                rank=0.1,
+            )
+        ]
+    )
+    provider = FakeProvider("Kumiko reply")
+    music_state = music_state_fixture()
+    music_state["current"]["title"] = "三日月之舞 全国大会銅賞Ver."
+
+    ConversationManager(
+        settings=load_settings(),
+        provider=provider,
+        novel_rag_router=router,
+        novel_rag_store=store,
+    ).chat(
+        ChatIn(
+            message="还记得三日月之舞吗",
+            memory_enabled=False,
+            listening_context={
+                "source": "netease",
+                "title": "三日月之舞 全国大会銅賞Ver.",
+                "creator": "北宇治高校吹奏楽部",
+                "is_playing": False,
+                "tags": ["playlist"],
+            },
+            music_state=music_state,
+        )
+    )
+
+    system_text = provider.messages[0]["content"]
+    assert "Listening context:" in system_text
+    assert "Music state:" in system_text
+    assert "小说参考片段" in system_text
+    assert system_text.index("小说参考片段") > system_text.index("Listening context:")
+    assert system_text.index("小说参考片段") > system_text.index("Music state:")
+
+
 def test_manager_skips_novel_search_when_router_opts_out(
     monkeypatch,
     tmp_path,

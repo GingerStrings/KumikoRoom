@@ -782,7 +782,7 @@ def test_build_novel_reference_context_formats_bounded_results() -> None:
         ),
     ]
 
-    context = build_novel_reference_context(results, max_chars=260)
+    context = build_novel_reference_context(results, max_chars=420)
 
     assert "小说参考片段" in context
     assert "[第一卷 / 第一章]" in context
@@ -790,6 +790,9 @@ def test_build_novel_reference_context_formats_bounded_results() -> None:
     assert "不要长段复述原文" in context
     assert "久美子的第一人称" in context
     assert "小说里的设定是" in context
+    assert "只用这些片段支撑结论" in context
+    assert "当前播放曲名" in context
+    assert "剧情时间线" in context
     assert len(context) < 420
 
 
