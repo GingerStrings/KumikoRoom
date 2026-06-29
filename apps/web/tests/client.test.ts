@@ -4,6 +4,7 @@ import type { AutoDjRecommendRequest } from "../src/api/types";
 import { DEFAULT_ROOM_STATE } from "../src/lib/roomState";
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -121,6 +122,29 @@ describe("room API client", () => {
     );
 
     await expect(roomApi.getRoomState()).resolves.toEqual(DEFAULT_ROOM_STATE);
+  });
+
+  it("uses the API service directly for local browser requests outside tests", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubGlobal("location", {
+      protocol: "http:",
+      hostname: "127.0.0.1",
+      port: "3000"
+    });
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      text: async () => JSON.stringify(roomStateApi())
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(roomApi.getRoomState()).resolves.toEqual(DEFAULT_ROOM_STATE);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/api/room/state",
+      expect.any(Object)
+    );
   });
 
   it("loads sessions and messages", async () => {
@@ -915,7 +939,35 @@ describe("room API client", () => {
             ]
           },
           error: null,
-          source_errors: ["bilibili unavailable"]
+          source_errors: ["bilibili unavailable"],
+          trace: {
+            planner_queries: [
+              {
+                query: "current mellow theme",
+                intent: "similar_theme",
+                themes: ["mellow", "brass"]
+              }
+            ],
+            candidate_count: 4,
+            scored_count: 3,
+            selected_item_ids: ["netease-song-a"],
+            candidates: [
+              {
+                item_id: "netease-song-a",
+                title: "Auto Song",
+                creator: "Auto Artist",
+                source: "netease",
+                query: "current mellow theme",
+                intent: "similar_theme",
+                score: 122.5,
+                reason: "close to the current listening context",
+                evidence: ["playable candidate"],
+                selected: true
+              }
+            ],
+            source_errors: ["bilibili unavailable"],
+            error: null
+          }
         })
     }));
     vi.stubGlobal("fetch", fetchMock);
@@ -1060,7 +1112,35 @@ describe("room API client", () => {
         ]
       },
       error: null,
-      sourceErrors: ["bilibili unavailable"]
+      sourceErrors: ["bilibili unavailable"],
+      trace: {
+        plannerQueries: [
+          {
+            query: "current mellow theme",
+            intent: "similar_theme",
+            themes: ["mellow", "brass"]
+          }
+        ],
+        candidateCount: 4,
+        scoredCount: 3,
+        selectedItemIds: ["netease-song-a"],
+        candidates: [
+          {
+            itemId: "netease-song-a",
+            title: "Auto Song",
+            creator: "Auto Artist",
+            source: "netease",
+            query: "current mellow theme",
+            intent: "similar_theme",
+            score: 122.5,
+            reason: "close to the current listening context",
+            evidence: ["playable candidate"],
+            selected: true
+          }
+        ],
+        sourceErrors: ["bilibili unavailable"],
+        error: null
+      }
     });
 
     expect(fetchMock).toHaveBeenCalledWith(

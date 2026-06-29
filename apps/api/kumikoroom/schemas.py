@@ -306,6 +306,29 @@ class AutoDjRecommendationOut(BaseModel):
     evidence: list[str] = Field(default_factory=list)
 
 
+class AutoDjTraceCandidateOut(BaseModel):
+    item_id: str
+    title: str
+    creator: str
+    source: MusicSourceKind
+    query: str
+    intent: RecommendationIntentKind
+    score: float
+    reason: str
+    evidence: list[str] = Field(default_factory=list)
+    selected: bool = False
+
+
+class AutoDjTraceOut(BaseModel):
+    planner_queries: list[dict[str, str | list[str]]] = Field(default_factory=list)
+    candidate_count: int = 0
+    scored_count: int = 0
+    selected_item_ids: list[str] = Field(default_factory=list)
+    candidates: list[AutoDjTraceCandidateOut] = Field(default_factory=list)
+    source_errors: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
 class RecommendationProfilePatchOut(BaseModel):
     recommended_items: list[RecommendationHistoryEntryIn] = Field(default_factory=list)
     cooldowns: list[RecommendationCooldownIn] = Field(default_factory=list)
@@ -323,6 +346,7 @@ class AutoDjRecommendOut(BaseModel):
     )
     error: str | None = None
     source_errors: list[str] = Field(default_factory=list)
+    trace: AutoDjTraceOut = Field(default_factory=AutoDjTraceOut)
 
 
 class ProviderStatusOut(BaseModel):

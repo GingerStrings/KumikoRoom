@@ -24,10 +24,11 @@ export function createAutoDjQueueSignature(queue: MusicQueueState, settings: Aut
 
 export function shouldRequestAutoDjRefill(input: ShouldRequestAutoDjRefillInput): string | null {
   if (!input.enabled || !input.hydrated) return null;
+  if (input.inFlightSignature !== null) return null;
   if (getPlayableQueueDepth(input.queue) > input.settings.queueDepthTrigger) return null;
 
   const signature = createAutoDjQueueSignature(input.queue, input.settings);
-  if (input.inFlightSignature === signature || input.lastRequestedSignature === signature) {
+  if (input.lastRequestedSignature === signature) {
     return null;
   }
 

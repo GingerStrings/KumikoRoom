@@ -4,6 +4,9 @@ import pytest
 
 from kumikoroom.auto_dj_planning import (
     AutoDjQueryPlanningContext,
+    AutoDjSearchFeedback,
+    AutoDjSelectionCandidate,
+    AutoDjSelectionContext,
     PlanningError,
 )
 from kumikoroom.config import ApiSettings
@@ -45,10 +48,12 @@ class FakeProvider:
         self.raise_with = raise_with
         self.calls = 0
         self.last_timeout: float | None = None
+        self.last_messages = None
 
     def generate(self, messages, tools=None, tool_choice=None, timeout=None):
         self.calls += 1
         self.last_timeout = timeout
+        self.last_messages = messages
         if self.raise_with is not None:
             raise self.raise_with
         return LLMResult(
@@ -183,3 +188,84 @@ def test_plan_auto_dj_queries_does_not_write_to_stores(tmp_path: Path) -> None:
 
     after = len(manager.session_store.list_messages(session_id=session.id))
     assert after == before
+
+
+def test_plan_auto_dj_queries_includes_search_feedback(tmp_path: Path) -> None:
+    valid = (
+        '{"queries":['
+        '{"query":"三日月の舞","intent":"similar_theme","themes":["brass"]},'
+        '{"query":"吹奏楽 コンクール","intent":"light_exploration","themes":["brass"]}'
+        "]}"
+    )
+    provider = FakeProvider(response=valid)
+    manager = _make_planner(tmp_path, provider)
+
+    manager.plan_auto_dj_queries(
+        AutoDjQueryPlanningContext(
+            music_state=None,
+            profile=_empty_profile(),
+            recent_messages=(),
+            settings=AutoDjSettingsIn(count=3, similar_count=2, exploration_count=1),
+            search_feedback=(
+                AutoDjSearchFeedback(
+                    attempt=1,
+                    query="東京佼成ウインドオーケストラ 金洪才 パッサカリア 吹奏楽",
+                    intent="similar_theme",
+                    candidate_count=0,
+                    qualified_count=0,
+                ),
+            ),
+        )
+    )
+
+    user_prompt = provider.last_messages[1]["content"]
+    assert "Search feedback from previous attempts" in user_prompt
+    assert "東京佼成ウインドオーケストラ" in user_prompt
+    assert "candidates=0" in user_prompt
+
+
+def test_select_auto_dj_recommendations_returns_candidate_ids(tmp_path: Path) -> None:
+    provider = FakeProvider(
+        response=(
+            '{"selected":['
+            '{"item_id":"netease-song-b","reason":"warmer match"},'
+            '{"item_id":"netease-song-a","reason":"safe anchor"}'
+            "]}"
+        )
+    )
+    manager = _make_planner(tmp_path, provider)
+
+    selection = manager.select_auto_dj_recommendations(
+        AutoDjSelectionContext(
+            music_state=None,
+            profile=_empty_profile(),
+            recent_messages=(),
+            settings=AutoDjSettingsIn(count=3, similar_count=2, exploration_count=1),
+            candidates=(
+                AutoDjSelectionCandidate(
+                    item_id="netease-song-a",
+                    title="A",
+                    creator="Artist",
+                    source="netease",
+                    intent="similar_theme",
+                    query="A",
+                    score=90.0,
+                    evidence=("playable",),
+                ),
+                AutoDjSelectionCandidate(
+                    item_id="netease-song-b",
+                    title="B",
+                    creator="Artist",
+                    source="netease",
+                    intent="light_exploration",
+                    query="B",
+                    score=80.0,
+                    evidence=("playable",),
+                ),
+            ),
+        )
+    )
+
+    assert selection.selected_item_ids == ("netease-song-b", "netease-song-a")
+    assert selection.reasons["netease-song-b"] == "warmer match"
+    assert "Candidates:" in provider.last_messages[1]["content"]

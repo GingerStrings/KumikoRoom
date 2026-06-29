@@ -119,34 +119,20 @@ describe("music item platform helpers", () => {
     });
   });
 
-  it("keeps the default queue on platform sources with verified metadata", () => {
-    expect(PLAYER_TRACKS).toMatchObject([
-      {
-        id: "netease-red-horse-instrumental",
-        source: "netease",
-        title: "\u7ea2\u9a6c (\u4f34\u594f)",
-        creator: "\u95eb\u6770\u6668",
-        durationMs: 215866,
-        coverUrl: "https://p2.music.126.net/ScAVTeetyrGEwgCMtuGuGg==/109951165758549216.jpg",
-        pageUrl: "https://music.163.com/#/song?id=1822942870",
-        embedUrl: "https://music.163.com/outchain/player?type=2&id=1822942870&auto=0&height=66",
-        platformAudioUrl: "https://music.163.com/song/media/outer/url?id=1822942870.mp3",
-        canOpenVideo: false
-      },
-      {
-        id: "bilibili-blue-bird-rehearsal",
-        source: "bilibili",
-        title: "\u5b57\u5e55\u541b\u4ea4\u6d41\u573a\u6240",
-        creator: "\u78a7\u8bd7",
-        durationMs: 2055000,
-        pageUrl: "https://www.bilibili.com/video/BV1xx411c7mD",
-        canOpenVideo: true
-      }
-    ]);
+  it("ships no hard-coded player defaults", () => {
+    expect(PLAYER_TRACKS).toEqual([]);
+  });
+
+  it("does not ship the deleted sticky default tracks", () => {
+    expect(PLAYER_TRACKS.map((track) => track.id)).not.toEqual(
+      expect.arrayContaining(["netease-red-horse-instrumental", "bilibili-blue-bird-rehearsal"])
+    );
+    expect(PLAYER_TRACKS.map((track) => track.title)).not.toEqual(
+      expect.arrayContaining(["\u7ea2\u9a6c (\u4f34\u594f)", "\u5b57\u5e55\u541b\u4ea4\u6d41\u573a\u6240"])
+    );
   });
 
   it("does not ship local default tracks or local playback URLs", () => {
-    expect(PLAYER_TRACKS).not.toHaveLength(0);
     expect(PLAYER_TRACKS.every((track) => track.source !== "local")).toBe(true);
 
     for (const track of PLAYER_TRACKS) {
@@ -158,13 +144,21 @@ describe("music item platform helpers", () => {
   });
 
   it("builds compact listening context for chat requests", () => {
-    expect(buildListeningContext(PLAYER_TRACKS[1], true)).toEqual({
-      source: PLAYER_TRACKS[1].source,
-      title: PLAYER_TRACKS[1].title,
-      creator: PLAYER_TRACKS[1].creator,
+    const item = makeBilibiliMusicItem({
+      id: "context-copy",
+      title: "Context Copy",
+      creator: "demo up",
+      url: "https://www.bilibili.com/video/BV1xx411c7mD",
+      tags: ["rehearsal"]
+    });
+
+    expect(buildListeningContext(item, true)).toEqual({
+      source: item.source,
+      title: item.title,
+      creator: item.creator,
       isPlaying: true,
-      pageUrl: PLAYER_TRACKS[1].pageUrl ?? null,
-      tags: PLAYER_TRACKS[1].tags
+      pageUrl: item.pageUrl ?? null,
+      tags: item.tags
     });
   });
 

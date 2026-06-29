@@ -8,9 +8,14 @@ _logger = logging.getLogger(__name__)
 from kumikoroom.auto_dj_planning import (
     AutoDjQueryPlan,
     AutoDjQueryPlanningContext,
+    AutoDjSelection,
+    AutoDjSelectionContext,
     PlanningError,
     build_auto_dj_planning_system_prompt,
     build_auto_dj_planning_user_prompt,
+    build_auto_dj_selection_system_prompt,
+    build_auto_dj_selection_user_prompt,
+    parse_and_validate_selection,
     parse_and_validate_plan,
 )
 from kumikoroom.agent_tools import (
@@ -154,6 +159,33 @@ class ConversationManager:
             raise PlanningError(f"LLM call failed: {exc}") from exc
 
         return parse_and_validate_plan(result.content, context.settings)
+
+    def select_auto_dj_recommendations(
+        self, context: AutoDjSelectionContext
+    ) -> AutoDjSelection:
+        """Call the LLM to choose final recommendations from real candidates."""
+        if self.runtime_config.provider == "mock":
+            raise PlanningError("selection is not available with the mock provider")
+
+        system_prompt = build_auto_dj_selection_system_prompt(context.settings)
+        user_prompt = build_auto_dj_selection_user_prompt(context)
+        messages: list[LLMMessage] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        try:
+            result = self.provider.generate(
+                messages, timeout=self.planner_timeout_seconds
+            )
+        except Exception as exc:
+            _logger.exception("auto dj selector provider call failed")
+            raise PlanningError(f"LLM selection failed: {exc}") from exc
+
+        return parse_and_validate_selection(
+            result.content,
+            context.candidates,
+            context.settings,
+        )
 
     def chat(self, payload: ChatIn) -> ChatOut:
         if self.memory_store is None or self.session_store is None:

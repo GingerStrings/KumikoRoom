@@ -4,12 +4,17 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import logging
 import re
+from collections import Counter
 from typing import Literal, Protocol
 
 from kumikoroom.agent_tools import music_result_to_client_item
 from kumikoroom.auto_dj_planning import (
     AutoDjQueryPlan,
     AutoDjQueryPlanningContext,
+    AutoDjSearchFeedback,
+    AutoDjSelection,
+    AutoDjSelectionCandidate,
+    AutoDjSelectionContext,
     PlanningError,
     _SIMILAR_INTENTS,
     is_generic_query,
@@ -23,10 +28,13 @@ from kumikoroom.schemas import (
     AutoDjRecommendIn,
     AutoDjRecommendationOut,
     AutoDjRecommendOut,
+    AutoDjTraceCandidateOut,
+    AutoDjTraceOut,
     ClientMusicItemOut,
     MusicAgentState,
     MusicAgentTrack,
     MusicRecommendationProfileIn,
+    RecommendationIntentKind,
     RecommendationHistoryEntryIn,
     RecommendationProfilePatchOut,
     RecommendationRefillHistoryEntryIn,
@@ -63,10 +71,35 @@ class ScoredCandidate:
     evidence: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class AutoDjRecallQueryReport:
+    attempt: int
+    query: str
+    intent: RecommendationIntentKind
+    candidate_count: int
+    source_errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class AutoDjRecallResult:
+    candidates: dict[tuple[str, str, str, str], RecalledCandidate]
+    reports: tuple[AutoDjRecallQueryReport, ...]
+
+
 class AutoDjQueryPlanner(Protocol):
     def plan_auto_dj_queries(
         self, context: AutoDjQueryPlanningContext
     ) -> AutoDjQueryPlan: ...
+
+
+class AutoDjRecommendationSelector(Protocol):
+    def select_auto_dj_recommendations(
+        self, context: AutoDjSelectionContext
+    ) -> AutoDjSelection: ...
+
+
+MAX_AUTO_DJ_SEARCH_ATTEMPTS = 3
+MAX_AUTO_DJ_SELECTION_CANDIDATES = 24
 
 
 def recommend_auto_dj(
@@ -85,46 +118,88 @@ def recommend_auto_dj(
     refill_id = f"auto-dj-{_utc_compact_timestamp()}"
     created_at = _current_iso_time()
 
-    context = AutoDjQueryPlanningContext(
-        music_state=payload.music_state,
-        profile=sanitized_profile,
-        recent_messages=tuple(
-            (msg.role, msg.content) for msg in payload.recent_messages[-200:]
-        ),
-        settings=payload.settings,
-    )
-    try:
-        plan = planner.plan_auto_dj_queries(context)
-    except PlanningError as exc:
-        logger.warning("auto dj query planning failed: %s", exc)
-        return _query_planning_failed_response(str(exc))
-
-    intents = _intents_from_plan(plan)
-    if not intents:
-        return _query_planning_failed_response("plan produced no intents")
-
     similar_count, exploration_count = _effective_mix(payload, sanitized_profile)
     source_errors: list[str] = []
-    recalled_by_key = _recall_candidates(intents, source_errors)
     blocked_ids = _blocked_item_ids(payload.music_state, sanitized_profile)
-    scored = _score_candidates(
-        list(recalled_by_key.values()),
-        payload.music_state,
-        sanitized_profile,
-        blocked_ids,
-    )
-    selected = _select_candidates(
+    recent_messages = tuple((msg.role, msg.content) for msg in payload.recent_messages)
+    search_feedback: list[AutoDjSearchFeedback] = []
+    planner_queries = []
+    recalled_by_key: dict[tuple[str, str, str, str], RecalledCandidate] = {}
+    scored: list[ScoredCandidate] = []
+    last_planning_error: str | None = None
+
+    for attempt in range(1, MAX_AUTO_DJ_SEARCH_ATTEMPTS + 1):
+        context = AutoDjQueryPlanningContext(
+            music_state=payload.music_state,
+            profile=sanitized_profile,
+            recent_messages=recent_messages,
+            settings=payload.settings,
+            search_feedback=tuple(search_feedback),
+        )
+        try:
+            plan = planner.plan_auto_dj_queries(context)
+        except PlanningError as exc:
+            logger.warning("auto dj query planning failed: %s", exc)
+            last_planning_error = str(exc)
+            break
+
+        intents = _intents_from_plan(plan)
+        if not intents:
+            last_planning_error = "plan produced no intents"
+            break
+
+        planner_queries.extend(plan.queries)
+        recall_result = _recall_candidates(
+            intents,
+            source_errors,
+            attempt=attempt,
+        )
+        recalled_by_key.update(recall_result.candidates)
+        scored = _score_candidates(
+            list(recalled_by_key.values()),
+            payload.music_state,
+            sanitized_profile,
+            blocked_ids,
+        )
+        search_feedback.extend(_feedback_from_recall_result(recall_result, scored))
+
+        if len(_best_scored_by_identity(scored)) >= payload.settings.count:
+            break
+
+    plan = AutoDjQueryPlan(queries=tuple(planner_queries))
+    if last_planning_error and not planner_queries:
+        return _query_planning_failed_response(last_planning_error)
+
+    selected = _select_candidates_with_llm(
+        planner,
         scored,
-        count=payload.settings.count,
+        payload=payload,
+        sanitized_profile=sanitized_profile,
+        recent_messages=recent_messages,
+        search_feedback=tuple(search_feedback),
         similar_count=similar_count,
         exploration_count=exploration_count,
+        source_errors=source_errors,
     )
 
     if not selected:
-        return _no_qualified_candidates_response(source_errors)
+        return _no_qualified_candidates_response(
+            source_errors,
+            plan,
+            len(recalled_by_key),
+            scored,
+        )
 
     return _build_success_response(
-        payload, selected, source_errors, sanitized_profile, refill_id, created_at
+        payload,
+        selected,
+        source_errors,
+        sanitized_profile,
+        refill_id,
+        created_at,
+        plan,
+        len(recalled_by_key),
+        scored,
     )
 
 
@@ -141,6 +216,7 @@ def _needs_more_context_response() -> AutoDjRecommendOut:
         recommendations=[],
         profile_patch=_empty_profile_patch(),
         error="needs_more_context",
+        trace=AutoDjTraceOut(error="needs_more_context"),
     )
 
 
@@ -153,11 +229,15 @@ def _query_planning_failed_response(detail: str) -> AutoDjRecommendOut:
         recommendations=[],
         profile_patch=_empty_profile_patch(),
         error="query_planning_failed",
+        trace=AutoDjTraceOut(error=detail or "query_planning_failed"),
     )
 
 
 def _no_qualified_candidates_response(
     source_errors: list[str],
+    plan: AutoDjQueryPlan,
+    candidate_count: int,
+    scored: list[ScoredCandidate],
 ) -> AutoDjRecommendOut:
     return AutoDjRecommendOut(
         ok=False,
@@ -168,6 +248,14 @@ def _no_qualified_candidates_response(
         profile_patch=_empty_profile_patch(),
         error="no_qualified_candidates",
         source_errors=source_errors,
+        trace=_build_auto_dj_trace(
+            plan=plan,
+            candidate_count=candidate_count,
+            scored=scored,
+            selected=[],
+            source_errors=source_errors,
+            error="no_qualified_candidates",
+        ),
     )
 
 
@@ -178,6 +266,9 @@ def _build_success_response(
     sanitized_profile: MusicRecommendationProfileIn,
     refill_id: str,
     created_at: str,
+    plan: AutoDjQueryPlan,
+    candidate_count: int,
+    scored: list[ScoredCandidate],
 ) -> AutoDjRecommendOut:
     recommendations = [
         _recommendation_from_scored(scored_candidate)
@@ -224,6 +315,13 @@ def _build_success_response(
         recommendations=recommendations,
         profile_patch=profile_patch,
         source_errors=source_errors,
+        trace=_build_auto_dj_trace(
+            plan=plan,
+            candidate_count=candidate_count,
+            scored=scored,
+            selected=selected,
+            source_errors=source_errors,
+        ),
     )
 
 
@@ -293,33 +391,49 @@ def _intents_from_plan(plan: AutoDjQueryPlan) -> list[AutoDjIntent]:
 def _recall_candidates(
     intents: list[AutoDjIntent],
     source_errors: list[str],
-) -> dict[tuple[str, str, str, str], RecalledCandidate]:
+    *,
+    attempt: int,
+) -> AutoDjRecallResult:
     candidates: dict[tuple[str, str, str, str], RecalledCandidate] = {}
+    reports: list[AutoDjRecallQueryReport] = []
     logger.info("auto dj search queries: %s", [intent.query for intent in intents])
 
     for intent in intents:
         query = intent.query
-        for search in (search_netease_songs, search_bilibili_videos):
-            try:
-                results = search(query, limit=8)
-            except Exception as error:
-                _append_unique(source_errors, str(error))
-                continue
-            for result in results:
-                key = (
-                    result.source,
-                    _normalize_text(result.title),
-                    _normalize_text(result.creator),
-                    intent.name,
+        query_errors: list[str] = []
+        try:
+            results = search_netease_songs(query, limit=8)
+        except Exception as error:
+            message = str(error)
+            _append_unique(source_errors, message)
+            query_errors.append(message)
+            results = []
+        reports.append(
+            AutoDjRecallQueryReport(
+                attempt=attempt,
+                query=query,
+                intent=intent.name,
+                candidate_count=len(results),
+                source_errors=tuple(query_errors),
+            )
+        )
+        if not results:
+            continue
+        for result in results:
+            key = (
+                result.source,
+                _normalize_text(result.title),
+                _normalize_text(result.creator),
+                intent.name,
+            )
+            existing = candidates.get(key)
+            if existing is None or result.score > existing.result.score:
+                candidates[key] = RecalledCandidate(
+                    result=result,
+                    intent=intent,
+                    query=query,
                 )
-                existing = candidates.get(key)
-                if existing is None or result.score > existing.result.score:
-                    candidates[key] = RecalledCandidate(
-                        result=result,
-                        intent=intent,
-                        query=query,
-                    )
-    return candidates
+    return AutoDjRecallResult(candidates=candidates, reports=tuple(reports))
 
 
 def _score_candidates(
@@ -354,6 +468,27 @@ def _score_candidates(
         )
 
     return sorted(scored, key=lambda item: item.score, reverse=True)
+
+
+def _feedback_from_recall_result(
+    recall_result: AutoDjRecallResult,
+    scored: list[ScoredCandidate],
+) -> list[AutoDjSearchFeedback]:
+    qualified_by_query = Counter(
+        (candidate.recalled.query, candidate.recalled.intent.name)
+        for candidate in scored
+    )
+    return [
+        AutoDjSearchFeedback(
+            attempt=report.attempt,
+            query=report.query,
+            intent=report.intent,
+            candidate_count=report.candidate_count,
+            qualified_count=qualified_by_query.get((report.query, report.intent), 0),
+            source_errors=report.source_errors,
+        )
+        for report in recall_result.reports
+    ]
 
 
 def _candidate_score(
@@ -449,7 +584,168 @@ def _select_candidates(
         selected_ids.add(candidate.recalled.result.id)
         selected_keys.add(candidate_key)
 
+    return _ensure_source_mix(selected, scored, count=count)
+
+
+def _select_candidates_with_llm(
+    planner: AutoDjQueryPlanner,
+    scored: list[ScoredCandidate],
+    *,
+    payload: AutoDjRecommendIn,
+    sanitized_profile: MusicRecommendationProfileIn,
+    recent_messages: tuple[tuple[str, str], ...],
+    search_feedback: tuple[AutoDjSearchFeedback, ...],
+    similar_count: int,
+    exploration_count: int,
+    source_errors: list[str],
+) -> list[ScoredCandidate]:
+    fallback = _select_candidates(
+        scored,
+        count=payload.settings.count,
+        similar_count=similar_count,
+        exploration_count=exploration_count,
+    )
+    selector = getattr(planner, "select_auto_dj_recommendations", None)
+    if not callable(selector):
+        return fallback
+
+    selection_candidates = _selection_candidates_from_scored(scored)
+    if not selection_candidates:
+        return fallback
+
+    context = AutoDjSelectionContext(
+        music_state=payload.music_state,
+        profile=sanitized_profile,
+        recent_messages=recent_messages,
+        settings=payload.settings,
+        candidates=selection_candidates,
+        search_feedback=search_feedback,
+    )
+    try:
+        selection = selector(context)
+    except PlanningError as exc:
+        _append_unique(source_errors, f"selection failed: {exc}")
+        return fallback
+
+    selected = _apply_llm_selection(selection, scored, payload.settings.count)
+    if len(selected) >= payload.settings.count:
+        return selected
+
+    selected_ids = {candidate.recalled.result.id for candidate in selected}
+    for candidate in fallback:
+        if len(selected) >= payload.settings.count:
+            break
+        if candidate.recalled.result.id in selected_ids:
+            continue
+        selected.append(candidate)
+        selected_ids.add(candidate.recalled.result.id)
     return selected
+
+
+def _selection_candidates_from_scored(
+    scored: list[ScoredCandidate],
+) -> tuple[AutoDjSelectionCandidate, ...]:
+    candidates: list[ScoredCandidate] = []
+    seen_item_ids: set[str] = set()
+    for candidate in _best_scored_by_identity(scored):
+        item_id = candidate.recalled.result.id
+        if item_id in seen_item_ids:
+            continue
+        seen_item_ids.add(item_id)
+        candidates.append(candidate)
+        if len(candidates) >= MAX_AUTO_DJ_SELECTION_CANDIDATES:
+            break
+    return tuple(
+        AutoDjSelectionCandidate(
+            item_id=candidate.recalled.result.id,
+            title=candidate.recalled.result.title,
+            creator=candidate.recalled.result.creator,
+            source=candidate.recalled.result.source,
+            intent=candidate.recalled.intent.name,
+            query=candidate.recalled.query,
+            score=round(candidate.score, 3),
+            evidence=candidate.evidence,
+        )
+        for candidate in candidates
+    )
+
+
+def _apply_llm_selection(
+    selection: AutoDjSelection,
+    scored: list[ScoredCandidate],
+    count: int,
+) -> list[ScoredCandidate]:
+    candidates_by_id: dict[str, ScoredCandidate] = {}
+    for candidate in _best_scored_by_identity(scored):
+        candidates_by_id.setdefault(candidate.recalled.result.id, candidate)
+
+    selected: list[ScoredCandidate] = []
+    seen: set[str] = set()
+    for item_id in selection.selected_item_ids:
+        if len(selected) >= count or item_id in seen:
+            continue
+        candidate = candidates_by_id.get(item_id)
+        if candidate is None:
+            continue
+        seen.add(item_id)
+        reason = selection.reasons.get(item_id)
+        if reason:
+            selected.append(_with_llm_reason(candidate, reason))
+        else:
+            selected.append(candidate)
+    return selected
+
+
+def _with_llm_reason(candidate: ScoredCandidate, reason: str) -> ScoredCandidate:
+    evidence = tuple([*candidate.evidence, reason])
+    return ScoredCandidate(
+        recalled=candidate.recalled,
+        score=candidate.score,
+        reason=reason,
+        evidence=evidence,
+    )
+
+
+def _ensure_source_mix(
+    selected: list[ScoredCandidate],
+    scored: list[ScoredCandidate],
+    *,
+    count: int,
+) -> list[ScoredCandidate]:
+    if count <= 1 or not selected:
+        return selected
+    if any(candidate.recalled.result.source == "netease" for candidate in selected):
+        return selected
+
+    selected_ids = {candidate.recalled.result.id for candidate in selected}
+    netease_candidate = next(
+        (
+            candidate
+            for candidate in scored
+            if candidate.recalled.result.source == "netease"
+            and candidate.recalled.result.id not in selected_ids
+        ),
+        None,
+    )
+    if netease_candidate is None:
+        return selected
+
+    replacement = ScoredCandidate(
+        recalled=netease_candidate.recalled,
+        score=netease_candidate.score,
+        reason=netease_candidate.reason,
+        evidence=(
+            *netease_candidate.evidence,
+            "source mix keeps audio search results in the queue",
+        ),
+    )
+    replacement_index = min(
+        range(len(selected)),
+        key=lambda index: selected[index].score,
+    )
+    mixed = list(selected)
+    mixed[replacement_index] = replacement
+    return mixed
 
 
 def _best_scored_by_identity(scored: list[ScoredCandidate]) -> list[ScoredCandidate]:
@@ -502,6 +798,64 @@ def _recommendation_from_scored(
         intent=scored_candidate.recalled.intent.name,
         reason=scored_candidate.reason,
         evidence=list(scored_candidate.evidence),
+    )
+
+
+def _build_auto_dj_trace(
+    *,
+    plan: AutoDjQueryPlan,
+    candidate_count: int,
+    scored: list[ScoredCandidate],
+    selected: list[ScoredCandidate],
+    source_errors: list[str],
+    error: str | None = None,
+) -> AutoDjTraceOut:
+    selected_keys = {_trace_candidate_key(candidate) for candidate in selected}
+    ordered_candidates = [
+        *selected,
+        *[
+            candidate
+            for candidate in scored
+            if _trace_candidate_key(candidate) not in selected_keys
+        ],
+    ]
+    return AutoDjTraceOut(
+        planner_queries=[
+            {
+                "query": entry.query,
+                "intent": entry.intent,
+                "themes": list(entry.themes),
+            }
+            for entry in plan.queries
+        ],
+        candidate_count=candidate_count,
+        scored_count=len(scored),
+        selected_item_ids=[candidate.recalled.result.id for candidate in selected],
+        candidates=[
+            AutoDjTraceCandidateOut(
+                item_id=candidate.recalled.result.id,
+                title=candidate.recalled.result.title,
+                creator=candidate.recalled.result.creator,
+                source=candidate.recalled.result.source,
+                query=candidate.recalled.query,
+                intent=candidate.recalled.intent.name,
+                score=round(candidate.score, 3),
+                reason=candidate.reason,
+                evidence=list(candidate.evidence),
+                selected=_trace_candidate_key(candidate) in selected_keys,
+            )
+            for candidate in ordered_candidates[:12]
+        ],
+        source_errors=source_errors,
+        error=error,
+    )
+
+
+def _trace_candidate_key(candidate: ScoredCandidate) -> tuple[str, str, str]:
+    return (
+        candidate.recalled.result.id,
+        candidate.recalled.intent.name,
+        candidate.recalled.query,
     )
 
 

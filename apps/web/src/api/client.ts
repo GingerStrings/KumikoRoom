@@ -2,6 +2,9 @@ import type {
   AutoDjRecommendRequest,
   AutoDjRecommendation,
   AutoDjRecommendResponse,
+  AutoDjTrace,
+  AutoDjTraceCandidate,
+  AutoDjTraceQuery,
   ChatRequest,
   ChatResponse,
   ChatSession,
@@ -21,7 +24,7 @@ import type {
   StoredChatMessage
 } from "./types";
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_KUMIKOROOM_API_BASE_URL ?? "";
+const LOCAL_API_BASE_URL = "http://127.0.0.1:8000";
 
 export class ApiError extends Error {
   constructor(
@@ -40,7 +43,7 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
     headers.set("Content-Type", "application/json");
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
+  const response = await fetch(resolveApiRequestUrl(path), {
     ...init,
     headers
   });
@@ -51,6 +54,31 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   }
 
   return body as T;
+}
+
+export function resolveApiRequestUrl(path: string): string {
+  return `${resolveApiBaseUrl()}${path}`;
+}
+
+function resolveApiBaseUrl(): string {
+  const configuredBaseUrl = process.env.NEXT_PUBLIC_KUMIKOROOM_API_BASE_URL;
+  if (configuredBaseUrl !== undefined) {
+    return configuredBaseUrl;
+  }
+
+  if (process.env.NODE_ENV === "test") {
+    return "";
+  }
+
+  const location = globalThis.location;
+  if (!location) {
+    return "";
+  }
+
+  const isLocalWebHost =
+    (location.hostname === "127.0.0.1" || location.hostname === "localhost") &&
+    (location.port === "3000" || location.port === "3001");
+  return isLocalWebHost ? LOCAL_API_BASE_URL : "";
 }
 
 export function getRoomState(): Promise<RoomState> {
@@ -368,6 +396,35 @@ interface AutoDjRecommendationApi {
   evidence: string[];
 }
 
+interface AutoDjTraceQueryApi {
+  query: string;
+  intent: AutoDjTraceQuery["intent"];
+  themes: string[];
+}
+
+interface AutoDjTraceCandidateApi {
+  item_id: string;
+  title: string;
+  creator: string;
+  source: AutoDjTraceCandidate["source"];
+  query: string;
+  intent: AutoDjTraceCandidate["intent"];
+  score: number;
+  reason: string;
+  evidence: string[];
+  selected: boolean;
+}
+
+interface AutoDjTraceApi {
+  planner_queries?: AutoDjTraceQueryApi[];
+  candidate_count?: number;
+  scored_count?: number;
+  selected_item_ids?: string[];
+  candidates?: AutoDjTraceCandidateApi[];
+  source_errors?: string[];
+  error?: string | null;
+}
+
 interface AutoDjRecommendResponseApi {
   ok: boolean;
   refill_id: string | null;
@@ -377,6 +434,7 @@ interface AutoDjRecommendResponseApi {
   profile_patch: RecommendationProfilePatchApi;
   error: string | null;
   source_errors: string[];
+  trace?: AutoDjTraceApi;
 }
 
 interface RoomClientActionApi {
@@ -773,7 +831,8 @@ function mapAutoDjRecommendResponse(
     recommendations: value.recommendations.map(mapAutoDjRecommendation),
     profilePatch: mapRecommendationProfilePatch(value.profile_patch),
     error: value.error,
-    sourceErrors: value.source_errors
+    sourceErrors: value.source_errors,
+    trace: mapAutoDjTrace(value.trace)
   };
 }
 
@@ -784,6 +843,49 @@ function mapAutoDjRecommendation(value: AutoDjRecommendationApi): AutoDjRecommen
     intent: value.intent,
     reason: value.reason,
     evidence: value.evidence
+  };
+}
+
+function mapAutoDjTrace(value: AutoDjTraceApi | undefined): AutoDjTrace {
+  return {
+    plannerQueries: Array.isArray(value?.planner_queries)
+      ? value.planner_queries.map(mapAutoDjTraceQuery)
+      : [],
+    candidateCount: typeof value?.candidate_count === "number" ? value.candidate_count : 0,
+    scoredCount: typeof value?.scored_count === "number" ? value.scored_count : 0,
+    selectedItemIds: Array.isArray(value?.selected_item_ids)
+      ? value.selected_item_ids.filter((itemId): itemId is string => typeof itemId === "string")
+      : [],
+    candidates: Array.isArray(value?.candidates)
+      ? value.candidates.map(mapAutoDjTraceCandidate)
+      : [],
+    sourceErrors: Array.isArray(value?.source_errors)
+      ? value.source_errors.filter((error): error is string => typeof error === "string")
+      : [],
+    error: typeof value?.error === "string" ? value.error : null
+  };
+}
+
+function mapAutoDjTraceQuery(value: AutoDjTraceQueryApi): AutoDjTraceQuery {
+  return {
+    query: value.query,
+    intent: value.intent,
+    themes: value.themes
+  };
+}
+
+function mapAutoDjTraceCandidate(value: AutoDjTraceCandidateApi): AutoDjTraceCandidate {
+  return {
+    itemId: value.item_id,
+    title: value.title,
+    creator: value.creator,
+    source: value.source,
+    query: value.query,
+    intent: value.intent,
+    score: value.score,
+    reason: value.reason,
+    evidence: value.evidence,
+    selected: value.selected
   };
 }
 

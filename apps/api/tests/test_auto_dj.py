@@ -4,6 +4,7 @@ import pytest
 
 from kumikoroom.auto_dj import recommend_auto_dj, _sanitize_profile, _METADATA_TAGS
 from kumikoroom.auto_dj_planning import (
+    AutoDjSelection,
     AutoDjPlanQuery,
     AutoDjQueryPlan,
     PlanningError,
@@ -32,6 +33,32 @@ class FakePlanner:
         if isinstance(self._plan_or_error, BaseException):
             raise self._plan_or_error
         return self._plan_or_error
+
+
+class LoopPlanner:
+    def __init__(
+        self,
+        plans: list[AutoDjQueryPlan],
+        selected_item_ids: list[str] | None = None,
+        reasons: dict[str, str] | None = None,
+    ) -> None:
+        self._plans = plans
+        self._selected_item_ids = selected_item_ids or []
+        self._reasons = reasons or {}
+        self.contexts = []
+        self.selection_contexts = []
+
+    def plan_auto_dj_queries(self, context):
+        self.contexts.append(context)
+        index = min(len(self.contexts) - 1, len(self._plans) - 1)
+        return self._plans[index]
+
+    def select_auto_dj_recommendations(self, context):
+        self.selection_contexts.append(context)
+        return AutoDjSelection(
+            selected_item_ids=tuple(self._selected_item_ids),
+            reasons=self._reasons,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -233,12 +260,13 @@ def test_auto_dj_recommends_three_search_candidates(monkeypatch) -> None:
         return [
             make_netease_candidate("netease-song-a", "Brass Similar A", 120.0),
             make_netease_candidate("netease-song-b", "Brass Similar B", 112.0),
+            make_netease_candidate("netease-song-c", "Brass Similar C", 108.0),
             make_netease_candidate("queued-1", "Queued Duplicate", 500.0),
             make_netease_candidate("netease-song-cooldown", "Cooldown Track", 140.0),
         ]
 
     def fake_bilibili(query: str, limit: int = 8):
-        return [make_bilibili_candidate("bilibili-BVexplore", "Brass Explore", 118.0)]
+        raise AssertionError("Auto DJ should not search Bilibili")
 
     monkeypatch.setattr("kumikoroom.auto_dj.search_netease_songs", fake_netease)
     monkeypatch.setattr("kumikoroom.auto_dj.search_bilibili_videos", fake_bilibili)
@@ -274,10 +302,235 @@ def test_auto_dj_recommends_three_search_candidates(monkeypatch) -> None:
     selected_ids = [recommendation.item.id for recommendation in result.recommendations]
     assert "queued-1" not in selected_ids
     assert "netease-song-cooldown" not in selected_ids
-    assert "bilibili-BVexplore" in selected_ids
+    assert all(recommendation.item.source == "netease" for recommendation in result.recommendations)
     assert all(recommendation.reason for recommendation in result.recommendations)
     assert all(recommendation.evidence for recommendation in result.recommendations)
     assert result.profile_patch.refill_history[0].selected_item_ids == selected_ids
+
+
+def test_auto_dj_does_not_search_video_source(monkeypatch) -> None:
+    def fake_netease(query: str, limit: int = 8):
+        if query == "Brass Theme Concert Band":
+            return [
+                make_netease_candidate(
+                    "netease-song-similar-a",
+                    "Brass Similar Audio",
+                    70.0,
+                )
+            ]
+        return [
+            make_netease_candidate(
+                "netease-song-explore-a",
+                "Brass Explore Audio",
+                65.0,
+            )
+        ]
+
+    def fake_bilibili(query: str, limit: int = 8):
+        raise AssertionError("Auto DJ should not search Bilibili")
+
+    monkeypatch.setattr("kumikoroom.auto_dj.search_netease_songs", fake_netease)
+    monkeypatch.setattr("kumikoroom.auto_dj.search_bilibili_videos", fake_bilibili)
+
+    result = recommend_auto_dj(
+        AutoDjRecommendIn(
+            music_state=music_state_for_auto_dj(),
+            recommendation_profile=empty_profile(),
+            recent_messages=[],
+        ),
+        planner=FakePlanner(_default_plan()),
+    )
+
+    selected_sources = [recommendation.item.source for recommendation in result.recommendations]
+
+    assert result.ok is True
+    assert selected_sources == ["netease", "netease"]
+    assert result.source_errors == []
+
+
+def test_auto_dj_replans_when_first_queries_find_no_candidates(monkeypatch) -> None:
+    first_plan = AutoDjQueryPlan(
+        queries=(
+            AutoDjPlanQuery(
+                query="東京佼成ウインドオーケストラ 金洪才 パッサカリア 吹奏楽",
+                intent="similar_theme",
+                themes=("brass",),
+            ),
+            AutoDjPlanQuery(
+                query="シンフォニックバンド 感動的な吹奏楽曲 名演",
+                intent="light_exploration",
+                themes=("brass",),
+            ),
+        )
+    )
+    second_plan = AutoDjQueryPlan(
+        queries=(
+            AutoDjPlanQuery(
+                query="三日月の舞",
+                intent="same_creator_or_work",
+                themes=("brass",),
+            ),
+            AutoDjPlanQuery(
+                query="響け ユーフォニアム",
+                intent="similar_theme",
+                themes=("anime", "brass"),
+            ),
+            AutoDjPlanQuery(
+                query="吹奏楽 コンクール",
+                intent="light_exploration",
+                themes=("brass",),
+            ),
+        )
+    )
+
+    def fake_netease(query: str, limit: int = 8):
+        if query in {entry.query for entry in first_plan.queries}:
+            return []
+        return [
+            make_netease_candidate("netease-song-a", "三日月の舞", 110.0),
+            make_netease_candidate("netease-song-b", "響け! ユーフォニアム", 105.0),
+            make_netease_candidate("netease-song-c", "吹奏楽コンクール名演", 95.0),
+        ]
+
+    monkeypatch.setattr("kumikoroom.auto_dj.search_netease_songs", fake_netease)
+    monkeypatch.setattr(
+        "kumikoroom.auto_dj.search_bilibili_videos",
+        lambda query, limit=8: (_ for _ in ()).throw(
+            AssertionError("Auto DJ should not search Bilibili")
+        ),
+    )
+    planner = LoopPlanner(
+        [first_plan, second_plan],
+        selected_item_ids=["netease-song-a", "netease-song-b", "netease-song-c"],
+    )
+
+    result = recommend_auto_dj(
+        AutoDjRecommendIn(
+            music_state=music_state_for_auto_dj(),
+            recommendation_profile=empty_profile(),
+            recent_messages=[],
+            settings=AutoDjSettingsIn(count=3, similar_count=2, exploration_count=1),
+        ),
+        planner=planner,
+    )
+
+    assert result.ok is True
+    assert len(planner.contexts) == 2
+    assert len(planner.contexts[1].search_feedback) == 2
+    assert {feedback.candidate_count for feedback in planner.contexts[1].search_feedback} == {0}
+    assert [item.item.id for item in result.recommendations] == [
+        "netease-song-a",
+        "netease-song-b",
+        "netease-song-c",
+    ]
+    assert [entry["query"] for entry in result.trace.planner_queries] == [
+        "東京佼成ウインドオーケストラ 金洪才 パッサカリア 吹奏楽",
+        "シンフォニックバンド 感動的な吹奏楽曲 名演",
+        "三日月の舞",
+        "響け ユーフォニアム",
+        "吹奏楽 コンクール",
+    ]
+
+
+def test_auto_dj_uses_llm_selection_order_and_reasons(monkeypatch) -> None:
+    plan = _default_plan()
+
+    def fake_netease(query: str, limit: int = 8):
+        return [
+            make_netease_candidate("netease-song-a", "Highest Score", 130.0),
+            make_netease_candidate("netease-song-b", "Middle Score", 90.0),
+            make_netease_candidate("netease-song-c", "LLM Favorite", 60.0),
+        ]
+
+    monkeypatch.setattr("kumikoroom.auto_dj.search_netease_songs", fake_netease)
+    monkeypatch.setattr(
+        "kumikoroom.auto_dj.search_bilibili_videos",
+        lambda query, limit=8: (_ for _ in ()).throw(
+            AssertionError("Auto DJ should not search Bilibili")
+        ),
+    )
+    planner = LoopPlanner(
+        [plan],
+        selected_item_ids=["netease-song-c", "netease-song-b", "netease-song-a"],
+        reasons={
+            "netease-song-c": "LLM picked the warmer emotional fit.",
+            "netease-song-b": "LLM kept a nearby brass texture.",
+            "netease-song-a": "LLM used it as a safe anchor.",
+        },
+    )
+
+    result = recommend_auto_dj(
+        AutoDjRecommendIn(
+            music_state=music_state_for_auto_dj(),
+            recommendation_profile=empty_profile(),
+            recent_messages=[],
+        ),
+        planner=planner,
+    )
+
+    assert result.ok is True
+    assert len(planner.selection_contexts) == 1
+    assert [candidate.item_id for candidate in planner.selection_contexts[0].candidates] == [
+        "netease-song-a",
+        "netease-song-b",
+        "netease-song-c",
+    ]
+    assert [item.item.id for item in result.recommendations] == [
+        "netease-song-c",
+        "netease-song-b",
+        "netease-song-a",
+    ]
+    assert result.recommendations[0].reason == "LLM picked the warmer emotional fit."
+    assert "LLM picked the warmer emotional fit." in result.recommendations[0].evidence
+
+
+def test_auto_dj_response_includes_trace_for_planner_and_candidates(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "kumikoroom.auto_dj.search_netease_songs",
+        lambda query, limit=8: [
+            make_netease_candidate("netease-song-a", "Brass Similar A", 120.0),
+            make_netease_candidate("netease-song-b", "Brass Similar B", 112.0),
+        ],
+    )
+    monkeypatch.setattr(
+        "kumikoroom.auto_dj.search_bilibili_videos",
+        lambda query, limit=8: (_ for _ in ()).throw(
+            AssertionError("Auto DJ should not search Bilibili")
+        ),
+    )
+
+    result = recommend_auto_dj(
+        AutoDjRecommendIn(
+            music_state=music_state_for_auto_dj(),
+            recommendation_profile=empty_profile(),
+            recent_messages=[],
+        ),
+        planner=FakePlanner(_default_plan()),
+    )
+
+    assert result.trace.planner_queries == [
+        {
+            "query": "Brass Theme Concert Band",
+            "intent": "similar_theme",
+            "themes": ["brass", "warm"],
+        },
+        {
+            "query": "brass explore",
+            "intent": "light_exploration",
+            "themes": ["brass"],
+        },
+    ]
+    assert result.trace.candidate_count == 4
+    assert result.trace.scored_count == 4
+    assert result.trace.selected_item_ids == [
+        recommendation.item.id for recommendation in result.recommendations
+    ]
+    assert result.trace.candidates[0].selected is True
+    assert result.trace.candidates[0].score == result.recommendations[0].score
+    assert result.trace.candidates[0].query in {
+        "Brass Theme Concert Band",
+        "brass explore",
+    }
 
 
 def test_auto_dj_increases_exploration_after_repeated_overlap(monkeypatch) -> None:
@@ -332,7 +585,7 @@ def test_auto_dj_increases_exploration_after_repeated_overlap(monkeypatch) -> No
     assert len(exploration_recommendations) == 2
 
 
-def test_auto_dj_keeps_working_when_one_source_fails(monkeypatch) -> None:
+def test_auto_dj_ignores_bilibili_source_failures(monkeypatch) -> None:
     def failing_bilibili(query: str, limit: int = 8):
         raise RuntimeError("bilibili unavailable")
 
@@ -355,7 +608,7 @@ def test_auto_dj_keeps_working_when_one_source_fails(monkeypatch) -> None:
 
     assert result.ok is True
     assert len(result.recommendations) >= 1
-    assert result.source_errors == ["bilibili unavailable"]
+    assert result.source_errors == []
 
 
 def test_auto_dj_treats_offsetless_cooldown_timestamp_as_utc(monkeypatch) -> None:
@@ -915,8 +1168,7 @@ def test_every_captured_search_query_appears_in_plan(monkeypatch) -> None:
         planner=FakePlanner(plan),
     )
 
-    # Each plan query is searched on both netease and bilibili
-    # (bilibili is a no-op lambda so only netease captures)
+    # Each plan query is searched on NetEase only.
     assert set(captured_queries) == {"query alpha", "query beta"}
 
 
@@ -981,11 +1233,15 @@ def test_planner_omits_required_intent_group_returns_failed(monkeypatch) -> None
     assert result.notice == "Auto DJ 暂时没找到合适的歌"
 
 
-def test_auto_dj_caps_recent_messages_at_200(monkeypatch) -> None:
-    """Backend must ignore messages beyond 200 even if the client sends more."""
+def test_auto_dj_passes_all_recent_messages_to_planner(monkeypatch) -> None:
+    """Backend should preserve the full conversation context provided by the client."""
     monkeypatch.setattr(
         "kumikoroom.auto_dj.search_netease_songs",
-        lambda query, limit=8: [make_netease_candidate("netease-song-a", "Auto Song", 100.0, creator="Auto Artist")],
+        lambda query, limit=8: [
+            make_netease_candidate("netease-song-a", "Auto Song A", 100.0, creator="Auto Artist"),
+            make_netease_candidate("netease-song-b", "Auto Song B", 95.0, creator="Auto Artist"),
+            make_netease_candidate("netease-song-c", "Auto Song C", 90.0, creator="Auto Artist"),
+        ],
     )
     monkeypatch.setattr(
         "kumikoroom.auto_dj.search_bilibili_videos",
@@ -1022,7 +1278,9 @@ def test_auto_dj_caps_recent_messages_at_200(monkeypatch) -> None:
     )
 
     assert len(captured_context) == 1
-    assert len(captured_context[0].recent_messages) == 200
+    assert len(captured_context[0].recent_messages) == 300
+    assert captured_context[0].recent_messages[0] == ("user", "msg 0")
+    assert captured_context[0].recent_messages[-1] == ("user", "msg 299")
 
 
 def test_auto_dj_normalizes_multi_word_themes_in_scoring(monkeypatch) -> None:

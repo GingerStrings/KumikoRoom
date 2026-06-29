@@ -176,6 +176,44 @@ describe("Liz Bluebird room visual tokens", () => {
     expect(css).not.toContain(".playlist {");
   });
 
+  it("keeps Auto DJ trace content inside the music queue panel", () => {
+    const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
+
+    expectRuleToContain(css, ".music-queue-panel", [
+      "grid-template-rows: auto auto auto minmax(0, 1fr);",
+    ]);
+    expectRuleToContain(css, ".auto-dj-trace", [
+      "grid-row: 3;",
+      "min-width: 0;",
+      "max-height: min(180px, 34vh);",
+      "overflow-x: hidden;",
+      "overflow-y: auto;",
+      "overscroll-behavior: contain;",
+    ]);
+    expectRuleToContain(css, ".auto-dj-trace-head", ["min-width: 0;"]);
+    expectRuleToContain(css, ".auto-dj-trace-head span", [
+      "min-width: 0;",
+      "overflow: hidden;",
+      "text-overflow: ellipsis;",
+      "white-space: nowrap;",
+    ]);
+    expectRuleToContain(css, ".auto-dj-trace-queries,\n.auto-dj-trace-candidates", [
+      "min-width: 0;",
+      "overflow: hidden;",
+    ]);
+    expectRuleToContain(css, ".auto-dj-trace-error", [
+      "display: block;",
+      "max-height: 76px;",
+      "overflow-y: auto;",
+      "overflow-wrap: anywhere;",
+    ]);
+    expectRuleToContain(css, ".music-queue-list", [
+      "grid-row: 4;",
+      "display: grid;",
+      "align-content: start;",
+    ]);
+  });
+
   it("uses the soft Kumiko chat avatar asset in message chrome", () => {
     const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
 

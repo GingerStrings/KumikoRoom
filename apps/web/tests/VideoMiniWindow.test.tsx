@@ -1,10 +1,16 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
 import { describe, expect, it, vi } from "vitest";
-import { PLAYER_TRACKS } from "../src/lib/musicItems";
+import { makeBilibiliMusicItem } from "../src/lib/musicItems";
 import { VideoMiniWindow } from "../src/components/VideoMiniWindow";
 
-const bilibiliItem = PLAYER_TRACKS.find((item) => item.source === "bilibili")!;
+const bilibiliItem = makeBilibiliMusicItem({
+  id: "test-video-mini-window",
+  title: "Rehearsal Video",
+  creator: "Rehearsal Archive",
+  url: "https://www.bilibili.com/video/BV1xx411c7mD",
+  tags: ["bilibili", "test"]
+});
 
 describe("VideoMiniWindow", () => {
   it("renders a Bilibili item as an optional mini player surface", () => {
@@ -54,7 +60,7 @@ describe("VideoMiniWindow", () => {
   it("renders nothing when the item has no embed URL", () => {
     const { container } = render(
       <VideoMiniWindow
-        item={{ ...PLAYER_TRACKS[0], embedUrl: undefined }}
+        item={{ ...bilibiliItem, embedUrl: undefined }}
         size="compact"
         onClose={vi.fn()}
         onToggleSize={vi.fn()}

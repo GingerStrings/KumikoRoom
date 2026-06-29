@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatSession, StoredChatMessage } from "../src/api/types";
 import { RoomShell } from "../src/components/RoomShell";
 import { getConnectionStatus } from "../src/lib/connectionStatus";
-import { PLAYER_TRACKS, buildListeningContext } from "../src/lib/musicItems";
+import { buildListeningContext, makeBilibiliMusicItem, makeNeteaseMusicItem } from "../src/lib/musicItems";
+import { createInitialMusicQueue } from "../src/lib/musicQueue";
 import { DEFAULT_ROOM_STATE, getIdleLine } from "../src/lib/roomState";
 
 const apiMocks = vi.hoisted(() => ({
@@ -45,6 +46,44 @@ const defaultCreatedSession = makeSession({
 
 const mediaPlayMock = vi.fn(() => Promise.resolve());
 const mediaPauseMock = vi.fn();
+const PLAYER_TRACKS = [
+  makeNeteaseMusicItem({
+    id: "test-default-north-uji-warmup",
+    title: "North Uji Warmup",
+    creator: "North Uji Ensemble",
+    durationMs: 215866,
+    url: "https://music.163.com/song?id=186016",
+    tags: ["netease", "test-default"]
+  }),
+  makeBilibiliMusicItem({
+    id: "test-default-rehearsal-video",
+    title: "Rehearsal Video",
+    creator: "Rehearsal Archive",
+    durationMs: 2055000,
+    url: "https://www.bilibili.com/video/BV1xx411c7mD",
+    tags: ["bilibili", "test-default"]
+  })
+];
+const TEST_MUSIC_QUEUE_STORAGE_KEY = "kumikoroom.musicQueue";
+const TEST_MUSIC_LIBRARY_STORAGE_KEY = "kumikoroom.musicLibrary";
+const REMOVED_RED_HORSE_TITLE = "\u7ea2\u9a6c (\u4f34\u594f)";
+const REMOVED_BILIBILI_TITLE = "\u5b57\u5e55\u541b\u4ea4\u6d41\u573a\u6240";
+const REMOVED_RED_HORSE_ITEM = makeNeteaseMusicItem({
+  id: "netease-red-horse-instrumental",
+  title: REMOVED_RED_HORSE_TITLE,
+  creator: "\u95eb\u6770\u6668",
+  durationMs: 215866,
+  url: "https://music.163.com/song?id=1822942870",
+  tags: ["netease", "instrumental"]
+});
+const REMOVED_BILIBILI_ITEM = makeBilibiliMusicItem({
+  id: "bilibili-blue-bird-rehearsal",
+  title: REMOVED_BILIBILI_TITLE,
+  creator: "\u78a7\u8bd7",
+  durationMs: 2055000,
+  url: "https://www.bilibili.com/video/BV1xx411c7mD",
+  tags: ["bilibili"]
+});
 
 describe("RoomShell", () => {
   beforeEach(() => {
@@ -62,6 +101,10 @@ describe("RoomShell", () => {
       value: mediaPauseMock
     });
     localStorage.clear();
+    localStorage.setItem(
+      TEST_MUSIC_QUEUE_STORAGE_KEY,
+      JSON.stringify(createInitialMusicQueue(PLAYER_TRACKS, "2026-06-29T00:00:00.000Z"))
+    );
     apiMocks.getSessions.mockResolvedValue([defaultSession]);
     apiMocks.getSessionMessages.mockResolvedValue([]);
     apiMocks.createSession.mockResolvedValue(defaultCreatedSession);
@@ -148,7 +191,35 @@ describe("RoomShell", () => {
         ]
       },
       error: null,
-      sourceErrors: []
+      sourceErrors: [],
+      trace: {
+        plannerQueries: [
+          {
+            query: "current mellow theme",
+            intent: "similar_theme",
+            themes: ["mellow", "brass"]
+          }
+        ],
+        candidateCount: 4,
+        scoredCount: 3,
+        selectedItemIds: ["netease-auto-a"],
+        candidates: [
+          {
+            itemId: "netease-auto-a",
+            title: "Auto DJ Song",
+            creator: "Auto Artist",
+            source: "netease",
+            query: "current mellow theme",
+            intent: "similar_theme",
+            score: 120,
+            reason: "close to the current listening context",
+            evidence: ["playable candidate"],
+            selected: true
+          }
+        ],
+        sourceErrors: [],
+        error: null
+      }
     });
     apiMocks.searchMusic.mockResolvedValue([]);
   });
@@ -213,6 +284,100 @@ describe("RoomShell", () => {
     expect(screen.queryByRole("button", { name: "打开视频小窗" })).toBeNull();
     expect(screen.queryByRole("dialog", { name: "B站视频小窗" })).toBeNull();
     expect(screen.queryByTitle(/视频播放/)).toBeNull();
+  });
+
+  it("starts with an idle player when no queue is stored", async () => {
+    localStorage.removeItem(TEST_MUSIC_QUEUE_STORAGE_KEY);
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe("暂无播放");
+    expect(document.querySelector<HTMLElement>(".track-title span")?.textContent).toBe("可以让久美子继续帮你找歌");
+    expect(document.querySelector("audio.platform-audio-host")).toBeNull();
+    expect(document.querySelector(".source-badge")).toBeNull();
+  });
+
+  it("removes deleted sticky default tracks from stored queue and playlists", async () => {
+    const keptTrack = PLAYER_TRACKS[0];
+    localStorage.setItem(
+      TEST_MUSIC_QUEUE_STORAGE_KEY,
+      JSON.stringify({
+        entries: [
+          {
+            id: REMOVED_RED_HORSE_ITEM.id,
+            item: REMOVED_RED_HORSE_ITEM,
+            status: "current",
+            addedBy: "default",
+            addedAt: "2026-06-29T00:00:00.000Z",
+            playCount: 1,
+            lastPlayedAt: "2026-06-29T00:00:00.000Z"
+          },
+          {
+            id: keptTrack.id,
+            item: keptTrack,
+            status: "queued",
+            addedBy: "user",
+            addedAt: "2026-06-29T00:00:00.000Z",
+            playCount: 0
+          },
+          {
+            id: REMOVED_BILIBILI_ITEM.id,
+            item: REMOVED_BILIBILI_ITEM,
+            status: "queued",
+            addedBy: "default",
+            addedAt: "2026-06-29T00:00:00.000Z",
+            playCount: 0
+          }
+        ],
+        currentId: REMOVED_RED_HORSE_ITEM.id,
+        recentLimit: 30
+      })
+    );
+    localStorage.setItem(
+      TEST_MUSIC_LIBRARY_STORAGE_KEY,
+      JSON.stringify({
+        playlists: [
+          {
+            id: "playlist-legacy",
+            name: "Legacy",
+            items: [
+              {
+                id: REMOVED_RED_HORSE_ITEM.id,
+                item: REMOVED_RED_HORSE_ITEM,
+                addedAt: "2026-06-29T00:00:00.000Z",
+                addedBy: "default"
+              },
+              {
+                id: keptTrack.id,
+                item: keptTrack,
+                addedAt: "2026-06-29T00:00:00.000Z",
+                addedBy: "user"
+              }
+            ],
+            createdAt: "2026-06-29T00:00:00.000Z",
+            updatedAt: "2026-06-29T00:00:00.000Z"
+          }
+        ]
+      })
+    );
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    expect(screen.queryByText(REMOVED_RED_HORSE_TITLE)).toBeNull();
+    expect(screen.queryByText(REMOVED_BILIBILI_TITLE)).toBeNull();
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe(keptTrack.title);
+
+    fireEvent.click(getQueueManageButton());
+    const panel = getMusicQueuePanel();
+    expect(within(panel).queryByText(REMOVED_RED_HORSE_TITLE)).toBeNull();
+    expect(within(panel).queryByText(REMOVED_BILIBILI_TITLE)).toBeNull();
+    expect(within(panel).getByText(keptTrack.title)).toBeTruthy();
+
+    fireEvent.click(within(panel).getByRole("tab", { name: "我的歌单" }));
+    expect(within(panel).queryByText(REMOVED_RED_HORSE_TITLE)).toBeNull();
+    expect(within(panel).getByText(keptTrack.title)).toBeTruthy();
   });
 
   it("switches the right-side standee between playing and idle art", async () => {
@@ -356,7 +521,7 @@ describe("RoomShell", () => {
   });
 
   it("sends active listening context with chat messages", async () => {
-    const bilibiliTrack = PLAYER_TRACKS.find((track) => track.id === "bilibili-blue-bird-rehearsal");
+    const bilibiliTrack = PLAYER_TRACKS.find((track) => track.source === "bilibili");
     if (!bilibiliTrack) {
       throw new Error("Bilibili player track not found");
     }
@@ -488,6 +653,72 @@ describe("RoomShell", () => {
     ]));
   });
 
+  it("shows the latest Auto DJ trace in the queue panel", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("switch", { name: "Auto DJ" }));
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(getQueueManageButton());
+    const panel = getMusicQueuePanel();
+    expect(within(panel).getByText("Auto DJ Trace")).toBeTruthy();
+    expect(within(panel).getByText("current mellow theme")).toBeTruthy();
+    expect(within(panel).getByText("candidates 4 / scored 3")).toBeTruthy();
+    expect(within(panel).getByText("selected Auto DJ Song")).toBeTruthy();
+  });
+
+  it("shows the Auto DJ trace error in the queue panel", async () => {
+    apiMocks.recommendAutoDj.mockReset();
+    apiMocks.recommendAutoDj.mockResolvedValue({
+      ok: false,
+      refillId: null,
+      notice: "Auto DJ 暂时没找到合适的歌",
+      clientActions: [],
+      recommendations: [],
+      profilePatch: { recommendedItems: [], cooldowns: [], refillHistory: [] },
+      error: "query_planning_failed",
+      sourceErrors: [],
+      trace: {
+        plannerQueries: [],
+        candidateCount: 0,
+        scoredCount: 0,
+        selectedItemIds: [],
+        candidates: [],
+        sourceErrors: [],
+        error: "LLM call failed: DeepSeek request failed"
+      }
+    });
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("switch", { name: "Auto DJ" }));
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(getQueueManageButton());
+    const panel = getMusicQueuePanel();
+    expect(within(panel).getByText("Auto DJ Trace")).toBeTruthy();
+    expect(within(panel).getByText("LLM call failed: DeepSeek request failed")).toBeTruthy();
+  });
+
+  it("shows a local Auto DJ trace when the request rejects", async () => {
+    apiMocks.recommendAutoDj.mockReset();
+    apiMocks.recommendAutoDj.mockRejectedValue(new Error("Network timeout"));
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("switch", { name: "Auto DJ" }));
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(getQueueManageButton());
+    const panel = getMusicQueuePanel();
+    expect(within(panel).getByText("Auto DJ Trace")).toBeTruthy();
+    expect(panel.textContent).toContain("request_failed");
+    expect(panel.textContent).toContain("Network timeout");
+  });
+
   it("learns from an Auto DJ recommendation when it starts playing only once", async () => {
     render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
 
@@ -581,7 +812,7 @@ describe("RoomShell", () => {
     });
   });
 
-  it("includes up to the last 200 chat messages on the Auto DJ refill", async () => {
+  it("includes the full chat history on the Auto DJ refill", async () => {
     const stored: StoredChatMessage[] = Array.from({ length: 250 }, (_, index) => ({
       id: `seed-${index}`,
       sessionId: defaultSession.id,
@@ -597,7 +828,87 @@ describe("RoomShell", () => {
     fireEvent.click(screen.getByRole("switch", { name: "Auto DJ" }));
 
     await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
-    expect(apiMocks.recommendAutoDj.mock.calls[0][0].recentMessages).toHaveLength(200);
+    expect(apiMocks.recommendAutoDj.mock.calls[0][0].recentMessages).toHaveLength(250);
+    expect(apiMocks.recommendAutoDj.mock.calls[0][0].recentMessages[0]).toMatchObject({
+      id: "seed-0",
+      content: "seed message 0"
+    });
+    expect(apiMocks.recommendAutoDj.mock.calls[0][0].recentMessages[249]).toMatchObject({
+      id: "seed-249",
+      content: "seed message 249"
+    });
+  });
+
+  it("manual recommendation sends full chat history and playlist context without enabling Auto DJ", async () => {
+    const stored: StoredChatMessage[] = Array.from({ length: 250 }, (_, index) => ({
+      id: `manual-seed-${index}`,
+      sessionId: defaultSession.id,
+      role: index % 2 === 0 ? "user" : "kumiko",
+      content: `manual seed message ${index}`
+    }));
+    apiMocks.getSessionMessages.mockResolvedValueOnce(stored);
+    localStorage.setItem(
+      "kumikoroom.musicLibrary",
+      JSON.stringify({
+        playlists: [
+          {
+            id: "playlist-manual-context",
+            name: "Manual Context",
+            description: "full playlist context",
+            createdAt: "2026-06-15T00:00:00.000Z",
+            updatedAt: "2026-06-15T00:01:00.000Z",
+            items: [
+              {
+                id: PLAYER_TRACKS[0].id,
+                item: PLAYER_TRACKS[0],
+                addedAt: "2026-06-15T00:01:00.000Z",
+                addedBy: "user"
+              }
+            ]
+          }
+        ]
+      })
+    );
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    await waitFor(() => expect(screen.getByText("manual seed message 249")).toBeTruthy());
+    expect((screen.getByRole("switch", { name: "Auto DJ" }) as HTMLInputElement).checked).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "手动触发推荐" }));
+
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+    const payload = apiMocks.recommendAutoDj.mock.calls[0][0];
+    expect(payload.recentMessages).toHaveLength(250);
+    expect(payload.recentMessages[0]).toMatchObject({
+      id: "manual-seed-0",
+      content: "manual seed message 0"
+    });
+    expect(payload.recentMessages[249]).toMatchObject({
+      id: "manual-seed-249",
+      content: "manual seed message 249"
+    });
+    expect(payload.musicState).toEqual(
+      expect.objectContaining({
+        playlists: [
+          expect.objectContaining({
+            id: "playlist-manual-context",
+            name: "Manual Context",
+            description: "full playlist context",
+            itemCount: 1,
+            items: [
+              expect.objectContaining({
+                id: PLAYER_TRACKS[0].id,
+                title: PLAYER_TRACKS[0].title,
+                tags: PLAYER_TRACKS[0].tags
+              })
+            ]
+          })
+        ]
+      })
+    );
+    expect((screen.getByRole("switch", { name: "Auto DJ" }) as HTMLInputElement).checked).toBe(false);
   });
 
   it("shows an inline status and no chat notice when the planner fails", async () => {
@@ -1258,10 +1569,11 @@ describe("RoomShell", () => {
   });
 
   it("sends confirmation text through chat and applies the returned play action", async () => {
+    const confirmationTrack = PLAYER_TRACKS[0];
     apiMocks.postChat
       .mockResolvedValueOnce(
         makeChatResponse({
-          reply: { id: "reply-recommend", role: "kumiko", content: "那我会选《红马 (伴奏)》。" },
+          reply: { id: "reply-recommend", role: "kumiko", content: `那我会选《${confirmationTrack.title}》。` },
           session: null
         })
       )
@@ -1272,15 +1584,15 @@ describe("RoomShell", () => {
             {
               type: "play_music_item",
               item: {
-                id: "netease-red-horse-instrumental",
-                source: "netease",
-                title: "红马 (伴奏)",
-                creator: "闫杰晨",
-                durationMs: 215866,
-                pageUrl: "https://music.163.com/#/song?id=1822942870",
-                platformAudioUrl: "https://music.163.com/song/media/outer/url?id=1822942870.mp3",
-                tags: ["netease", "instrumental", "agent-selected"],
-                canOpenVideo: false
+                id: confirmationTrack.id,
+                source: confirmationTrack.source,
+                title: confirmationTrack.title,
+                creator: confirmationTrack.creator,
+                durationMs: confirmationTrack.durationMs,
+                pageUrl: confirmationTrack.pageUrl ?? null,
+                platformAudioUrl: confirmationTrack.platformAudioUrl ?? null,
+                tags: [...confirmationTrack.tags, "agent-selected"],
+                canOpenVideo: confirmationTrack.canOpenVideo
               }
             }
           ],
@@ -1296,7 +1608,7 @@ describe("RoomShell", () => {
     });
     fireEvent.click(getComposerSubmit());
 
-    expect(await within(getTimeline()).findByText("那我会选《红马 (伴奏)》。")).toBeTruthy();
+    expect(await within(getTimeline()).findByText(`那我会选《${confirmationTrack.title}》。`)).toBeTruthy();
 
     fireEvent.change(getComposerInput(), {
       target: { value: "可以" }
@@ -1305,9 +1617,9 @@ describe("RoomShell", () => {
 
     expect(await within(getTimeline()).findByText("好，我现在放这首。")).toBeTruthy();
     expect(document.querySelector<HTMLElement>(".source-badge")?.getAttribute("data-source")).toBe("netease");
-    expect(getPlatformAudio().getAttribute("src")).toBe("https://music.163.com/song/media/outer/url?id=1822942870.mp3");
+    expect(getPlatformAudio().getAttribute("src")).toBe(confirmationTrack.platformAudioUrl);
     expect(within(getTimeline()).getByText("可以")).toBeTruthy();
-    expect(within(getTimeline()).queryByText("已切到《红马 (伴奏)》。")).toBeNull();
+    expect(within(getTimeline()).queryByText(`已切到《${confirmationTrack.title}》。`)).toBeNull();
     expect(apiMocks.postChat).toHaveBeenCalledTimes(2);
   });
 

@@ -52,11 +52,50 @@ class AutoDjQueryPlan:
 
 
 @dataclass(frozen=True)
+class AutoDjSearchFeedback:
+    attempt: int
+    query: str
+    intent: RecommendationIntentKind
+    candidate_count: int
+    qualified_count: int
+    source_errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class AutoDjQueryPlanningContext:
     music_state: MusicAgentState | None
     profile: MusicRecommendationProfileIn
     recent_messages: tuple[tuple[str, str], ...]  # (role, content)
     settings: AutoDjSettingsIn
+    search_feedback: tuple[AutoDjSearchFeedback, ...] = ()
+
+
+@dataclass(frozen=True)
+class AutoDjSelectionCandidate:
+    item_id: str
+    title: str
+    creator: str
+    source: str
+    intent: RecommendationIntentKind
+    query: str
+    score: float
+    evidence: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AutoDjSelectionContext:
+    music_state: MusicAgentState | None
+    profile: MusicRecommendationProfileIn
+    recent_messages: tuple[tuple[str, str], ...]
+    settings: AutoDjSettingsIn
+    candidates: tuple[AutoDjSelectionCandidate, ...]
+    search_feedback: tuple[AutoDjSearchFeedback, ...] = ()
+
+
+@dataclass(frozen=True)
+class AutoDjSelection:
+    selected_item_ids: tuple[str, ...]
+    reasons: dict[str, str]
 
 
 def _normalize_query(value: str) -> str:
@@ -158,13 +197,70 @@ def parse_and_validate_plan(
     return AutoDjQueryPlan(queries=tuple(accepted))
 
 
+def parse_and_validate_selection(
+    raw: str,
+    candidates: tuple[AutoDjSelectionCandidate, ...],
+    settings: AutoDjSettingsIn,
+) -> AutoDjSelection:
+    text = raw.strip()
+    if not text or text.startswith("```") or not text.startswith("{"):
+        raise PlanningError("selection response is not a bare JSON object")
+    if not text.endswith("}"):
+        raise PlanningError("selection response has trailing prose after JSON")
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise PlanningError(f"invalid selection JSON: {error}") from error
+    if not isinstance(document, dict):
+        raise PlanningError("selection response is not a JSON object")
+
+    raw_selected = document.get("selected")
+    if raw_selected is None:
+        raw_selected = document.get("selected_item_ids")
+    if not isinstance(raw_selected, list):
+        raise PlanningError("selected field missing or not a list")
+
+    candidate_ids = {candidate.item_id for candidate in candidates}
+    selected_item_ids: list[str] = []
+    reasons: dict[str, str] = {}
+    seen: set[str] = set()
+    for entry in raw_selected:
+        item_id = ""
+        reason = ""
+        if isinstance(entry, str):
+            item_id = entry.strip()
+        elif isinstance(entry, dict):
+            raw_item_id = entry.get("item_id") or entry.get("id")
+            if isinstance(raw_item_id, str):
+                item_id = raw_item_id.strip()
+            raw_reason = entry.get("reason")
+            if isinstance(raw_reason, str):
+                reason = raw_reason.strip()
+        if not item_id or item_id in seen or item_id not in candidate_ids:
+            continue
+        seen.add(item_id)
+        selected_item_ids.append(item_id)
+        if reason:
+            reasons[item_id] = reason[:240]
+        if len(selected_item_ids) >= settings.count:
+            break
+
+    if not selected_item_ids:
+        raise PlanningError("selection contained no valid candidate ids")
+
+    return AutoDjSelection(
+        selected_item_ids=tuple(selected_item_ids),
+        reasons=reasons,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Prompt builders
 # ---------------------------------------------------------------------------
 
 _SYSTEM_PROMPT = """\
 You are KumikoRoom's Auto DJ query planner. Read the user's listening context
-and produce search queries for NetEase Cloud Music and Bilibili.
+and produce search queries for NetEase Cloud Music.
 
 Return ONE JSON object only, with this exact shape:
 
@@ -184,8 +280,10 @@ Rules:
   query when similar_count > 0, and at least one light_exploration query
   when exploration_count > 0.
 - Tailor queries to the listening context. Combine creator names, work
-  titles, moods, themes, and platform terms ("ost", "动画", "concert band")
-  in natural search-engine phrasing.
+  titles, moods, and themes in natural NetEase search phrasing.
+- Prefer concise Chinese/Japanese work titles, artist names, anime OST names,
+  and short mood terms. If prior search feedback says a query returned zero
+  candidates, broaden it and remove overly specific performer/instrument terms.
 """
 
 
@@ -209,6 +307,21 @@ def _format_recent_messages(messages: tuple[tuple[str, str], ...]) -> str:
     for role, content in messages:
         text = content.strip().replace("\n", " ")
         lines.append(f"{role}: {text[:240]}")
+    return "\n".join(lines)
+
+
+def _format_search_feedback(feedback: tuple[AutoDjSearchFeedback, ...]) -> str:
+    if not feedback:
+        return "(none)"
+    lines = []
+    for item in feedback:
+        errors = "; ".join(item.source_errors) if item.source_errors else "none"
+        lines.append(
+            "- "
+            f"attempt={item.attempt}, query={item.query}, intent={item.intent}, "
+            f"candidates={item.candidate_count}, qualified={item.qualified_count}, "
+            f"errors={errors}"
+        )
     return "\n".join(lines)
 
 
@@ -257,6 +370,78 @@ def build_auto_dj_planning_user_prompt(context: AutoDjQueryPlanningContext) -> s
         parts.append("\n".join(_format_track(t) for t in state.saved[:8]))
     parts.append("Profile signals:")
     parts.append(_format_profile(context.profile))
-    parts.append("Recent chat (oldest first, up to 200 entries):")
+    parts.append("Conversation context (oldest first):")
     parts.append(_format_recent_messages(context.recent_messages))
+    if context.search_feedback:
+        parts.append("Search feedback from previous attempts:")
+        parts.append(_format_search_feedback(context.search_feedback))
+    return "\n\n".join(parts)
+
+
+_SELECTION_SYSTEM_PROMPT = """\
+You are KumikoRoom's Auto DJ selector. Choose final recommendations only from
+the provided candidate ids.
+
+Return ONE JSON object only, with this exact shape:
+
+{
+  "selected": [
+    {"item_id": "<candidate id>", "reason": "<short reason tied to context>"}
+  ]
+}
+
+Rules:
+- Output JSON only. No prose, no markdown fences, no comments.
+- Select at most the requested count.
+- Use only candidate ids from the candidate list.
+- Prefer songs that fit the current track, conversation, queue, saved tracks,
+  and playlist context. Balance close matches with one light exploration pick
+  when the candidate pool supports it.
+"""
+
+
+def build_auto_dj_selection_system_prompt(settings: AutoDjSettingsIn) -> str:
+    return f"{_SELECTION_SYSTEM_PROMPT}\nThis refill requests {settings.count} tracks."
+
+
+def build_auto_dj_selection_user_prompt(context: AutoDjSelectionContext) -> str:
+    parts: list[str] = []
+    state: MusicAgentState | None = context.music_state
+    if state is None or state.current is None:
+        parts.append("Currently playing: (none)")
+    else:
+        parts.append(f"Currently playing: {state.current.title} — {state.current.creator}")
+    if state is not None and state.upcoming:
+        parts.append("Upcoming queue:")
+        parts.append("\n".join(_format_track(t) for t in state.upcoming[:8]))
+    if state is not None and state.recent:
+        parts.append("Recently played:")
+        parts.append("\n".join(_format_track(t) for t in state.recent[:8]))
+    if state is not None and getattr(state, "playlists", None):
+        playlist_lines = []
+        for playlist in state.playlists[:6]:
+            playlist_lines.append(
+                f"- {playlist.name}: "
+                + ", ".join(f"{track.title} — {track.creator}" for track in playlist.items[:6])
+            )
+        parts.append("Playlist context:")
+        parts.append("\n".join(playlist_lines))
+    parts.append("Profile signals:")
+    parts.append(_format_profile(context.profile))
+    parts.append("Conversation context (oldest first):")
+    parts.append(_format_recent_messages(context.recent_messages))
+    if context.search_feedback:
+        parts.append("Search feedback:")
+        parts.append(_format_search_feedback(context.search_feedback))
+    parts.append("Candidates:")
+    parts.append(
+        "\n".join(
+            "- "
+            f"id={candidate.item_id}; title={candidate.title}; creator={candidate.creator}; "
+            f"source={candidate.source}; intent={candidate.intent}; query={candidate.query}; "
+            f"score={candidate.score:g}; evidence={'; '.join(candidate.evidence[:5])}"
+            for candidate in context.candidates
+        )
+        or "(none)"
+    )
     return "\n\n".join(parts)

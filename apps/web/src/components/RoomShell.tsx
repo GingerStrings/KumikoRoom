@@ -16,6 +16,7 @@ import type {
   AutoDjRecommendation,
   AutoDjRecommendResponse,
   AutoDjSettings,
+  AutoDjTrace,
   ChatMessage,
   ChatSession,
   ClientMusicItem,
@@ -30,7 +31,12 @@ import type {
   StoredChatMessage
 } from "../api/types";
 import type { ConnectionStatus } from "../lib/connectionStatus";
-import { PLAYER_TRACKS, buildListeningContext, makeMusicItemFromClientActionItem } from "../lib/musicItems";
+import {
+  PLAYER_TRACKS,
+  buildListeningContext,
+  isDeletedStickyDefaultMusicItem,
+  makeMusicItemFromClientActionItem
+} from "../lib/musicItems";
 import type { ListeningContext, MusicItem, MusicSourceKind } from "../lib/musicItems";
 import { buildMusicAgentState } from "../lib/musicAgentState";
 import {
@@ -87,6 +93,8 @@ const MUSIC_QUEUE_STORAGE_KEY = "kumikoroom.musicQueue";
 const MUSIC_LIBRARY_STORAGE_KEY = "kumikoroom.musicLibrary";
 const AUTO_DJ_ENABLED_STORAGE_KEY = "kumikoroom.autoDjEnabled";
 const MUSIC_RECOMMENDATION_PROFILE_STORAGE_KEY = "kumikoroom.musicRecommendationProfile";
+const EMPTY_PLAYER_TITLE = "暂无播放";
+const EMPTY_PLAYER_CREATOR = "可以让久美子继续帮你找歌";
 const DEFAULT_AUTO_DJ_SETTINGS: AutoDjSettings = {
   count: 3,
   queueDepthTrigger: 2,
@@ -106,6 +114,30 @@ interface FailedOutgoingMessage {
 interface RoomShellProps {
   initialState: RoomState;
   connectionStatus: ConnectionStatus;
+}
+
+function makeAutoDjRequestFailedTrace(error: unknown): AutoDjTrace {
+  return {
+    plannerQueries: [],
+    candidateCount: 0,
+    scoredCount: 0,
+    selectedItemIds: [],
+    candidates: [],
+    sourceErrors: [getAutoDjRequestErrorMessage(error)],
+    error: "request_failed"
+  };
+}
+
+function getAutoDjRequestErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+
+  return "Auto DJ request failed";
+}
+
+function isNonEmptyString(value: string | null | undefined): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
@@ -150,6 +182,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const [autoDjInFlightSignature, setAutoDjInFlightSignature] = useState<string | null>(null);
   const [autoDjLastRequestedSignature, setAutoDjLastRequestedSignature] = useState<string | null>(null);
   const [autoDjStatus, setAutoDjStatus] = useState<"idle" | "loading" | "unavailable">("idle");
+  const [latestAutoDjTrace, setLatestAutoDjTrace] = useState<AutoDjTrace | null>(null);
   const [musicRecommendationProfile, setMusicRecommendationProfile] = useState<MusicRecommendationProfile>(() =>
     createInitialMusicRecommendationProfile()
   );
@@ -169,6 +202,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const [videoWindowSize, setVideoWindowSize] = useState<"compact" | "large">("compact");
   const musicQueueRef = useRef(musicQueue);
   const musicLibraryRef = useRef(musicLibrary);
+  const autoDjInFlightRef = useRef<string | null>(null);
   const videoWindowOpenRef = useRef(videoWindowOpen);
   const connectionLabel = providerStatus?.label ?? connectionStatus.label;
   musicQueueRef.current = musicQueue;
@@ -177,8 +211,10 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const playerQueueEntries = getPlaybackQueueEntries(musicQueue);
   const playerQueue = playerQueueEntries.map((entry) => entry.item);
   const activeQueueEntry = getCurrentQueueEntry(musicQueue) ?? playerQueueEntries[0] ?? null;
-  const activeTrack = activeQueueEntry?.item ?? PLAYER_TRACKS[0];
-  const playerTrackIndex = Math.max(0, playerQueue.findIndex((track) => track.id === activeTrack.id));
+  const activeTrack = activeQueueEntry?.item ?? null;
+  const playerTrackIndex = activeTrack
+    ? Math.max(0, playerQueue.findIndex((track) => track.id === activeTrack.id))
+    : 0;
   const queuePreview = getQueuePreview(musicQueue);
   const upcomingQueueEntries = getUpcomingQueueEntries(musicQueue);
   const recentQueueEntries = getRecentQueueEntries(musicQueue);
@@ -193,8 +229,11 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     recentQueueEntries,
     savedQueueEntries
   );
-  const hasPlatformAudio = Boolean(activeTrack.platformAudioUrl);
-  const activeTrackDuration = activeTrack.durationMs / 1000;
+  const latestAutoDjTraceProblems = latestAutoDjTrace
+    ? [latestAutoDjTrace.error, ...latestAutoDjTrace.sourceErrors].filter(isNonEmptyString)
+    : [];
+  const hasPlatformAudio = Boolean(activeTrack?.platformAudioUrl);
+  const activeTrackDuration = (activeTrack?.durationMs ?? 0) / 1000;
   const playerDurationSeconds = playerDuration > 0 ? playerDuration : activeTrackDuration;
   const playerProgress = hasPlatformAudio && playerDurationSeconds > 0
     ? Math.min(100, Math.max(0, (playerCurrentTime / playerDurationSeconds) * 100))
@@ -206,7 +245,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const standeeImageSrc = isPlayerPlaying
     ? "/assets/kumiko-euphonium-playing-v1.png"
     : "/assets/kumiko-standee-v1.png";
-  const activeListeningContext = buildListeningContext(activeTrack, isPlayerPlaying);
+  const activeListeningContext = activeTrack ? buildListeningContext(activeTrack, isPlayerPlaying) : undefined;
   const setActiveSessionId = useCallback((sessionId: string | null) => {
     activeSessionIdRef.current = sessionId;
     setActiveSessionIdState(sessionId);
@@ -440,21 +479,21 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   }, [selectedPlaylist?.id, selectedPlaylist?.name]);
 
   useEffect(() => {
-    if (activeTrack.canOpenVideo) return;
+    if (activeTrack?.canOpenVideo) return;
 
     commitVideoWindowOpen(false);
-  }, [activeTrack.canOpenVideo]);
+  }, [activeTrack?.canOpenVideo]);
 
   useEffect(() => {
     setPlayerCurrentTime(0);
-    setPlayerDuration(activeTrack.durationMs / 1000);
-  }, [activeTrack.id, activeTrack.durationMs]);
+    setPlayerDuration((activeTrack?.durationMs ?? 0) / 1000);
+  }, [activeTrack?.id, activeTrack?.durationMs]);
 
   useEffect(() => {
-    if (!activeTrack.platformAudioUrl || !isPlayerPlaying) return;
+    if (!activeTrack?.platformAudioUrl || !isPlayerPlaying) return;
 
     void playPlatformAudio();
-  }, [activeTrack.id, activeTrack.platformAudioUrl, isPlayerPlaying]);
+  }, [activeTrack?.id, activeTrack?.platformAudioUrl, isPlayerPlaying]);
 
   useEffect(() => {
     const timeline = timelineRef.current;
@@ -462,6 +501,46 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
 
     timeline.scrollTop = timeline.scrollHeight;
   }, [messages, isSending, failedOutgoing]);
+
+  function requestAutoDjRecommendation(signature: string | null = null): boolean {
+    if (autoDjInFlightRef.current !== null) return false;
+
+    const requestSignature = signature ?? `manual:${Date.now()}`;
+    autoDjInFlightRef.current = requestSignature;
+    setAutoDjInFlightSignature(requestSignature);
+    if (signature) {
+      setAutoDjLastRequestedSignature(signature);
+    }
+
+    const musicState = buildMusicAgentState(musicQueue, {
+      isPlaying: isPlayerPlaying,
+      currentTimeMs: Math.round(playerCurrentTime * 1000),
+      durationMs: Math.round(playerDurationSeconds * 1000)
+    }, musicLibrary);
+
+    setAutoDjStatus("loading");
+    void recommendAutoDj({
+      musicState,
+      recommendationProfile: musicRecommendationProfileRef.current,
+      recentMessages: messages,
+      settings: DEFAULT_AUTO_DJ_SETTINGS,
+      llmConfig: llmConfig ?? null
+    })
+      .then((response) => {
+        applyAutoDjResponse(response);
+        setAutoDjStatus(response.ok ? "idle" : "unavailable");
+      })
+      .catch((error: unknown) => {
+        setLatestAutoDjTrace(makeAutoDjRequestFailedTrace(error));
+        setAutoDjStatus("unavailable");
+      })
+      .finally(() => {
+        autoDjInFlightRef.current = null;
+        setAutoDjInFlightSignature(null);
+      });
+
+    return true;
+  }
 
   useEffect(() => {
     const signature = shouldRequestAutoDjRefill({
@@ -474,32 +553,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     });
     if (!signature) return;
 
-    setAutoDjInFlightSignature(signature);
-    setAutoDjLastRequestedSignature(signature);
-    const musicState = buildMusicAgentState(musicQueue, {
-      isPlaying: isPlayerPlaying,
-      currentTimeMs: Math.round(playerCurrentTime * 1000),
-      durationMs: Math.round(playerDurationSeconds * 1000)
-    }, musicLibrary);
-
-    setAutoDjStatus("loading");
-    void recommendAutoDj({
-      musicState,
-      recommendationProfile: musicRecommendationProfileRef.current,
-      recentMessages: messages.slice(-200),
-      settings: DEFAULT_AUTO_DJ_SETTINGS,
-      llmConfig: llmConfig ?? null
-    })
-      .then((response) => {
-        applyAutoDjResponse(response);
-        setAutoDjStatus(response.ok ? "idle" : "unavailable");
-      })
-      .catch(() => {
-        setAutoDjStatus("unavailable");
-      })
-      .finally(() => {
-        setAutoDjInFlightSignature(null);
-      });
+    requestAutoDjRecommendation(signature);
   }, [
     autoDjEnabled,
     autoDjHydrated,
@@ -511,6 +565,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     playerCurrentTime,
     playerDurationSeconds,
     messages,
+    llmConfig,
     autoDjInFlightSignature,
     autoDjLastRequestedSignature
   ]);
@@ -530,6 +585,10 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     if (!failedOutgoing || isSessionOperationBlocked()) return;
 
     await sendChatMessage(failedOutgoing.content, failedOutgoing);
+  }
+
+  function handleManualAutoDjRecommend() {
+    requestAutoDjRecommendation();
   }
 
   async function sendChatMessage(message: string, retryMessage?: FailedOutgoingMessage) {
@@ -562,7 +621,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     try {
       const response = await postChat({
         message,
-        roomState: buildCurrentRoomState(initialState, listeningContext),
+        roomState: listeningContext ? buildCurrentRoomState(initialState, listeningContext) : initialState,
         sessionId: submittedSessionId ?? undefined,
         recentMessages,
         personaStrength,
@@ -873,6 +932,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   }
 
   function applyAutoDjResponse(response: AutoDjRecommendResponse) {
+    setLatestAutoDjTrace(response.trace ?? null);
     if (response.profilePatch) {
       setMusicRecommendationProfile((current) =>
         applyRecommendationProfilePatch(current, response.profilePatch)
@@ -977,7 +1037,8 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     if (playerQueue.length === 0) return;
 
     const nextEntry = playerQueueEntries[nextIndex] ?? playerQueueEntries[0] ?? null;
-    const nextTrack = nextEntry?.item ?? PLAYER_TRACKS[0];
+    const nextTrack = nextEntry?.item ?? null;
+    if (!nextTrack) return;
 
     platformAudioRef.current?.pause();
     if (nextEntry) {
@@ -1126,7 +1187,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
 
   function handlePlayPause() {
     if (!hasPlatformAudio) {
-      if (activeTrack.canOpenVideo) {
+      if (activeTrack?.canOpenVideo) {
         commitVideoWindowOpen(true);
         setIsPlayerPlaying(true);
       }
@@ -1192,7 +1253,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     const audio = event.currentTarget;
     const metadataDuration = Number.isFinite(audio.duration) && audio.duration > 0
       ? audio.duration
-      : activeTrack.durationMs / 1000;
+      : (activeTrack?.durationMs ?? 0) / 1000;
 
     setPlayerDuration(metadataDuration);
     setPlayerCurrentTime(audio.currentTime);
@@ -1763,7 +1824,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                 □
               </button>
               <button className="tool" type="button" aria-label="语音">
-                ♬
+                ♪
               </button>
             </div>
             <div className="composer-main">
@@ -1808,7 +1869,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
             />
           </div>
           <section className="media-player" aria-label="氛围播放器">
-            {activeTrack.platformAudioUrl ? (
+            {activeTrack?.platformAudioUrl ? (
               <audio
                 ref={platformAudioRef}
                 className="platform-audio-host"
@@ -1821,13 +1882,15 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
             ) : null}
             <div className="track-head">
               <div className="track-title">
-                <strong>{activeTrack.title}</strong>
-                <span>{activeTrack.creator}</span>
+                <strong>{activeTrack?.title ?? EMPTY_PLAYER_TITLE}</strong>
+                <span>{activeTrack?.creator ?? EMPTY_PLAYER_CREATOR}</span>
               </div>
               <div className="track-actions">
-                <span className="source-badge" data-source={activeTrack.source}>
-                  {getMusicSourceLabel(activeTrack.source)}
-                </span>
+                {activeTrack ? (
+                  <span className="source-badge" data-source={activeTrack.source}>
+                    {getMusicSourceLabel(activeTrack.source)}
+                  </span>
+                ) : null}
                 <div className="equalizer" aria-hidden="true">
                   <i />
                   <i />
@@ -1836,7 +1899,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
               </div>
             </div>
             <div className="progress" aria-label="播放进度">
-              <span>{hasPlatformAudio ? formatPlayerTime(playerCurrentTime) : "平台内"}</span>
+              <span>{hasPlatformAudio ? formatPlayerTime(playerCurrentTime) : "平台"}</span>
               <div className="bar">
                 <span style={{ width: playerProgressWidth }} />
               </div>
@@ -1844,10 +1907,10 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
             </div>
             <div
               className="player-controls"
-              data-has-video={activeTrack.canOpenVideo ? "true" : undefined}
+              data-has-video={activeTrack?.canOpenVideo ? "true" : undefined}
             >
               <button className="control" type="button" aria-label="上一首" onClick={handlePreviousTrack}>
-                ‹
+                {"<"}
               </button>
               <button
                 className="control play"
@@ -1855,10 +1918,10 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                 aria-label={playButtonLabel}
                 onClick={handlePlayPause}
               >
-                {hasPlatformAudio && isPlayerPlaying ? "Ⅱ" : "▶"}
+                {hasPlatformAudio && isPlayerPlaying ? "II" : ">"}
               </button>
               <button className="control" type="button" aria-label="下一首" onClick={handleNextTrack}>
-                ›
+                {">"}
               </button>
               <div className="volume" aria-label="音量">
                 <span />
@@ -1873,43 +1936,54 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
               >
                 {playbackModeIcon}
               </button>
-              {activeTrack.canOpenVideo ? (
+              {activeTrack?.canOpenVideo ? (
                 <button
                   className="control video"
                   type="button"
                   aria-label="打开视频小窗"
                   onClick={() => commitVideoWindowOpen(true)}
                 >
-                  ▣
+                  □
                 </button>
               ) : null}
-              <label className="auto-dj-switch">
-                <input
-                  type="checkbox"
-                  role="switch"
-                  checked={autoDjEnabled}
-                  onChange={(event) => {
-                    const next = event.currentTarget.checked;
-                    setAutoDjEnabled(next);
-                    setAutoDjStatus("idle");
-                    if (!next) {
-                      setAutoDjLastRequestedSignature(null);
-                    }
-                  }}
-                  aria-label="Auto DJ"
-                />
-                <span>Auto DJ</span>
-                {autoDjStatus === "loading" ? (
-                  <span className="auto-dj-status" data-state="loading" aria-live="polite">
-                    搜索中…
-                  </span>
-                ) : null}
-                {autoDjStatus === "unavailable" ? (
-                  <span className="auto-dj-status" data-state="unavailable" aria-live="polite">
-                    暂时没找到合适的歌
-                  </span>
-                ) : null}
-              </label>
+              <div className="auto-dj-controls">
+                <label className="auto-dj-switch">
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    checked={autoDjEnabled}
+                    onChange={(event) => {
+                      const next = event.currentTarget.checked;
+                      setAutoDjEnabled(next);
+                      setAutoDjStatus("idle");
+                      if (!next) {
+                        setAutoDjLastRequestedSignature(null);
+                      }
+                    }}
+                    aria-label="Auto DJ"
+                  />
+                  <span>Auto DJ</span>
+                  {autoDjStatus === "loading" ? (
+                    <span className="auto-dj-status" data-state="loading" aria-live="polite">
+                      搜索中...
+                    </span>
+                  ) : null}
+                  {autoDjStatus === "unavailable" ? (
+                    <span className="auto-dj-status" data-state="unavailable" aria-live="polite">
+                      暂时没找到合适的歌
+                    </span>
+                  ) : null}
+                </label>
+                <button
+                  className="auto-dj-manual"
+                  type="button"
+                  aria-label="手动触发推荐"
+                  onClick={handleManualAutoDjRecommend}
+                  disabled={autoDjStatus === "loading"}
+                >
+                  推荐
+                </button>
+              </div>
             </div>
             <div className="queue-preview" aria-label="播放队列预览">
               <button
@@ -1928,7 +2002,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                   <strong>{queuePreview.nextTitle ?? "暂无下一首"}</strong>
                   <span>
                     {queuePreview.nextCreator
-                      ? `${getMusicSourceLabel(queuePreview.nextSource ?? activeTrack.source)} · ${queuePreview.nextCreator}`
+                      ? `${queuePreview.nextSource ? getMusicSourceLabel(queuePreview.nextSource) : "队列"} · ${queuePreview.nextCreator}`
                       : "可以让久美子继续帮你找歌"}
                   </span>
                 </span>
@@ -1955,7 +2029,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                 <span>正在播放、队列、歌单和收藏</span>
               </div>
               <button type="button" aria-label="关闭音乐记录" onClick={() => setQueuePanelOpen(false)}>
-                ×
+                x
               </button>
             </div>
             <div className="music-queue-tabs" role="tablist" aria-label="音乐记录分类">
@@ -1976,6 +2050,40 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                 </button>
               ))}
             </div>
+            {latestAutoDjTrace ? (
+              <section className="auto-dj-trace" aria-label="Auto DJ Trace">
+                <div className="auto-dj-trace-head">
+                  <strong>Auto DJ Trace</strong>
+                  <span>
+                    candidates {latestAutoDjTrace.candidateCount} / scored {latestAutoDjTrace.scoredCount}
+                  </span>
+                </div>
+                {latestAutoDjTrace.plannerQueries.length > 0 ? (
+                  <div className="auto-dj-trace-queries">
+                    {latestAutoDjTrace.plannerQueries.map((query) => (
+                      <span key={`${query.intent}-${query.query}`}>
+                        {query.query}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                {latestAutoDjTrace.candidates.length > 0 ? (
+                  <div className="auto-dj-trace-candidates">
+                    {latestAutoDjTrace.candidates.slice(0, 3).map((candidate) => (
+                      <span key={`${candidate.itemId}-${candidate.intent}-${candidate.query}`} data-selected={candidate.selected ? "true" : undefined}>
+                        {candidate.selected ? "selected " : ""}
+                        {candidate.title}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                {latestAutoDjTraceProblems.length > 0 ? (
+                  <span className="auto-dj-trace-error">
+                    {latestAutoDjTraceProblems.join("; ")}
+                  </span>
+                ) : null}
+              </section>
+            ) : null}
             <div className="music-queue-list">
               {queuePanelTab === "queue" && visibleQueuePanelEntries.length > 0 ? (
                 <span className="music-queue-section-label">播放队列</span>
@@ -2092,7 +2200,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
           </section>
         ) : null}
       </section>
-      {videoWindowOpen && activeTrack.canOpenVideo ? (
+      {videoWindowOpen && activeTrack?.canOpenVideo ? (
         <VideoMiniWindow
           item={activeTrack}
           size={videoWindowSize}
@@ -2163,15 +2271,17 @@ function readStoredMusicQueue(storage: Storage): MusicQueueState | null {
       return null;
     }
 
-    const entries = parsed.entries.filter(isMusicQueueEntry);
+    const entries = parsed.entries
+      .filter(isMusicQueueEntry)
+      .filter((entry) => !isDeletedStickyDefaultMusicItem(entry.item));
     const currentId = typeof parsed.currentId === "string" ? parsed.currentId : null;
-    const validCurrentId = currentId && entries.some((entry) => entry.id === currentId) ? currentId : null;
+    const validCurrentId = getValidStoredMusicQueueCurrentId(entries, currentId);
     const recentLimit = typeof parsed.recentLimit === "number" && parsed.recentLimit > 0
       ? parsed.recentLimit
       : DEFAULT_RECENT_LIMIT;
 
     return {
-      entries,
+      entries: normalizeStoredMusicQueueEntries(entries, validCurrentId),
       currentId: validCurrentId,
       recentLimit,
     };
@@ -2186,10 +2296,45 @@ function readStoredMusicLibrary(storage: Storage): MusicLibraryState | null {
 
   try {
     const parsed = JSON.parse(rawLibrary);
-    return isMusicLibraryState(parsed) ? parsed : null;
+    return isMusicLibraryState(parsed) ? removeDeletedStickyDefaultTracksFromLibrary(parsed) : null;
   } catch {
     return null;
   }
+}
+
+function getValidStoredMusicQueueCurrentId(entries: MusicQueueEntry[], currentId: string | null): string | null {
+  if (currentId && entries.some((entry) => entry.id === currentId && entry.status !== "played")) {
+    return currentId;
+  }
+
+  return entries.find((entry) => entry.status === "current" || entry.status === "queued")?.id ?? null;
+}
+
+function normalizeStoredMusicQueueEntries(entries: MusicQueueEntry[], currentId: string | null): MusicQueueEntry[] {
+  if (!currentId) {
+    return entries;
+  }
+
+  return entries.map((entry) => {
+    if (entry.id === currentId) {
+      return { ...entry, status: "current" };
+    }
+
+    if (entry.status === "current") {
+      return { ...entry, status: "queued" };
+    }
+
+    return entry;
+  });
+}
+
+function removeDeletedStickyDefaultTracksFromLibrary(library: MusicLibraryState): MusicLibraryState {
+  return {
+    playlists: library.playlists.map((playlist) => ({
+      ...playlist,
+      items: playlist.items.filter((entry) => !isDeletedStickyDefaultMusicItem(entry.item)),
+    })),
+  };
 }
 
 function readStoredMusicRecommendationProfile(storage: Storage): MusicRecommendationProfile | null {
@@ -2281,10 +2426,10 @@ function getPlaybackModeLabel(mode: MusicPlaybackMode): string {
 }
 
 function getPlaybackModeIcon(mode: MusicPlaybackMode): string {
-  if (mode === "shuffle") return "⇄";
-  if (mode === "repeat-one") return "①";
+  if (mode === "shuffle") return "S";
+  if (mode === "repeat-one") return "1";
 
-  return "↻";
+  return ">";
 }
 
 function getQueuePanelEmptyLabel(tab: MusicPanelTab): string {
@@ -2648,7 +2793,7 @@ function getNovelRagBadge(
   const sourceCount = Math.max(1, novelRag.sources.length);
   const titleParts = [
     novelRag.query ? `检索：${novelRag.query}` : null,
-    novelRag.sources.length > 0 ? `来源：${novelRag.sources.join("；")}` : null,
+    novelRag.sources.length > 0 ? `来源：${novelRag.sources.join("，")}` : null,
     novelRag.reason ? `原因：${novelRag.reason}` : null
   ].filter((part): part is string => Boolean(part));
 

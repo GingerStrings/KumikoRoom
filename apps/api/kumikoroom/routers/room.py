@@ -1,4 +1,5 @@
 from dataclasses import asdict
+import logging
 
 from fastapi import APIRouter, HTTPException, Query, Response, status
 
@@ -11,6 +12,7 @@ from kumikoroom.music_search import MusicSearchError, search_netease_songs
 from kumikoroom.schemas import (
     AutoDjRecommendIn,
     AutoDjRecommendOut,
+    AutoDjTraceOut,
     ChatIn,
     ChatOut,
     ChatSessionOut,
@@ -25,6 +27,7 @@ from kumikoroom.schemas import (
 from kumikoroom.sessions import ChatSession, SessionStore, StoredChatMessage
 
 router = APIRouter(prefix="/api/room", tags=["room"])
+logger = logging.getLogger(__name__)
 
 
 def default_room_state() -> RoomStateOut:
@@ -94,13 +97,27 @@ def search_music(
 
 @router.post("/music/auto-dj/recommend", response_model=AutoDjRecommendOut)
 def recommend_auto_dj_tracks(payload: AutoDjRecommendIn) -> AutoDjRecommendOut:
-    planner = ConversationManager(
-        settings=load_settings(),
-        llm_config=payload.llm_config,
-        initialize_stores=False,
-        planner_timeout_seconds=15.0,
-    )
-    return recommend_auto_dj(payload, planner=planner)
+    try:
+        planner = ConversationManager(
+            settings=load_settings(),
+            llm_config=payload.llm_config,
+            initialize_stores=False,
+            planner_timeout_seconds=45.0,
+        )
+        return recommend_auto_dj(payload, planner=planner)
+    except Exception as exc:
+        logger.exception("auto dj recommendation request failed")
+        detail = str(exc).strip() or exc.__class__.__name__
+        return AutoDjRecommendOut(
+            ok=False,
+            refill_id=None,
+            notice="Auto DJ request failed.",
+            client_actions=[],
+            recommendations=[],
+            error="request_failed",
+            source_errors=[detail],
+            trace=AutoDjTraceOut(error="request_failed", source_errors=[detail]),
+        )
 
 
 @router.post("/chat", response_model=ChatOut)

@@ -6,7 +6,7 @@ from kumikoroom.music_search import (
     NeteaseSongSearchResult,
     parse_netease_song_results,
 )
-from kumikoroom.schemas import LLMConfigIn, MemoryEventOut
+from kumikoroom.schemas import AutoDjRecommendOut, LLMConfigIn, MemoryEventOut
 
 
 def test_room_state_uses_kumikoroom_identity(client: TestClient):
@@ -142,6 +142,97 @@ def test_music_search_endpoint_maps_netease_result(
             "evidence": ["title exact match", "comment_count=1970484"],
         }
     ]
+
+
+def test_auto_dj_route_uses_longer_planner_timeout(
+    client: TestClient, monkeypatch
+) -> None:
+    captured: dict[str, float | None] = {"timeout": None}
+
+    class FakeConversationManager:
+        def __init__(self, *args, planner_timeout_seconds: float, **kwargs) -> None:
+            captured["timeout"] = planner_timeout_seconds
+
+    def fake_recommend_auto_dj(payload, *, planner):
+        return AutoDjRecommendOut(
+            ok=False,
+            refill_id=None,
+            notice="Auto DJ 暂时没找到合适的歌",
+            client_actions=[],
+            recommendations=[],
+            error="query_planning_failed",
+        )
+
+    monkeypatch.setattr(
+        "kumikoroom.routers.room.ConversationManager", FakeConversationManager
+    )
+    monkeypatch.setattr("kumikoroom.routers.room.recommend_auto_dj", fake_recommend_auto_dj)
+
+    response = client.post(
+        "/api/room/music/auto-dj/recommend",
+        json={
+            "music_state": None,
+            "recommendation_profile": {
+                "version": 1,
+                "updated_at": "2026-06-29T00:00:00.000Z",
+                "artist_weights": {},
+                "tag_weights": {"brass": 1.0},
+                "source_weights": {},
+                "query_weights": {},
+                "recent_themes": [],
+                "cooldowns": [],
+                "recommended_items": [],
+                "refill_history": [],
+            },
+            "recent_messages": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["timeout"] == 45.0
+
+
+def test_auto_dj_route_returns_trace_for_unexpected_failure(
+    client: TestClient, monkeypatch
+) -> None:
+    class FakeConversationManager:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+    def fake_recommend_auto_dj(payload, *, planner):
+        raise RuntimeError("planner exploded")
+
+    monkeypatch.setattr(
+        "kumikoroom.routers.room.ConversationManager", FakeConversationManager
+    )
+    monkeypatch.setattr("kumikoroom.routers.room.recommend_auto_dj", fake_recommend_auto_dj)
+
+    response = client.post(
+        "/api/room/music/auto-dj/recommend",
+        json={
+            "music_state": None,
+            "recommendation_profile": {
+                "version": 1,
+                "updated_at": "2026-06-29T00:00:00.000Z",
+                "artist_weights": {},
+                "tag_weights": {"brass": 1.0},
+                "source_weights": {},
+                "query_weights": {},
+                "recent_themes": [],
+                "cooldowns": [],
+                "recommended_items": [],
+                "refill_history": [],
+            },
+            "recent_messages": [],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"] == "request_failed"
+    assert body["trace"]["error"] == "request_failed"
+    assert body["trace"]["source_errors"] == ["planner exploded"]
 
 
 def test_music_search_ranks_candidates_with_engagement_signals(monkeypatch) -> None:

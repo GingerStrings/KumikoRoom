@@ -335,6 +335,35 @@ export interface AutoDjRecommendation {
   evidence: string[];
 }
 
+export interface AutoDjTraceQuery {
+  query: string;
+  intent: RecommendationIntent;
+  themes: string[];
+}
+
+export interface AutoDjTraceCandidate {
+  itemId: string;
+  title: string;
+  creator: string;
+  source: ClientMusicItem["source"];
+  query: string;
+  intent: RecommendationIntent;
+  score: number;
+  reason: string;
+  evidence: string[];
+  selected: boolean;
+}
+
+export interface AutoDjTrace {
+  plannerQueries: AutoDjTraceQuery[];
+  candidateCount: number;
+  scoredCount: number;
+  selectedItemIds: string[];
+  candidates: AutoDjTraceCandidate[];
+  sourceErrors: string[];
+  error: string | null;
+}
+
 export interface RecommendationProfilePatch {
   recommendedItems: RecommendationHistoryEntry[];
   cooldowns: RecommendationCooldown[];
@@ -350,4 +379,5 @@ export interface AutoDjRecommendResponse {
   profilePatch: RecommendationProfilePatch;
   error: string | null;
   sourceErrors: string[];
+  trace: AutoDjTrace;
 }

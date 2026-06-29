@@ -91,6 +91,14 @@ const BILIBILI_HOSTS = new Set([
 
 const NETEASE_SONG_ID_ONLY_PATTERN = /^\d+$/;
 const NETEASE_HOSTS = new Set(["music.163.com", "www.music.163.com"]);
+const DELETED_STICKY_DEFAULT_TRACK_IDS = new Set([
+  "netease-red-horse-instrumental",
+  "bilibili-blue-bird-rehearsal"
+]);
+const DELETED_STICKY_DEFAULT_TRACK_TITLES = new Set([
+  "\u7ea2\u9a6c (\u4f34\u594f)",
+  "\u5b57\u5e55\u541b\u4ea4\u6d41\u573a\u6240"
+]);
 
 export function buildBilibiliEmbedUrl(bvid: string): string {
   return `https://player.bilibili.com/player.html?bvid=${encodeURIComponent(bvid)}&page=1&high_quality=1&autoplay=0`;
@@ -253,25 +261,11 @@ export function makeMusicItemFromClientActionItem(item: ClientMusicItem): MusicI
   };
 }
 
-export const PLAYER_TRACKS: MusicItem[] = [
-  makeNeteaseMusicItem({
-    id: "netease-red-horse-instrumental",
-    title: "红马 (伴奏)",
-    creator: "闫杰晨",
-    durationMs: 215866,
-    url: "https://music.163.com/song?id=1822942870",
-    coverUrl: "https://p2.music.126.net/ScAVTeetyrGEwgCMtuGuGg==/109951165758549216.jpg",
-    tags: ["netease", "instrumental"]
-  }),
-  makeBilibiliMusicItem({
-    id: "bilibili-blue-bird-rehearsal",
-    title: "字幕君交流场所",
-    creator: "碧诗",
-    durationMs: 2055000,
-    url: "https://www.bilibili.com/video/BV1xx411c7mD",
-    tags: ["bilibili"]
-  })
-];
+export function isDeletedStickyDefaultMusicItem(item: Pick<MusicItem, "id" | "title">): boolean {
+  return DELETED_STICKY_DEFAULT_TRACK_IDS.has(item.id) || DELETED_STICKY_DEFAULT_TRACK_TITLES.has(item.title);
+}
+
+export const PLAYER_TRACKS: MusicItem[] = [];
 
 export function buildListeningContext(item: MusicItem, isPlaying: boolean): ListeningContext {
   return {

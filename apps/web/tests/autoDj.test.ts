@@ -48,6 +48,7 @@ describe("autoDj", () => {
     expect(shouldRequestAutoDjRefill({ enabled: false, hydrated: true, queue, settings, inFlightSignature: null, lastRequestedSignature: null })).toBeNull();
     expect(shouldRequestAutoDjRefill({ enabled: true, hydrated: false, queue, settings, inFlightSignature: null, lastRequestedSignature: null })).toBeNull();
     expect(shouldRequestAutoDjRefill({ enabled: true, hydrated: true, queue, settings, inFlightSignature: signature, lastRequestedSignature: null })).toBeNull();
+    expect(shouldRequestAutoDjRefill({ enabled: true, hydrated: true, queue, settings, inFlightSignature: "manual:1", lastRequestedSignature: null })).toBeNull();
     expect(shouldRequestAutoDjRefill({ enabled: true, hydrated: true, queue, settings, inFlightSignature: null, lastRequestedSignature: signature })).toBeNull();
   });
 });
