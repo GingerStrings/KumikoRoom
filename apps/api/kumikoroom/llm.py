@@ -77,6 +77,14 @@ def _provider_label(provider: LlmProvider, model: str) -> str:
     return "本地 Mock API"
 
 
+def _provider_error_label(provider: LlmProvider) -> str:
+    if provider == "openai_compatible":
+        return "OpenAI-compatible"
+    if provider == "deepseek":
+        return "DeepSeek"
+    return "Mock"
+
+
 class MockLLMProvider:
     def __init__(self, runtime_config: LlmRuntimeConfig | None = None) -> None:
         self.runtime_config = runtime_config or LlmRuntimeConfig(
@@ -173,7 +181,9 @@ class DeepSeekLLMProvider:
                 )
                 response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise ProviderUnavailable("DeepSeek request failed") from exc
+            raise ProviderUnavailable(
+                f"{_provider_error_label(runtime.provider)} request failed"
+            ) from exc
 
         try:
             message = response.json()["choices"][0]["message"]
@@ -188,7 +198,7 @@ class DeepSeekLLMProvider:
             content = content_value.strip()
         except (ValueError, KeyError, IndexError, TypeError) as exc:
             raise ProviderUnavailable(
-                "DeepSeek response was malformed"
+                f"{_provider_error_label(runtime.provider)} response was malformed"
             ) from exc
 
         return LLMResult(

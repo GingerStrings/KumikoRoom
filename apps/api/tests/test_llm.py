@@ -396,6 +396,28 @@ def test_deepseek_provider_wraps_request_failures(tmp_path) -> None:
     assert isinstance(exc_info.value.__cause__, httpx.HTTPError)
 
 
+def test_openai_compatible_provider_wraps_request_failures_with_runtime_label() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection failed", request=request)
+
+    provider = DeepSeekLLMProvider(
+        runtime_config=LlmRuntimeConfig(
+            provider="openai_compatible",
+            base_url="https://api.moonshot.cn/v1",
+            api_key="kimi-key",
+            model="moonshot-v1-8k",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(ProviderUnavailable) as exc_info:
+        provider.generate([{"role": "user", "content": "hello"}])
+
+    assert str(exc_info.value) == "OpenAI-compatible request failed"
+    assert "DeepSeek" not in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, httpx.HTTPError)
+
+
 def test_deepseek_provider_wraps_invalid_json_response(tmp_path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, request=request, text="not json")

@@ -204,6 +204,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const musicLibraryRef = useRef(musicLibrary);
   const autoDjInFlightRef = useRef<string | null>(null);
   const videoWindowOpenRef = useRef(videoWindowOpen);
+  const activeLlmConfig = settingsHydrated ? llmConfig : null;
   const connectionLabel = providerStatus?.label ?? connectionStatus.label;
   musicQueueRef.current = musicQueue;
   musicLibraryRef.current = musicLibrary;
@@ -503,6 +504,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   }, [messages, isSending, failedOutgoing]);
 
   function requestAutoDjRecommendation(signature: string | null = null): boolean {
+    if (!settingsHydrated) return false;
     if (autoDjInFlightRef.current !== null) return false;
 
     const requestSignature = signature ?? `manual:${Date.now()}`;
@@ -524,7 +526,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
       recommendationProfile: musicRecommendationProfileRef.current,
       recentMessages: messages,
       settings: DEFAULT_AUTO_DJ_SETTINGS,
-      llmConfig: llmConfig ?? null
+      llmConfig: activeLlmConfig
     })
       .then((response) => {
         applyAutoDjResponse(response);
@@ -545,7 +547,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   useEffect(() => {
     const signature = shouldRequestAutoDjRefill({
       enabled: autoDjEnabled,
-      hydrated: autoDjHydrated && musicQueueHydrated && musicLibraryHydrated,
+      hydrated: settingsHydrated && autoDjHydrated && musicQueueHydrated && musicLibraryHydrated,
       queue: musicQueue,
       settings: DEFAULT_AUTO_DJ_SETTINGS,
       inFlightSignature: autoDjInFlightSignature,
@@ -556,6 +558,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     requestAutoDjRecommendation(signature);
   }, [
     autoDjEnabled,
+    settingsHydrated,
     autoDjHydrated,
     musicQueueHydrated,
     musicLibraryHydrated,
@@ -628,7 +631,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
         memoryEnabled,
         listeningContext,
         musicState,
-        llmConfig: llmConfig ?? undefined
+        llmConfig: activeLlmConfig ?? undefined
       });
       if (activeSessionIdRef.current !== submittedSessionId) {
         return;
@@ -1979,7 +1982,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                   type="button"
                   aria-label="手动触发推荐"
                   onClick={handleManualAutoDjRecommend}
-                  disabled={autoDjStatus === "loading"}
+                  disabled={!settingsHydrated || autoDjStatus === "loading"}
                 >
                   推荐
                 </button>
