@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError
@@ -56,6 +57,20 @@ def test_repository_creates_parent_directory_and_persists_roots(tmp_path: Path) 
         first.path = "changed"  # type: ignore[misc]
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows path identity contract")
+def test_root_identity_is_case_insensitive_on_windows(tmp_path: Path) -> None:
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    root_path = tmp_path / "Projects"
+    case_variant = Path(str(root_path).swapcase())
+
+    first = repository.add_root(root_path)
+    duplicate = repository.add_root(case_variant)
+
+    assert duplicate == first
+    assert first.path == str(root_path.resolve())
+    assert repository.list_roots() == [first]
+
+
 def test_remove_root_does_not_delete_files_or_projects(tmp_path: Path) -> None:
     repository = StudioRepository(tmp_path / "studio.sqlite3")
     root_path = tmp_path / "projects"
@@ -108,6 +123,29 @@ def test_upsert_project_preserves_id_and_updates_mutable_fields(tmp_path: Path) 
     assert repository.get_project(first.id) == second
     with pytest.raises(KeyError):
         repository.get_project("missing-project")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path identity contract")
+def test_project_identity_is_case_insensitive_on_windows(tmp_path: Path) -> None:
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    project_path = tmp_path / "Songs" / "Demo.flp"
+    case_variant = Path(str(project_path).swapcase())
+
+    first = repository.upsert_project(
+        project_path,
+        display_name="Demo",
+        status=AnalysisStatus.DISCOVERED,
+    )
+    updated = repository.upsert_project(
+        case_variant,
+        display_name="Updated Demo",
+        status=AnalysisStatus.QUEUED,
+    )
+
+    assert updated.id == first.id
+    assert updated.canonical_path == str(project_path.resolve())
+    assert updated.display_name == "Updated Demo"
+    assert repository.list_projects() == [updated]
 
 
 def test_project_display_name_schema_is_not_null(tmp_path: Path) -> None:
@@ -284,6 +322,39 @@ def test_snapshot_queries_raise_key_error_for_missing_entities(tmp_path: Path) -
         repository.save_snapshot("missing-project", _snapshot(tmp_path / "x.flp"))
 
 
+def test_snapshot_source_path_must_match_project_without_side_effects(
+    tmp_path: Path,
+) -> None:
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    project_path = tmp_path / "project.flp"
+    other_path = tmp_path / "other.flp"
+    project = repository.upsert_project(
+        project_path,
+        display_name="Project",
+        status=AnalysisStatus.PARSING,
+    )
+    project_before = repository.get_project(project.id)
+
+    with pytest.raises(ValueError, match="source_path"):
+        repository.save_snapshot(
+            project.id,
+            _snapshot(other_path, "sha256:wrong-project"),
+        )
+
+    assert repository.get_project(project.id) == project_before
+    with pytest.raises(KeyError):
+        repository.find_snapshot_by_hash(project.id, "sha256:wrong-project")
+    connection = sqlite3.connect(repository.db_path)
+    try:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM studio_snapshots WHERE project_id = ?",
+            (project.id,),
+        ).fetchone()[0]
+    finally:
+        connection.close()
+    assert count == 0
+
+
 def test_create_and_update_scan_job_counts(tmp_path: Path) -> None:
     repository = StudioRepository(tmp_path / "studio.sqlite3")
 
@@ -351,6 +422,79 @@ def test_scan_job_count_columns_default_to_zero(tmp_path: Path) -> None:
         connection.close()
 
     assert counts == (0, 0, 0, 0)
+
+
+def test_database_rejects_invalid_project_and_scan_job_statuses(
+    tmp_path: Path,
+) -> None:
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    connection = sqlite3.connect(repository.db_path)
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO studio_projects (
+                    id, canonical_path, canonical_path_identity, display_name,
+                    status, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "invalid-project-status",
+                    str((tmp_path / "invalid.flp").resolve()),
+                    os.path.normcase(str((tmp_path / "invalid.flp").resolve())),
+                    "Invalid",
+                    "bogus",
+                    "2026-07-13T00:00:00+00:00",
+                    "2026-07-13T00:00:00+00:00",
+                ),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO studio_scan_jobs (id, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    "invalid-scan-status",
+                    "bogus",
+                    "2026-07-13T00:00:00+00:00",
+                    "2026-07-13T00:00:00+00:00",
+                ),
+            )
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize(
+    "count_column",
+    ["discovered_count", "parsed_count", "cached_count", "failed_count"],
+)
+def test_database_rejects_negative_scan_job_counts(
+    tmp_path: Path,
+    count_column: str,
+) -> None:
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    connection = sqlite3.connect(repository.db_path)
+    try:
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                f"""
+                INSERT INTO studio_scan_jobs (
+                    id, status, {count_column}, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    f"negative-{count_column}",
+                    "queued",
+                    -1,
+                    "2026-07-13T00:00:00+00:00",
+                    "2026-07-13T00:00:00+00:00",
+                ),
+            )
+    finally:
+        connection.close()
 
 
 def test_snapshot_foreign_key_cascades_when_project_is_deleted(tmp_path: Path) -> None:

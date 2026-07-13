@@ -1,3 +1,4 @@
+import os
 import sqlite3
 import uuid
 from dataclasses import dataclass, replace
@@ -85,23 +86,31 @@ class StudioRepository:
 
     def add_root(self, path: Path) -> StudioRoot:
         canonical_path = _canonical_path(path)
+        path_identity = _path_identity(path)
         connection = self._connect()
         try:
             with connection:
                 connection.execute(
                     """
-                    INSERT OR IGNORE INTO studio_roots (id, path, created_at)
-                    VALUES (?, ?, ?)
+                    INSERT OR IGNORE INTO studio_roots (
+                        id, path, path_identity, created_at
+                    )
+                    VALUES (?, ?, ?, ?)
                     """,
-                    (str(uuid.uuid4()), canonical_path, _utc_now()),
+                    (
+                        str(uuid.uuid4()),
+                        canonical_path,
+                        path_identity,
+                        _utc_now(),
+                    ),
                 )
                 row = connection.execute(
                     """
                     SELECT id, path, created_at
                     FROM studio_roots
-                    WHERE path = ?
+                    WHERE path_identity = ?
                     """,
-                    (canonical_path,),
+                    (path_identity,),
                 ).fetchone()
         finally:
             connection.close()
@@ -145,6 +154,7 @@ class StudioRepository:
         modified_at: str | None = None,
     ) -> StudioProject:
         path_value = _canonical_path(canonical_path)
+        path_identity = _path_identity(canonical_path)
         if not isinstance(display_name, str):
             raise TypeError("display_name must be a string")
         if not display_name.strip():
@@ -160,19 +170,16 @@ class StudioRepository:
                 connection.execute(
                     """
                     INSERT INTO studio_projects (
-                        id, canonical_path, display_name, status, modified_at,
-                        latest_snapshot_id, created_at, updated_at
+                        id, canonical_path, canonical_path_identity, display_name,
+                        status, modified_at, latest_snapshot_id, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
-                    ON CONFLICT(canonical_path) DO UPDATE SET
-                        display_name = excluded.display_name,
-                        status = excluded.status,
-                        modified_at = excluded.modified_at,
-                        updated_at = excluded.updated_at
+                    VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                    ON CONFLICT DO NOTHING
                     """,
                     (
                         str(uuid.uuid4()),
                         path_value,
+                        path_identity,
                         display_name,
                         project_status.value,
                         modified_at_value,
@@ -180,14 +187,28 @@ class StudioRepository:
                         now,
                     ),
                 )
+                connection.execute(
+                    """
+                    UPDATE studio_projects
+                    SET display_name = ?, status = ?, modified_at = ?, updated_at = ?
+                    WHERE canonical_path_identity = ?
+                    """,
+                    (
+                        display_name,
+                        project_status.value,
+                        modified_at_value,
+                        now,
+                        path_identity,
+                    ),
+                )
                 row = connection.execute(
                     """
                     SELECT id, canonical_path, display_name, status, modified_at,
                            latest_snapshot_id, created_at, updated_at
                     FROM studio_projects
-                    WHERE canonical_path = ?
+                    WHERE canonical_path_identity = ?
                     """,
-                    (path_value,),
+                    (path_identity,),
                 ).fetchone()
         finally:
             connection.close()
@@ -247,11 +268,17 @@ class StudioRepository:
         try:
             with connection:
                 project_row = connection.execute(
-                    "SELECT id FROM studio_projects WHERE id = ?",
+                    "SELECT id, canonical_path FROM studio_projects WHERE id = ?",
                     (project_id,),
                 ).fetchone()
                 if project_row is None:
                     raise KeyError(project_id)
+                if _path_identity(Path(project_row["canonical_path"])) != (
+                    _path_identity(Path(source_path))
+                ):
+                    raise ValueError(
+                        "snapshot source_path must match the project canonical_path"
+                    )
 
                 cursor = connection.execute(
                     """
@@ -431,14 +458,21 @@ class StudioRepository:
                     CREATE TABLE IF NOT EXISTS studio_roots (
                         id TEXT PRIMARY KEY,
                         path TEXT UNIQUE NOT NULL,
+                        path_identity TEXT UNIQUE NOT NULL,
                         created_at TEXT NOT NULL
                     );
 
                     CREATE TABLE IF NOT EXISTS studio_projects (
                         id TEXT PRIMARY KEY,
                         canonical_path TEXT UNIQUE NOT NULL,
+                        canonical_path_identity TEXT UNIQUE NOT NULL,
                         display_name TEXT NOT NULL,
-                        status TEXT NOT NULL,
+                        status TEXT NOT NULL CHECK (
+                            status IN (
+                                'discovered', 'queued', 'parsing', 'ready',
+                                'partial', 'failed', 'stale'
+                            )
+                        ),
                         modified_at TEXT NULL,
                         latest_snapshot_id TEXT NULL,
                         created_at TEXT NOT NULL,
@@ -458,15 +492,27 @@ class StudioRepository:
 
                     CREATE TABLE IF NOT EXISTS studio_scan_jobs (
                         id TEXT PRIMARY KEY,
-                        status TEXT NOT NULL,
-                        discovered_count INTEGER NOT NULL DEFAULT 0,
-                        parsed_count INTEGER NOT NULL DEFAULT 0,
-                        cached_count INTEGER NOT NULL DEFAULT 0,
-                        failed_count INTEGER NOT NULL DEFAULT 0,
+                        status TEXT NOT NULL CHECK (
+                            status IN ('queued', 'running', 'completed', 'failed')
+                        ),
+                        discovered_count INTEGER NOT NULL DEFAULT 0 CHECK (
+                            typeof(discovered_count) = 'integer'
+                            AND discovered_count >= 0
+                        ),
+                        parsed_count INTEGER NOT NULL DEFAULT 0 CHECK (
+                            typeof(parsed_count) = 'integer' AND parsed_count >= 0
+                        ),
+                        cached_count INTEGER NOT NULL DEFAULT 0 CHECK (
+                            typeof(cached_count) = 'integer' AND cached_count >= 0
+                        ),
+                        failed_count INTEGER NOT NULL DEFAULT 0 CHECK (
+                            typeof(failed_count) = 'integer' AND failed_count >= 0
+                        ),
                         error TEXT,
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL
                     );
+
                     """
                 )
         finally:
@@ -542,6 +588,10 @@ class StudioRepository:
 
 def _canonical_path(path: Path) -> str:
     return str(path.expanduser().resolve())
+
+
+def _path_identity(path: Path) -> str:
+    return os.path.normcase(_canonical_path(path))
 
 
 def _utc_now() -> str:
