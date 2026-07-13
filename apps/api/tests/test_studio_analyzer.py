@@ -119,7 +119,7 @@ def test_metric_helpers_lock_ppq_density_and_pattern_reuse_formulas() -> None:
     assert note_density_per_beat(patterns, clips, ppq=96) == pytest.approx(1.0)
     assert note_density_per_beat(patterns, clips, ppq=None) == 0.0
     assert note_density_per_beat(patterns, clips, ppq=0) == 0.0
-    assert pattern_reuse_ratio(clips) == pytest.approx(1 / 3)
+    assert pattern_reuse_ratio(clips) == pytest.approx(0.5)
     assert pattern_reuse_ratio([clips[3]]) == 0.0
     assert arrangement_end_position([clips[3]]) == -100
 
@@ -260,6 +260,23 @@ def test_long_empty_regions_merge_clip_intervals_and_use_eight_beat_threshold() 
             _snapshot(project=ProjectInfo(ppq=0), playlist_clips=clips)
         ).diagnostics
     )
+
+
+def test_long_empty_regions_keep_negative_tick_intervals() -> None:
+    analyzed = analyze_snapshot(
+        _snapshot(
+            playlist_clips=[
+                PlaylistClipSummary("negative", 0, -100, 10, "pattern", "1"),
+                PlaylistClipSummary("positive", 0, 700, 10, "pattern", "2"),
+            ]
+        )
+    )
+
+    assert [
+        item.target_id
+        for item in analyzed.diagnostics
+        if item.code == "long_empty_region"
+    ] == ["-90-700"]
 
 
 def test_key_inference_requires_enough_notes_and_minimum_confidence() -> None:

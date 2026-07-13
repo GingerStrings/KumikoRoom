@@ -102,14 +102,15 @@ def note_density_per_beat(
 
 
 def pattern_reuse_ratio(clips: Iterable[PlaylistClipSummary]) -> float:
+    pattern_clips = [
+        clip for clip in clips if clip.clip_type.lower() == "pattern"
+    ]
     source_ids = [
-        clip.source_id
-        for clip in clips
-        if clip.clip_type.lower() == "pattern" and clip.source_id
+        clip.source_id for clip in pattern_clips if clip.source_id
     ]
     if not source_ids:
         return 0.0
-    reuse = (len(source_ids) - len(set(source_ids))) / len(source_ids)
+    reuse = (len(pattern_clips) - len(set(source_ids))) / len(pattern_clips)
     return min(1.0, max(0.0, reuse))
 
 
@@ -276,11 +277,9 @@ def _occupied_intervals(
 ) -> list[tuple[int, int]]:
     intervals: list[tuple[int, int]] = []
     for clip in clips:
-        length = max(clip.length, 0)
-        start = max(clip.start, 0)
-        end = max(clip.start + length, 0)
-        if end > start:
-            intervals.append((start, end))
+        if clip.length <= 0:
+            continue
+        intervals.append((clip.start, clip.start + clip.length))
     return sorted(intervals)
 
 
