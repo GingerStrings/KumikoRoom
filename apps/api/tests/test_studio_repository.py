@@ -110,6 +110,34 @@ def test_upsert_project_preserves_id_and_updates_mutable_fields(tmp_path: Path) 
         repository.get_project("missing-project")
 
 
+def test_project_display_name_schema_is_not_null(tmp_path: Path) -> None:
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    connection = sqlite3.connect(repository.db_path)
+    try:
+        columns = {
+            row[1]: row
+            for row in connection.execute("PRAGMA table_info(studio_projects)")
+        }
+    finally:
+        connection.close()
+
+    assert columns["display_name"][3] == 1
+
+
+@pytest.mark.parametrize("display_name", ["", "   ", "\t\n"])
+def test_upsert_project_rejects_blank_display_name(
+    tmp_path: Path,
+    display_name: str,
+) -> None:
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+
+    with pytest.raises(ValueError, match="display_name"):
+        repository.upsert_project(
+            tmp_path / "blank.flp",
+            display_name=display_name,
+        )
+
+
 def test_snapshot_round_trip_latest_hash_lookup_and_idempotency(tmp_path: Path) -> None:
     repository = StudioRepository(tmp_path / "studio.sqlite3")
     source_path = tmp_path / "songs" / "night-drive.flp"
@@ -143,6 +171,33 @@ def test_snapshot_round_trip_latest_hash_lookup_and_idempotency(tmp_path: Path) 
     assert count == 1
     with pytest.raises(KeyError):
         repository.find_snapshot_by_hash(project.id, "missing-hash")
+
+
+def test_duplicate_snapshot_hash_does_not_change_project_or_payload(
+    tmp_path: Path,
+) -> None:
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    source_path = tmp_path / "immutable-cache.flp"
+    project = repository.upsert_project(
+        source_path,
+        display_name="Immutable Cache",
+        status=AnalysisStatus.PARSING,
+    )
+    first_snapshot = _snapshot(source_path, "sha256:stable")
+    first_record = repository.save_snapshot(project.id, first_snapshot)
+    project_after_first_save = repository.get_project(project.id)
+    conflicting_snapshot = FlpAnalysisSnapshot(
+        source_path=str(source_path),
+        source_hash=first_snapshot.source_hash,
+        status=AnalysisStatus.FAILED,
+        project=ProjectInfo(title="Conflicting payload", tempo=60.0),
+    )
+
+    duplicate = repository.save_snapshot(project.id, conflicting_snapshot)
+
+    assert duplicate == first_record
+    assert duplicate.snapshot == first_snapshot
+    assert repository.get_project(project.id) == project_after_first_save
 
 
 def test_snapshot_normalizes_relative_path_in_record_and_json(tmp_path: Path) -> None:
@@ -266,6 +321,36 @@ def test_create_and_update_scan_job_counts(tmp_path: Path) -> None:
         repository.update_scan_job(created.id, parsed_count=-1)
     with pytest.raises(TypeError, match="unexpected"):
         repository.update_scan_job(created.id, unexpected_count=2)
+
+
+def test_scan_job_count_columns_default_to_zero(tmp_path: Path) -> None:
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    connection = sqlite3.connect(repository.db_path)
+    try:
+        connection.execute(
+            """
+            INSERT INTO studio_scan_jobs (id, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                "database-defaults",
+                "queued",
+                "2026-07-13T00:00:00+00:00",
+                "2026-07-13T00:00:00+00:00",
+            ),
+        )
+        counts = connection.execute(
+            """
+            SELECT discovered_count, parsed_count, cached_count, failed_count
+            FROM studio_scan_jobs
+            WHERE id = ?
+            """,
+            ("database-defaults",),
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert counts == (0, 0, 0, 0)
 
 
 def test_snapshot_foreign_key_cascades_when_project_is_deleted(tmp_path: Path) -> None:

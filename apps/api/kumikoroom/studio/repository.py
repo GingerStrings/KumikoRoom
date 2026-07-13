@@ -38,7 +38,7 @@ class StudioRoot:
 class StudioProject:
     id: str
     canonical_path: str
-    display_name: str | None
+    display_name: str
     status: AnalysisStatus
     modified_at: str | None
     latest_snapshot_id: str | None
@@ -140,11 +140,15 @@ class StudioRepository:
         self,
         canonical_path: Path,
         *,
-        display_name: str | None,
+        display_name: str,
         status: AnalysisStatus | str = AnalysisStatus.DISCOVERED,
         modified_at: str | None = None,
     ) -> StudioProject:
         path_value = _canonical_path(canonical_path)
+        if not isinstance(display_name, str):
+            raise TypeError("display_name must be a string")
+        if not display_name.strip():
+            raise ValueError("display_name must not be blank")
         project_status = _analysis_status(status)
         modified_at_value = (
             _normalize_utc_iso(modified_at) if modified_at is not None else None
@@ -249,7 +253,7 @@ class StudioRepository:
                 if project_row is None:
                     raise KeyError(project_id)
 
-                connection.execute(
+                cursor = connection.execute(
                     """
                     INSERT INTO studio_snapshots (
                         id, project_id, source_path, source_hash, analyzed_at,
@@ -278,19 +282,20 @@ class StudioRepository:
                 ).fetchone()
 
                 assert existing is not None
-                connection.execute(
-                    """
-                    UPDATE studio_projects
-                    SET latest_snapshot_id = ?, status = ?, updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        existing["id"],
-                        normalized_snapshot.status.value,
-                        updated_at,
-                        project_id,
-                    ),
-                )
+                if cursor.rowcount > 0:
+                    connection.execute(
+                        """
+                        UPDATE studio_projects
+                        SET latest_snapshot_id = ?, status = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            existing["id"],
+                            normalized_snapshot.status.value,
+                            updated_at,
+                            project_id,
+                        ),
+                    )
         finally:
             connection.close()
 
@@ -432,7 +437,7 @@ class StudioRepository:
                     CREATE TABLE IF NOT EXISTS studio_projects (
                         id TEXT PRIMARY KEY,
                         canonical_path TEXT UNIQUE NOT NULL,
-                        display_name TEXT,
+                        display_name TEXT NOT NULL,
                         status TEXT NOT NULL,
                         modified_at TEXT NULL,
                         latest_snapshot_id TEXT NULL,
@@ -454,10 +459,10 @@ class StudioRepository:
                     CREATE TABLE IF NOT EXISTS studio_scan_jobs (
                         id TEXT PRIMARY KEY,
                         status TEXT NOT NULL,
-                        discovered_count INTEGER NOT NULL,
-                        parsed_count INTEGER NOT NULL,
-                        cached_count INTEGER NOT NULL,
-                        failed_count INTEGER NOT NULL,
+                        discovered_count INTEGER NOT NULL DEFAULT 0,
+                        parsed_count INTEGER NOT NULL DEFAULT 0,
+                        cached_count INTEGER NOT NULL DEFAULT 0,
+                        failed_count INTEGER NOT NULL DEFAULT 0,
                         error TEXT,
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL
