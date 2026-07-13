@@ -441,6 +441,17 @@ def _plugin_name(plugin: Any, owner: Any) -> str:
 
 
 def _channel_type(channel: Any) -> str:
+    public_types = (
+        (pyflp.channel.Automation, "automation"),
+        (pyflp.channel.Layer, "layer"),
+        (pyflp.channel.Instrument, "instrument"),
+        (pyflp.channel.Sampler, "sampler"),
+        (pyflp.channel.Channel, "channel"),
+    )
+    for channel_class, name in public_types:
+        if isinstance(channel, channel_class):
+            return name
+
     for attribute in ("channel_type", "type"):
         value = _public_attr(channel, attribute, None)
         if value is not None:

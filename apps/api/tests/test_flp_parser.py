@@ -200,6 +200,27 @@ def test_missing_public_attributes_degrade_to_safe_defaults(
     assert snapshot.diagnostics == []
 
 
+@pytest.mark.parametrize(
+    ("class_name", "expected_type"),
+    [
+        ("Automation", "automation"),
+        ("Layer", "layer"),
+        ("Instrument", "instrument"),
+        ("Sampler", "sampler"),
+        ("Channel", "channel"),
+    ],
+)
+def test_channel_type_uses_public_pyflp_concrete_types(
+    class_name: str, expected_type: str
+) -> None:
+    from kumikoroom.studio.parsers import pyflp_adapter
+
+    channel_class = getattr(pyflp_adapter.pyflp.channel, class_name)
+    channel = object.__new__(channel_class)
+
+    assert pyflp_adapter._channel_type(channel) == expected_type
+
+
 @pytest.mark.parametrize("source_kind", ["missing", "directory"])
 def test_parser_rejects_missing_and_non_regular_sources_before_pyflp(
     tmp_path: Path, monkeypatch: Any, source_kind: str
