@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from concurrent.futures import Executor, ThreadPoolExecutor
+from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,7 +8,7 @@ from threading import RLock
 
 from .analyzer import analyze_snapshot
 from .models import AnalysisStatus
-from .parsers.base import FlpParser
+from .parsers.base import FlpParseError, FlpParser
 from .repository import StudioRepository, StudioScanJob
 from .scanner import (
     FileChangedDuringRead,
@@ -39,8 +39,8 @@ class StudioService:
             )
         )
         self._lock = RLock()
-        self._jobs: dict[str, StudioScanJob] = {}
         self._active_job_id: str | None = None
+        self._active_future: Future[object] | None = None
         self._closed = False
 
     def start_scan(self) -> StudioScanJob:
@@ -50,17 +50,30 @@ class StudioService:
             if active is not None:
                 return active
             job = self._repository.create_scan_job(status="queued")
-            self._jobs[job.id] = job
             self._active_job_id = job.id
 
         try:
-            self._executor.submit(self._run_job, job.id)
+            future = self._executor.submit(self._run_job, job.id)
         except Exception as exc:
-            self._update_job(job.id, status="failed", error=str(exc))
+            self._update_job(
+                job.id,
+                status="failed",
+                error=_error_text(exc),
+            )
             with self._lock:
                 if self._active_job_id == job.id:
                     self._active_job_id = None
+                    self._active_future = None
             raise
+        with self._lock:
+            if self._active_job_id == job.id:
+                self._active_future = future
+        future.add_done_callback(
+            lambda completed, job_id=job.id: self._scan_future_done(
+                job_id,
+                completed,
+            )
+        )
         return job
 
     def run_scan_now(self) -> StudioScanJob:
@@ -70,24 +83,23 @@ class StudioService:
             if active is not None:
                 return active
             job = self._repository.create_scan_job(status="queued")
-            self._jobs[job.id] = job
             self._active_job_id = job.id
+            self._active_future = None
 
         self._run_job(job.id)
         return self.get_scan_job(job.id)
 
     def get_scan_job(self, job_id: str) -> StudioScanJob:
-        with self._lock:
-            try:
-                return self._jobs[job_id]
-            except KeyError:
-                raise KeyError(job_id) from None
+        return self._repository.get_scan_job(job_id)
 
     def close(self) -> None:
         with self._lock:
             if self._closed:
                 return
             self._closed = True
+            active_future = self._active_future
+        if active_future is not None:
+            active_future.cancel()
         self._executor.shutdown(wait=False, cancel_futures=True)
 
     def _run_job(self, job_id: str) -> None:
@@ -147,10 +159,9 @@ class StudioService:
                     cached = None
 
                 if cached is not None:
-                    self._repository.upsert_project(
-                        discovered.path,
-                        display_name=discovered.path.stem,
-                        status=cached.snapshot.status,
+                    self._repository.activate_snapshot(
+                        project.id,
+                        cached.id,
                         modified_at=modified_at,
                     )
                     counts["cached_count"] += 1
@@ -168,13 +179,7 @@ class StudioService:
                         discovered.path,
                         source_hash=source_hash,
                     )
-                    with_assets = replace(
-                        parsed,
-                        related_assets=discover_project_assets(discovered.path),
-                    )
-                    analyzed = analyze_snapshot(with_assets)
-                    self._repository.save_snapshot(project.id, analyzed)
-                except Exception:
+                except FlpParseError:
                     self._repository.upsert_project(
                         discovered.path,
                         display_name=discovered.path.stem,
@@ -182,8 +187,55 @@ class StudioService:
                         modified_at=modified_at,
                     )
                     counts["failed_count"] += 1
-                else:
-                    counts["parsed_count"] += 1
+                    self._update_job(job_id, **counts)
+                    continue
+                except Exception:
+                    counts["failed_count"] += 1
+                    self._try_mark_project_failed(discovered.path, modified_at)
+                    self._update_job(job_id, **counts)
+                    raise
+
+                try:
+                    with_assets = replace(
+                        parsed,
+                        related_assets=discover_project_assets(discovered.path),
+                    )
+                    analyzed = analyze_snapshot(with_assets)
+                except Exception:
+                    counts["failed_count"] += 1
+                    self._try_mark_project_failed(discovered.path, modified_at)
+                    self._update_job(job_id, **counts)
+                    raise
+
+                try:
+                    verified_hash = sha256_file(
+                        discovered.path,
+                        expected=second_observation,
+                    )
+                    if verified_hash != source_hash:
+                        raise FileChangedDuringRead(
+                            f"{discovered.path} changed after hashing"
+                        )
+                except (OSError, ValueError, FileChangedDuringRead):
+                    self._repository.upsert_project(
+                        discovered.path,
+                        display_name=discovered.path.stem,
+                        status=AnalysisStatus.STALE,
+                        modified_at=modified_at,
+                    )
+                    counts["failed_count"] += 1
+                    self._update_job(job_id, **counts)
+                    continue
+
+                try:
+                    self._repository.save_snapshot(project.id, analyzed)
+                except Exception:
+                    counts["failed_count"] += 1
+                    self._try_mark_project_failed(discovered.path, modified_at)
+                    self._update_job(job_id, **counts)
+                    raise
+
+                counts["parsed_count"] += 1
                 self._update_job(job_id, **counts)
 
             self._update_job(job_id, status="completed", **counts)
@@ -191,27 +243,68 @@ class StudioService:
             self._update_job(
                 job_id,
                 status="failed",
-                error=str(exc),
+                error=_error_text(exc),
                 **counts,
             )
         finally:
             with self._lock:
                 if self._active_job_id == job_id:
                     self._active_job_id = None
+                    self._active_future = None
+
+    def _try_mark_project_failed(self, path: Path, modified_at: str) -> None:
+        try:
+            self._repository.upsert_project(
+                path,
+                display_name=path.stem,
+                status=AnalysisStatus.FAILED,
+                modified_at=modified_at,
+            )
+        except Exception:
+            pass
 
     def _update_job(self, job_id: str, **updates: object) -> StudioScanJob:
-        job = self._repository.update_scan_job(job_id, **updates)
+        return self._repository.update_scan_job(job_id, **updates)
+
+    def _scan_future_done(
+        self,
+        job_id: str,
+        future: Future[object],
+    ) -> None:
+        failure: str | None = None
+        if future.cancelled():
+            failure = "Studio scan cancelled before execution"
+        else:
+            exception = future.exception()
+            if exception is not None:
+                failure = _error_text(exception)
+
+        if failure is not None:
+            try:
+                current = self._repository.get_scan_job(job_id)
+                if current.status in {"queued", "running"}:
+                    self._repository.update_scan_job(
+                        job_id,
+                        status="failed",
+                        error=failure,
+                    )
+            except Exception:
+                pass
+
         with self._lock:
-            self._jobs[job.id] = job
-        return job
+            if self._active_job_id == job_id:
+                self._active_job_id = None
+                if self._active_future is future:
+                    self._active_future = None
 
     def _active_job(self) -> StudioScanJob | None:
         if self._active_job_id is None:
             return None
-        active = self._jobs[self._active_job_id]
+        active = self._repository.get_scan_job(self._active_job_id)
         if active.status in {"queued", "running"}:
             return active
         self._active_job_id = None
+        self._active_future = None
         return None
 
     def _ensure_open(self) -> None:
@@ -224,3 +317,7 @@ def _modified_ns_to_utc_iso(modified_ns: int) -> str:
     return datetime.fromtimestamp(seconds, timezone.utc).replace(
         microsecond=nanoseconds // 1_000
     ).isoformat()
+
+
+def _error_text(exc: BaseException) -> str:
+    return str(exc) or type(exc).__name__

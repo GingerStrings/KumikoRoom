@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import hashlib
-from concurrent.futures import Future
+import os
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import current_thread
+from threading import Event, current_thread
 from typing import Callable
 
 import pytest
@@ -15,6 +16,7 @@ from kumikoroom.studio.models import (
     FlpAnalysisSnapshot,
     ProjectInfo,
 )
+from kumikoroom.studio.parsers.base import FlpParseError
 from kumikoroom.studio.repository import (
     StudioRepository,
     StudioScanJob,
@@ -93,11 +95,51 @@ class RecordingParser:
         self.calls.append((path, source_hash))
         self.thread_names.append(current_thread().name)
         if path.name in self.failing_names:
-            raise RuntimeError(f"cannot parse {path.name}")
+            raise FlpParseError(
+                path,
+                "parse",
+                f"cannot parse {path.name}",
+            )
         return FlpAnalysisSnapshot(
             source_path=str(path),
             source_hash=source_hash,
             status=self.status,
+            project=ProjectInfo(title=path.stem),
+        )
+
+
+class MetadataRestoringMutatingParser:
+    def __init__(self, replacement: bytes) -> None:
+        self.replacement = replacement
+
+    def parse(self, path: Path, *, source_hash: str) -> FlpAnalysisSnapshot:
+        details = path.stat()
+        path.write_bytes(self.replacement)
+        os.utime(
+            path,
+            ns=(details.st_atime_ns, details.st_mtime_ns),
+        )
+        return FlpAnalysisSnapshot(
+            source_path=str(path),
+            source_hash=hashlib.sha256(self.replacement).hexdigest(),
+            status=AnalysisStatus.READY,
+            project=ProjectInfo(title=path.stem),
+        )
+
+
+class UnwrappedFailingParser:
+    def __init__(self, failing_name: str) -> None:
+        self.failing_name = failing_name
+        self.calls: list[Path] = []
+
+    def parse(self, path: Path, *, source_hash: str) -> FlpAnalysisSnapshot:
+        self.calls.append(path)
+        if path.name == self.failing_name:
+            raise RuntimeError(f"unexpected parser failure: {path.name}")
+        return FlpAnalysisSnapshot(
+            source_path=str(path),
+            source_hash=source_hash,
+            status=AnalysisStatus.READY,
             project=ProjectInfo(title=path.stem),
         )
 
@@ -222,6 +264,24 @@ def test_start_scan_submits_outside_the_lock_for_inline_execution(
     assert service.get_scan_job(started.id).status == "completed"
 
 
+def test_get_scan_job_uses_persisted_repository_state(tmp_path: Path) -> None:
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    persisted = repository.create_scan_job(status="queued")
+    service = StudioService(repository, RecordingParser(), executor=InlineExecutor())
+
+    assert service.get_scan_job(persisted.id) == persisted
+
+    failed = repository.update_scan_job(
+        persisted.id,
+        status="failed",
+        error="persisted failure",
+    )
+
+    assert service.get_scan_job(persisted.id) == failed
+    with pytest.raises(KeyError, match="unknown-job"):
+        service.get_scan_job("unknown-job")
+
+
 def test_close_is_idempotent_and_rejects_new_scans(tmp_path: Path) -> None:
     executor = ShutdownRecordingExecutor()
     service = StudioService(
@@ -238,6 +298,35 @@ def test_close_is_idempotent_and_rejects_new_scans(tmp_path: Path) -> None:
         service.start_scan()
     with pytest.raises(RuntimeError, match="closed"):
         service.run_scan_now()
+
+
+def test_close_marks_a_cancelled_queued_scan_failed(tmp_path: Path) -> None:
+    executor = ThreadPoolExecutor(max_workers=1)
+    worker_started = Event()
+    release_worker = Event()
+
+    def occupy_worker() -> None:
+        worker_started.set()
+        if not release_worker.wait(timeout=10):
+            raise TimeoutError("test worker was not released")
+
+    blocker = executor.submit(occupy_worker)
+    assert worker_started.wait(timeout=5)
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    service = StudioService(repository, RecordingParser(), executor=executor)
+    queued = service.start_scan()
+    assert repository.get_scan_job(queued.id).status == "queued"
+
+    try:
+        service.close()
+
+        cancelled = service.get_scan_job(queued.id)
+        assert cancelled.status == "failed"
+        assert cancelled.error == "Studio scan cancelled before execution"
+    finally:
+        release_worker.set()
+        blocker.result(timeout=5)
+        executor.shutdown(wait=True, cancel_futures=True)
 
 
 def test_unstable_file_is_marked_stale_without_parsing(
@@ -383,6 +472,57 @@ def test_cached_partial_snapshot_restores_partial_project_status(
     assert repository.list_projects()[0].status is AnalysisStatus.PARTIAL
 
 
+def test_cached_history_is_promoted_when_content_returns_to_an_older_hash(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "Projects"
+    root.mkdir()
+    source = root / "Returning.flp"
+    content_a = b"revision A"
+    content_b = b"revision B is different"
+    source.write_bytes(content_a)
+    initial_details = source.stat()
+    base_modified_ns = initial_details.st_mtime_ns
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    repository.add_root(root)
+    parser = RecordingParser()
+    service = StudioService(repository, parser, executor=InlineExecutor())
+
+    service.run_scan_now()
+    project = repository.list_projects()[0]
+    snapshot_a = repository.get_latest_snapshot(project.id)
+    source.write_bytes(content_b)
+    os.utime(
+        source,
+        ns=(initial_details.st_atime_ns, base_modified_ns + 1_000_000_000),
+    )
+    service.run_scan_now()
+    snapshot_b = repository.get_latest_snapshot(project.id)
+    source.write_bytes(content_a)
+    current_modified_ns = base_modified_ns + 2_000_000_000
+    os.utime(
+        source,
+        ns=(initial_details.st_atime_ns, current_modified_ns),
+    )
+
+    cached = service.run_scan_now()
+
+    current_project = repository.get_project(project.id)
+    assert snapshot_b.id != snapshot_a.id
+    assert cached.cached_count == 1
+    assert cached.parsed_count == 0
+    assert current_project.latest_snapshot_id == snapshot_a.id
+    assert repository.get_latest_snapshot(project.id).source_hash == hashlib.sha256(
+        content_a
+    ).hexdigest()
+    seconds, nanoseconds = divmod(current_modified_ns, 1_000_000_000)
+    expected_modified_at = datetime.fromtimestamp(seconds, timezone.utc).replace(
+        microsecond=nanoseconds // 1_000
+    ).isoformat()
+    assert current_project.modified_at == expected_modified_at
+    assert current_project.status is AnalysisStatus.READY
+
+
 def test_default_executor_configuration_is_observable_at_construction(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -479,8 +619,40 @@ def test_hash_read_failures_mark_the_project_stale(
     assert repository.list_projects()[0].status is AnalysisStatus.STALE
 
 
+def test_parser_mutation_with_restored_metadata_is_rejected_before_save(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "Projects"
+    root.mkdir()
+    source = root / "Mutating.flp"
+    source.write_bytes(b"AAAA")
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    repository.add_root(root)
+    service = StudioService(
+        repository,
+        MetadataRestoringMutatingParser(b"BBBB"),
+        executor=InlineExecutor(),
+    )
+
+    job = service.run_scan_now()
+
+    project = repository.list_projects()[0]
+    assert job.status == "completed"
+    assert job.parsed_count == 0
+    assert job.failed_count == 1
+    assert project.status is AnalysisStatus.STALE
+    assert project.latest_snapshot_id is None
+    with pytest.raises(KeyError):
+        repository.get_latest_snapshot(project.id)
+    with pytest.raises(KeyError):
+        repository.find_snapshot_by_hash(
+            project.id,
+            hashlib.sha256(b"BBBB").hexdigest(),
+        )
+
+
 @pytest.mark.parametrize("failure_stage", ["analyze", "save"])
-def test_pipeline_failures_are_isolated_and_preserve_the_latest_snapshot(
+def test_pipeline_failures_fail_the_job_and_preserve_the_latest_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     failure_stage: str,
@@ -511,8 +683,41 @@ def test_pipeline_failures_are_isolated_and_preserve_the_latest_snapshot(
 
     failed_project = repository.get_project(project.id)
     assert first.parsed_count == 1
-    assert failed.status == "completed"
+    assert failed.status == "failed"
     assert failed.failed_count == 1
+    assert failed.error is not None
+    assert (
+        "cannot analyze" in failed.error
+        if failure_stage == "analyze"
+        else "snapshot store unavailable" in failed.error
+    )
     assert failed_project.status is AnalysisStatus.FAILED
     assert failed_project.latest_snapshot_id == successful_snapshot.id
     assert repository.get_latest_snapshot(project.id) == successful_snapshot
+
+
+def test_unwrapped_parser_failure_stops_the_batch_and_fails_the_job(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "Projects"
+    root.mkdir()
+    broken = root / "Broken.flp"
+    later = root / "Later.flp"
+    broken.write_bytes(b"broken")
+    later.write_bytes(b"later")
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    repository.add_root(root)
+    parser = UnwrappedFailingParser(broken.name)
+    service = StudioService(repository, parser, executor=InlineExecutor())
+
+    job = service.run_scan_now()
+
+    assert job.status == "failed"
+    assert job.discovered_count == 2
+    assert job.parsed_count == 0
+    assert job.failed_count == 1
+    assert job.error == f"unexpected parser failure: {broken.name}"
+    assert parser.calls == [broken.resolve()]
+    projects = repository.list_projects()
+    assert len(projects) == 1
+    assert projects[0].status is AnalysisStatus.FAILED
