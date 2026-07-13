@@ -143,8 +143,11 @@ class FlpAnalysisSnapshot:
     unknown_event_count: int = 0
 
     def to_json(self) -> str:
-        return TypeAdapter(FlpAnalysisSnapshot).dump_json(self).decode("utf-8")
+        return _SNAPSHOT_ADAPTER.dump_json(self).decode("utf-8")
 
     @classmethod
     def from_json(cls, payload: str) -> "FlpAnalysisSnapshot":
-        return TypeAdapter(cls).validate_json(payload)
+        return _SNAPSHOT_ADAPTER.validate_json(payload)
+
+
+_SNAPSHOT_ADAPTER = TypeAdapter(FlpAnalysisSnapshot)
