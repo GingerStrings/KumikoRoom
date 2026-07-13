@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from kumikoroom.studio.analyzer import (
@@ -84,8 +86,17 @@ def test_analyze_snapshot_builds_a_deterministic_musical_fingerprint() -> None:
     assert analyzed.fingerprint.note_density == pytest.approx(3.5)
     assert analyzed.fingerprint.pattern_reuse == 0.0
     assert analyzed.fingerprint.inferred_key == "D minor"
-    assert 0.0 <= analyzed.fingerprint.inferred_key_confidence <= 1.0
+    assert 0.55 <= analyzed.fingerprint.inferred_key_confidence <= 1.0
     assert any("14" in item for item in analyzed.fingerprint.inferred_key_evidence)
+    assert "Distinct pitch classes: 4." in analyzed.fingerprint.inferred_key_evidence
+    assert any(
+        "Winning raw profile: D minor" in item
+        for item in analyzed.fingerprint.inferred_key_evidence
+    )
+    assert any(
+        "calibrated confidence" in item
+        for item in analyzed.fingerprint.inferred_key_evidence
+    )
     assert any(
         diagnostic.code == "unused_pattern" and diagnostic.target_id == "2"
         for diagnostic in analyzed.diagnostics
@@ -119,7 +130,8 @@ def test_metric_helpers_lock_ppq_density_and_pattern_reuse_formulas() -> None:
     assert note_density_per_beat(patterns, clips, ppq=96) == pytest.approx(1.0)
     assert note_density_per_beat(patterns, clips, ppq=None) == 0.0
     assert note_density_per_beat(patterns, clips, ppq=0) == 0.0
-    assert pattern_reuse_ratio(clips) == pytest.approx(0.5)
+    assert pattern_reuse_ratio(clips) == pytest.approx(0.25)
+    assert pattern_reuse_ratio([clips[0], clips[3]]) == 0.0
     assert pattern_reuse_ratio([clips[3]]) == 0.0
     assert arrangement_end_position([clips[3]]) == -100
 
@@ -315,10 +327,66 @@ def test_key_inference_requires_enough_notes_and_minimum_confidence() -> None:
     assert too_few.fingerprint.inferred_key_confidence == 0.0
     assert "at least 12 required" in too_few.fingerprint.inferred_key_evidence[0]
     assert flat_histogram.fingerprint.inferred_key is None
-    assert flat_histogram.fingerprint.inferred_key_confidence == pytest.approx(0.5)
+    assert flat_histogram.fingerprint.inferred_key_confidence == 0.0
     assert (
-        "Winning profile: C major (0.5000)"
-        in flat_histogram.fingerprint.inferred_key_evidence[1]
+        "Winning raw profile: C major (0.0000)"
+        in flat_histogram.fingerprint.inferred_key_evidence[2]
+    )
+    assert (
+        "Raw profile margin: 0.0000; calibrated confidence: 0.0000."
+        in flat_histogram.fingerprint.inferred_key_evidence
+    )
+
+
+def test_repeated_single_pitch_does_not_produce_a_confident_key() -> None:
+    analyzed = analyze_snapshot(
+        _snapshot(
+            patterns=[
+                PatternSummary(
+                    id="1",
+                    name="Repeated C",
+                    notes=[
+                        NoteSummary(60, index * 24, 24, 80, None)
+                        for index in range(12)
+                    ],
+                    used_in_playlist=True,
+                )
+            ]
+        )
+    )
+
+    assert analyzed.fingerprint.inferred_key is None
+    assert analyzed.fingerprint.inferred_key_confidence < 0.55
+    assert "Distinct pitch classes: 1." in analyzed.fingerprint.inferred_key_evidence
+
+
+def test_key_inference_is_transposition_consistent() -> None:
+    keys = [62, 65, 69, 62, 65, 69, 60, 62, 65, 69, 62, 65, 69, 60]
+
+    def analyze_keys(note_keys: list[int]) -> FlpAnalysisSnapshot:
+        return analyze_snapshot(
+            _snapshot(
+                patterns=[
+                    PatternSummary(
+                        id="1",
+                        name="Harmony",
+                        notes=[
+                            NoteSummary(key, index * 24, 24, 80, None)
+                            for index, key in enumerate(note_keys)
+                        ],
+                        used_in_playlist=True,
+                    )
+                ]
+            )
+        )
+
+    d_minor = analyze_keys(keys)
+    e_minor = analyze_keys([key + 2 for key in keys])
+
+    assert d_minor.fingerprint.inferred_key == "D minor"
+    assert e_minor.fingerprint.inferred_key == "E minor"
+    assert e_minor.fingerprint.inferred_key_confidence == pytest.approx(
+        d_minor.fingerprint.inferred_key_confidence
     )
 
 
@@ -352,3 +420,110 @@ def test_analysis_is_pure_and_idempotent_while_preserving_parser_state() -> None
     assert first.status is snapshot.status
     assert first.project is snapshot.project
     assert first.diagnostics[0] == parser_diagnostic
+
+
+def test_reanalysis_rebuilds_analyzer_diagnostics_from_current_state() -> None:
+    parser_diagnostic = AnalysisDiagnostic(
+        code="unsupported_structure",
+        severity="warning",
+        message="Mixer detail",
+        target_type="mixer",
+    )
+    snapshot = _snapshot(
+        patterns=[PatternSummary(id="1", name="Pattern 1")],
+        playlist_clips=[
+            PlaylistClipSummary("first", 0, 0, 96, "pattern", "other-1"),
+            PlaylistClipSummary("second", 0, 900, 96, "pattern", "other-2"),
+        ],
+        dependencies=[DependencyReference("missing.wav", "sample", False)],
+        diagnostics=[parser_diagnostic],
+    )
+    first = analyze_snapshot(snapshot)
+    assert {
+        diagnostic.code for diagnostic in first.diagnostics
+    } >= {
+        "unused_pattern",
+        "empty_pattern",
+        "missing_dependency",
+        "long_empty_region",
+    }
+
+    current = replace(
+        first,
+        patterns=[
+            PatternSummary(
+                id="1",
+                name="Pattern 1",
+                notes=[NoteSummary(60, 0, 96, 80, None)],
+                used_in_playlist=True,
+            )
+        ],
+        playlist_clips=[
+            PlaylistClipSummary("used", 0, 0, 96, "pattern", "1")
+        ],
+        dependencies=[DependencyReference("missing.wav", "sample", True)],
+    )
+
+    second = analyze_snapshot(current)
+    third = analyze_snapshot(second)
+
+    assert second.diagnostics == [parser_diagnostic]
+    assert third == second
+
+
+def test_incomplete_playlist_coverage_suppresses_arrangement_claims() -> None:
+    parser_diagnostic = AnalysisDiagnostic(
+        code="unsupported_structure",
+        severity="warning",
+        message="Unable to map playlist",
+        target_type="playlist",
+    )
+    analyzed = analyze_snapshot(
+        _snapshot(
+            status=AnalysisStatus.PARTIAL,
+            patterns=[
+                PatternSummary(
+                    id="pattern",
+                    name="Pattern",
+                    notes=[NoteSummary(60, 0, 96, 80, None)],
+                )
+            ],
+            channels=[ChannelSummary(id="channel", name="Channel")],
+            playlist_clips=[
+                PlaylistClipSummary("first", 0, 0, 96, "pattern", "other"),
+                PlaylistClipSummary("second", 0, 900, 96, "pattern", "other"),
+            ],
+            diagnostics=[parser_diagnostic],
+        )
+    )
+
+    assert analyzed.fingerprint.note_density == 0.0
+    assert analyzed.fingerprint.pattern_reuse == 0.0
+    assert not {
+        "unused_pattern",
+        "unused_channel",
+        "long_empty_region",
+    } & {diagnostic.code for diagnostic in analyzed.diagnostics}
+    assert analyzed.diagnostics == [parser_diagnostic]
+
+
+def test_incomplete_pattern_coverage_suppresses_unused_channel() -> None:
+    parser_diagnostic = AnalysisDiagnostic(
+        code="unsupported_structure",
+        severity="warning",
+        message="Unable to map patterns",
+        target_type="patterns",
+    )
+    analyzed = analyze_snapshot(
+        _snapshot(
+            status=AnalysisStatus.PARTIAL,
+            channels=[ChannelSummary(id="channel", name="Channel")],
+            diagnostics=[parser_diagnostic],
+        )
+    )
+
+    assert not any(
+        diagnostic.code == "unused_channel"
+        for diagnostic in analyzed.diagnostics
+    )
+    assert analyzed.diagnostics == [parser_diagnostic]

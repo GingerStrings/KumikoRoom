@@ -59,6 +59,15 @@ _MINOR_PROFILE = (
 )
 _MINIMUM_KEY_NOTES = 12
 _MINIMUM_KEY_CONFIDENCE = 0.55
+_ANALYZER_DIAGNOSTIC_CODES = frozenset(
+    {
+        "unused_pattern",
+        "empty_pattern",
+        "unused_channel",
+        "missing_dependency",
+        "long_empty_region",
+    }
+)
 
 
 def _notes(patterns: Iterable[PatternSummary]) -> list[NoteSummary]:
@@ -108,9 +117,10 @@ def pattern_reuse_ratio(clips: Iterable[PlaylistClipSummary]) -> float:
     source_ids = [
         clip.source_id for clip in pattern_clips if clip.source_id
     ]
-    if not source_ids:
+    if not pattern_clips:
         return 0.0
-    reuse = (len(pattern_clips) - len(set(source_ids))) / len(pattern_clips)
+    confirmed_repetitions = max(0, len(source_ids) - len(set(source_ids)))
+    reuse = confirmed_repetitions / len(pattern_clips)
     return min(1.0, max(0.0, reuse))
 
 
@@ -135,13 +145,15 @@ def _key_inference(
     notes: Sequence[NoteSummary],
 ) -> tuple[str | None, float, list[str]]:
     note_count = len(notes)
+    distinct_pitch_classes = len({note.key % 12 for note in notes})
     if note_count < _MINIMUM_KEY_NOTES:
         return (
             None,
             0.0,
             [
                 f"Pitched note count: {note_count}; "
-                f"at least {_MINIMUM_KEY_NOTES} required."
+                f"at least {_MINIMUM_KEY_NOTES} required.",
+                f"Distinct pitch classes: {distinct_pitch_classes}.",
             ],
         )
 
@@ -160,32 +172,50 @@ def _key_inference(
                 profile[(pitch_class - tonic) % 12]
                 for pitch_class in range(12)
             ]
-            correlation = _pearson_correlation(histogram, rotated_profile)
-            confidence = min(1.0, max(0.0, (correlation + 1.0) / 2.0))
-            scored_keys.append((confidence, stable_order, f"{tonic_name} {mode}"))
+            raw_score = _pearson_correlation(histogram, rotated_profile)
+            scored_keys.append(
+                (raw_score, stable_order, f"{tonic_name} {mode}")
+            )
             stable_order += 1
 
     ranked = sorted(scored_keys, key=lambda item: (-item[0], item[1]))
-    winning_score, _, winning_key = ranked[0]
-    runner_up_score, _, runner_up_key = ranked[1]
+    winning_raw, _, winning_key = ranked[0]
+    runner_up_raw, _, runner_up_key = ranked[1]
+    diversity_factor = min(1.0, distinct_pitch_classes / 3.0)
+    margin = winning_raw - runner_up_raw
+    ambiguity_factor = 0.5 + 0.5 * min(
+        1.0, max(0.0, margin) / 0.10
+    )
+    confidence = min(
+        1.0,
+        max(0.0, winning_raw * diversity_factor * ambiguity_factor),
+    )
     evidence = [
         f"Pitched note count: {note_count}.",
+        f"Distinct pitch classes: {distinct_pitch_classes}.",
         (
-            f"Winning profile: {winning_key} ({winning_score:.4f}); "
-            f"runner-up: {runner_up_key} ({runner_up_score:.4f})."
+            f"Winning raw profile: {winning_key} ({winning_raw:.4f}); "
+            f"runner-up: {runner_up_key} ({runner_up_raw:.4f})."
+        ),
+        (
+            f"Raw profile margin: {margin:.4f}; "
+            f"calibrated confidence: {confidence:.4f}."
         ),
     ]
-    if winning_score < _MINIMUM_KEY_CONFIDENCE:
+    if confidence < _MINIMUM_KEY_CONFIDENCE:
         evidence.append(
-            f"Winning confidence is below {_MINIMUM_KEY_CONFIDENCE:.2f}."
+            f"Calibrated confidence is below {_MINIMUM_KEY_CONFIDENCE:.2f}."
         )
-        return None, winning_score, evidence
-    return winning_key, winning_score, evidence
+        return None, confidence, evidence
+    return winning_key, confidence, evidence
 
 
 def _pattern_diagnostics(
     patterns: Iterable[PatternSummary],
     clips: Iterable[PlaylistClipSummary],
+    *,
+    include_unused: bool = True,
+    include_empty: bool = True,
 ) -> list[AnalysisDiagnostic]:
     used_pattern_ids = {
         clip.source_id
@@ -194,7 +224,11 @@ def _pattern_diagnostics(
     }
     diagnostics: list[AnalysisDiagnostic] = []
     for pattern in sorted(patterns, key=lambda item: item.id):
-        if not pattern.used_in_playlist and pattern.id not in used_pattern_ids:
+        if (
+            include_unused
+            and not pattern.used_in_playlist
+            and pattern.id not in used_pattern_ids
+        ):
             diagnostics.append(
                 AnalysisDiagnostic(
                     code="unused_pattern",
@@ -204,7 +238,7 @@ def _pattern_diagnostics(
                     target_id=pattern.id,
                 )
             )
-        if not pattern.notes:
+        if include_empty and not pattern.notes:
             diagnostics.append(
                 AnalysisDiagnostic(
                     code="empty_pattern",
@@ -339,6 +373,19 @@ def _append_new_diagnostics(
 
 
 def analyze_snapshot(snapshot: FlpAnalysisSnapshot) -> FlpAnalysisSnapshot:
+    parser_diagnostics = [
+        diagnostic
+        for diagnostic in snapshot.diagnostics
+        if diagnostic.code not in _ANALYZER_DIAGNOSTIC_CODES
+    ]
+    unsupported_sections = {
+        diagnostic.target_type
+        for diagnostic in parser_diagnostics
+        if diagnostic.code == "unsupported_structure"
+        and diagnostic.target_type
+    }
+    playlist_complete = "playlist" not in unsupported_sections
+    patterns_complete = "patterns" not in unsupported_sections
     notes = _notes(snapshot.patterns)
     note_min, note_max = note_range(snapshot.patterns)
     inferred_key, confidence, evidence = _key_inference(notes)
@@ -346,28 +393,49 @@ def analyze_snapshot(snapshot: FlpAnalysisSnapshot) -> FlpAnalysisSnapshot:
         snapshot.fingerprint,
         note_min=note_min,
         note_max=note_max,
-        note_density=note_density_per_beat(
-            snapshot.patterns,
-            snapshot.playlist_clips,
-            snapshot.project.ppq,
+        note_density=(
+            note_density_per_beat(
+                snapshot.patterns,
+                snapshot.playlist_clips,
+                snapshot.project.ppq,
+            )
+            if playlist_complete
+            else 0.0
         ),
         velocity_mean=mean_velocity(snapshot.patterns),
-        pattern_reuse=pattern_reuse_ratio(snapshot.playlist_clips),
+        pattern_reuse=(
+            pattern_reuse_ratio(snapshot.playlist_clips)
+            if playlist_complete
+            else 0.0
+        ),
         inferred_key=inferred_key,
         inferred_key_confidence=confidence,
         inferred_key_evidence=evidence,
     )
     generated_diagnostics = [
-        *_pattern_diagnostics(snapshot.patterns, snapshot.playlist_clips),
-        *_channel_diagnostics(
-            snapshot.channels, snapshot.patterns, snapshot.playlist_clips
+        *_pattern_diagnostics(
+            snapshot.patterns,
+            snapshot.playlist_clips,
+            include_unused=playlist_complete,
+            include_empty=patterns_complete,
         ),
-        *_dependency_diagnostics(snapshot.dependencies, snapshot.diagnostics),
-        *_long_empty_region_diagnostics(
-            snapshot.playlist_clips, snapshot.project.ppq
+        *(
+            _channel_diagnostics(
+                snapshot.channels, snapshot.patterns, snapshot.playlist_clips
+            )
+            if playlist_complete and patterns_complete
+            else []
+        ),
+        *_dependency_diagnostics(snapshot.dependencies, parser_diagnostics),
+        *(
+            _long_empty_region_diagnostics(
+                snapshot.playlist_clips, snapshot.project.ppq
+            )
+            if playlist_complete
+            else []
         ),
     ]
     diagnostics = _append_new_diagnostics(
-        snapshot.diagnostics, generated_diagnostics
+        parser_diagnostics, generated_diagnostics
     )
     return replace(snapshot, fingerprint=fingerprint, diagnostics=diagnostics)
