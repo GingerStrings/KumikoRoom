@@ -160,7 +160,13 @@ def discover_flp_files(roots: Iterable[Path]) -> list[DiscoveredFlp]:
     resolved_roots: dict[str, Path] = {}
 
     for root in roots:
-        resolved_root = Path(root).expanduser().resolve(strict=True)
+        source_root = Path(root).expanduser()
+        root_details = source_root.lstat()
+        if _is_reparse_point(root_details) or not stat.S_ISDIR(root_details.st_mode):
+            raise ValueError(
+                f"FL Studio project root must be a regular directory: {root}"
+            )
+        resolved_root = source_root.resolve(strict=True)
         if not resolved_root.is_dir():
             raise ValueError(f"FL Studio project root must be a directory: {root}")
         root_identity = _path_identity(resolved_root)

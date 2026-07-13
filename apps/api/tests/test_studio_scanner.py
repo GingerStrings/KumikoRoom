@@ -92,6 +92,17 @@ def test_discover_flp_files_does_not_follow_directory_links_outside_root(
     assert discover_flp_files([root]) == []
 
 
+def test_discover_flp_files_rejects_linked_root(tmp_path: Path) -> None:
+    outside = tmp_path / "Private"
+    outside.mkdir()
+    (outside / "Private.flp").write_bytes(b"private")
+    linked_root = tmp_path / "LinkedProjects"
+    _create_directory_link_or_skip(linked_root, outside)
+
+    with pytest.raises(ValueError, match="regular directory"):
+        discover_flp_files([linked_root])
+
+
 def test_path_identity_uses_windows_normcase_when_platform_is_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
