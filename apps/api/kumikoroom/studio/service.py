@@ -140,14 +140,12 @@ class StudioService:
                         expected=second_observation,
                     )
                 except (OSError, ValueError, FileChangedDuringRead):
-                    self._repository.upsert_project(
+                    self._record_stale_file(
+                        job_id,
                         discovered.path,
-                        display_name=discovered.path.stem,
-                        status=AnalysisStatus.STALE,
-                        modified_at=modified_at,
+                        modified_at,
+                        counts,
                     )
-                    counts["failed_count"] += 1
-                    self._update_job(job_id, **counts)
                     continue
 
                 try:
@@ -196,9 +194,35 @@ class StudioService:
                     raise
 
                 try:
+                    _verify_source_hash(
+                        discovered.path,
+                        second_observation,
+                        source_hash,
+                    )
+                except (OSError, ValueError, FileChangedDuringRead):
+                    self._record_stale_file(
+                        job_id,
+                        discovered.path,
+                        modified_at,
+                        counts,
+                    )
+                    continue
+
+                try:
+                    related_assets = discover_project_assets(discovered.path)
+                except (OSError, ValueError, FileChangedDuringRead):
+                    self._record_stale_file(
+                        job_id,
+                        discovered.path,
+                        modified_at,
+                        counts,
+                    )
+                    continue
+
+                try:
                     with_assets = replace(
                         parsed,
-                        related_assets=discover_project_assets(discovered.path),
+                        related_assets=related_assets,
                     )
                     analyzed = analyze_snapshot(with_assets)
                 except Exception:
@@ -208,23 +232,18 @@ class StudioService:
                     raise
 
                 try:
-                    verified_hash = sha256_file(
+                    _verify_source_hash(
                         discovered.path,
-                        expected=second_observation,
+                        second_observation,
+                        source_hash,
                     )
-                    if verified_hash != source_hash:
-                        raise FileChangedDuringRead(
-                            f"{discovered.path} changed after hashing"
-                        )
                 except (OSError, ValueError, FileChangedDuringRead):
-                    self._repository.upsert_project(
+                    self._record_stale_file(
+                        job_id,
                         discovered.path,
-                        display_name=discovered.path.stem,
-                        status=AnalysisStatus.STALE,
-                        modified_at=modified_at,
+                        modified_at,
+                        counts,
                     )
-                    counts["failed_count"] += 1
-                    self._update_job(job_id, **counts)
                     continue
 
                 try:
@@ -262,6 +281,22 @@ class StudioService:
             )
         except Exception:
             pass
+
+    def _record_stale_file(
+        self,
+        job_id: str,
+        path: Path,
+        modified_at: str,
+        counts: dict[str, int],
+    ) -> None:
+        self._repository.upsert_project(
+            path,
+            display_name=path.stem,
+            status=AnalysisStatus.STALE,
+            modified_at=modified_at,
+        )
+        counts["failed_count"] += 1
+        self._update_job(job_id, **counts)
 
     def _update_job(self, job_id: str, **updates: object) -> StudioScanJob:
         return self._repository.update_scan_job(job_id, **updates)
@@ -317,6 +352,16 @@ def _modified_ns_to_utc_iso(modified_ns: int) -> str:
     return datetime.fromtimestamp(seconds, timezone.utc).replace(
         microsecond=nanoseconds // 1_000
     ).isoformat()
+
+
+def _verify_source_hash(
+    path: Path,
+    observation: FileObservation,
+    source_hash: str,
+) -> None:
+    verified_hash = sha256_file(path, expected=observation)
+    if verified_hash != source_hash:
+        raise FileChangedDuringRead(f"{path} changed after hashing")
 
 
 def _error_text(exc: BaseException) -> str:

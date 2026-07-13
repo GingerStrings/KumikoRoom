@@ -127,6 +127,18 @@ class MetadataRestoringMutatingParser:
         )
 
 
+class DeletingParser(RecordingParser):
+    def __init__(self, deleting_name: str) -> None:
+        super().__init__()
+        self.deleting_name = deleting_name
+
+    def parse(self, path: Path, *, source_hash: str) -> FlpAnalysisSnapshot:
+        snapshot = super().parse(path, source_hash=source_hash)
+        if path.name == self.deleting_name:
+            path.unlink()
+        return snapshot
+
+
 class UnwrappedFailingParser:
     def __init__(self, failing_name: str) -> None:
         self.failing_name = failing_name
@@ -649,6 +661,72 @@ def test_parser_mutation_with_restored_metadata_is_rejected_before_save(
             project.id,
             hashlib.sha256(b"BBBB").hexdigest(),
         )
+
+
+def test_file_deleted_after_parse_is_stale_and_does_not_stop_the_batch(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "Projects"
+    root.mkdir()
+    deleted = root / "Deleted.flp"
+    good = root / "Good.flp"
+    deleted.write_bytes(b"deleted after parse")
+    good.write_bytes(b"good")
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    repository.add_root(root)
+    parser = DeletingParser(deleted.name)
+    service = StudioService(repository, parser, executor=InlineExecutor())
+
+    job = service.run_scan_now()
+
+    assert job.status == "completed"
+    assert job.error is None
+    assert job.discovered_count == 2
+    assert job.parsed_count == 1
+    assert job.failed_count == 1
+    projects = {project.display_name: project for project in repository.list_projects()}
+    assert set(projects) == {"Deleted", "Good"}
+    assert projects["Deleted"].status is AnalysisStatus.STALE
+    assert projects["Deleted"].latest_snapshot_id is None
+    assert projects["Good"].status is AnalysisStatus.READY
+    assert [path for path, _ in parser.calls] == [deleted.resolve(), good.resolve()]
+    with pytest.raises(KeyError):
+        repository.get_latest_snapshot(projects["Deleted"].id)
+
+
+def test_analyzer_window_mutation_is_rejected_by_the_final_digest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "Projects"
+    root.mkdir()
+    source = root / "Analyzing.flp"
+    source.write_bytes(b"AAAA")
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    repository.add_root(root)
+    service = StudioService(repository, RecordingParser(), executor=InlineExecutor())
+    original_analyzer = studio_service.analyze_snapshot
+
+    def mutating_analyzer(snapshot: FlpAnalysisSnapshot) -> FlpAnalysisSnapshot:
+        analyzed = original_analyzer(snapshot)
+        details = source.stat()
+        source.write_bytes(b"BBBB")
+        os.utime(
+            source,
+            ns=(details.st_atime_ns, details.st_mtime_ns),
+        )
+        return analyzed
+
+    monkeypatch.setattr(studio_service, "analyze_snapshot", mutating_analyzer)
+
+    job = service.run_scan_now()
+
+    project = repository.list_projects()[0]
+    assert job.status == "completed"
+    assert job.parsed_count == 0
+    assert job.failed_count == 1
+    assert project.status is AnalysisStatus.STALE
+    assert project.latest_snapshot_id is None
 
 
 @pytest.mark.parametrize("failure_stage", ["analyze", "save"])
