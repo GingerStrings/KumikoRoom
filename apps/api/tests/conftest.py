@@ -20,6 +20,7 @@ def isolate_api_settings(
         "KUMIKOROOM_NOVEL_CORPUS_DIR",
         "KUMIKOROOM_NOVEL_RAG_DB_PATH",
         "KUMIKOROOM_NOVEL_RAG_ENABLED",
+        "KUMIKOROOM_STUDIO_DB_PATH",
     ):
         monkeypatch.delenv(env_name, raising=False)
 
@@ -34,6 +35,10 @@ def isolate_api_settings(
     monkeypatch.setenv(
         "KUMIKOROOM_NOVEL_RAG_DB_PATH",
         str(tmp_path / "rag.sqlite3"),
+    )
+    monkeypatch.setenv(
+        "KUMIKOROOM_STUDIO_DB_PATH",
+        str(tmp_path / "studio.sqlite3"),
     )
 
 

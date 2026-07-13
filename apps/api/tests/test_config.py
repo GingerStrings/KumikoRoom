@@ -102,6 +102,16 @@ def test_memory_db_path_can_be_overridden(monkeypatch, tmp_path: Path) -> None:
     assert isinstance(settings.memory_db_path, Path)
 
 
+def test_studio_db_path_can_be_overridden(monkeypatch, tmp_path: Path) -> None:
+    studio_path = tmp_path / "custom-studio.sqlite3"
+    monkeypatch.setenv("KUMIKOROOM_STUDIO_DB_PATH", str(studio_path))
+
+    settings = load_settings()
+
+    assert settings.studio_db_path == studio_path
+    assert isinstance(settings.studio_db_path, Path)
+
+
 def test_runtime_config_from_settings_uses_deepseek_defaults(monkeypatch) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "env-key")
     monkeypatch.setenv("DEEPSEEK_MODEL", "env-model")
@@ -309,3 +319,6 @@ def test_api_settings_direct_constructor_uses_novel_rag_defaults() -> None:
     assert settings.novel_corpus_dir == Path(r"D:\555\codex\jc")
     assert settings.novel_rag_db_path == Path("user-data/rag/kumiko-novels.sqlite3")
     assert settings.novel_rag_enabled is True
+    assert settings.studio_db_path == Path(
+        "user-data/studio/kumikoroom-studio.sqlite3"
+    )

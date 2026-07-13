@@ -11,6 +11,7 @@ DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_MEMORY_DB_PATH = Path("user-data/memory/kumikoroom-memory.sqlite3")
 DEFAULT_NOVEL_CORPUS_DIR = Path(r"D:\555\codex\jc")
 DEFAULT_NOVEL_RAG_DB_PATH = Path("user-data/rag/kumiko-novels.sqlite3")
+DEFAULT_STUDIO_DB_PATH = Path("user-data/studio/kumikoroom-studio.sqlite3")
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,7 @@ class ApiSettings:
     novel_corpus_dir: Path = DEFAULT_NOVEL_CORPUS_DIR
     novel_rag_db_path: Path = DEFAULT_NOVEL_RAG_DB_PATH
     novel_rag_enabled: bool = True
+    studio_db_path: Path = DEFAULT_STUDIO_DB_PATH
 
     @property
     def is_deepseek_configured(self) -> bool:
@@ -60,6 +62,9 @@ def load_settings() -> ApiSettings:
             or DEFAULT_NOVEL_RAG_DB_PATH
         ),
         novel_rag_enabled=_env_bool("KUMIKOROOM_NOVEL_RAG_ENABLED", True),
+        studio_db_path=Path(
+            _env_value("KUMIKOROOM_STUDIO_DB_PATH") or DEFAULT_STUDIO_DB_PATH
+        ),
     )
 
 
