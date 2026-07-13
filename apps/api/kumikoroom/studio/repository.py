@@ -356,6 +356,86 @@ class StudioRepository:
             raise KeyError(project_id)
         return self._snapshot_from_row(row)
 
+    def activate_snapshot(
+        self,
+        project_id: str,
+        snapshot_id: str,
+        *,
+        modified_at: str | None = None,
+    ) -> StudioProject:
+        modified_at_value = (
+            _normalize_utc_iso(modified_at) if modified_at is not None else None
+        )
+        connection = self._connect()
+        try:
+            with connection:
+                project = connection.execute(
+                    "SELECT id FROM studio_projects WHERE id = ?",
+                    (project_id,),
+                ).fetchone()
+                if project is None:
+                    raise KeyError(project_id)
+                snapshot = connection.execute(
+                    """
+                    SELECT project_id, payload_json
+                    FROM studio_snapshots
+                    WHERE id = ?
+                    """,
+                    (snapshot_id,),
+                ).fetchone()
+                if snapshot is None:
+                    raise KeyError(snapshot_id)
+                if snapshot["project_id"] != project_id:
+                    raise ValueError("snapshot must belong to the project")
+
+                snapshot_status = FlpAnalysisSnapshot.from_json(
+                    snapshot["payload_json"]
+                ).status
+                if modified_at_value is None:
+                    connection.execute(
+                        """
+                        UPDATE studio_projects
+                        SET latest_snapshot_id = ?, status = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            snapshot_id,
+                            snapshot_status.value,
+                            _utc_now(),
+                            project_id,
+                        ),
+                    )
+                else:
+                    connection.execute(
+                        """
+                        UPDATE studio_projects
+                        SET latest_snapshot_id = ?, status = ?, modified_at = ?,
+                            updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            snapshot_id,
+                            snapshot_status.value,
+                            modified_at_value,
+                            _utc_now(),
+                            project_id,
+                        ),
+                    )
+                row = connection.execute(
+                    """
+                    SELECT id, canonical_path, display_name, status, modified_at,
+                           latest_snapshot_id, created_at, updated_at
+                    FROM studio_projects
+                    WHERE id = ?
+                    """,
+                    (project_id,),
+                ).fetchone()
+        finally:
+            connection.close()
+
+        assert row is not None
+        return self._project_from_row(row)
+
     def find_snapshot_by_hash(
         self,
         project_id: str,
@@ -410,6 +490,16 @@ class StudioRepository:
             connection.close()
 
         assert row is not None
+        return self._scan_job_from_row(row)
+
+    def get_scan_job(self, job_id: str) -> StudioScanJob:
+        connection = self._connect()
+        try:
+            row = self._select_scan_job(connection, job_id)
+        finally:
+            connection.close()
+        if row is None:
+            raise KeyError(job_id)
         return self._scan_job_from_row(row)
 
     def update_scan_job(self, job_id: str, **updates: object) -> StudioScanJob:

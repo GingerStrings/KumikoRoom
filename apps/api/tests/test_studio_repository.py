@@ -23,11 +23,12 @@ from kumikoroom.studio.repository import (
 def _snapshot(
     source_path: Path,
     source_hash: str = "sha256:first",
+    status: AnalysisStatus = AnalysisStatus.READY,
 ) -> FlpAnalysisSnapshot:
     return FlpAnalysisSnapshot(
         source_path=str(source_path),
         source_hash=source_hash,
-        status=AnalysisStatus.READY,
+        status=status,
         project=ProjectInfo(title="Night Drive", tempo=128.0),
     )
 
@@ -238,6 +239,69 @@ def test_duplicate_snapshot_hash_does_not_change_project_or_payload(
     assert repository.get_project(project.id) == project_after_first_save
 
 
+def test_activate_snapshot_promotes_cached_history_atomically(tmp_path: Path) -> None:
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    source_path = tmp_path / "history.flp"
+    project = repository.upsert_project(
+        source_path,
+        display_name="History",
+        status=AnalysisStatus.PARSING,
+    )
+    first = repository.save_snapshot(
+        project.id,
+        _snapshot(source_path, "sha256:first", AnalysisStatus.READY),
+    )
+    second = repository.save_snapshot(
+        project.id,
+        _snapshot(source_path, "sha256:second", AnalysisStatus.PARTIAL),
+    )
+    assert repository.get_project(project.id).latest_snapshot_id == second.id
+
+    activated = repository.activate_snapshot(
+        project.id,
+        first.id,
+        modified_at="2026-07-13T20:00:00+08:00",
+    )
+
+    assert activated.latest_snapshot_id == first.id
+    assert activated.status is AnalysisStatus.READY
+    assert activated.modified_at == "2026-07-13T12:00:00+00:00"
+    assert repository.get_project(project.id) == activated
+    assert repository.get_latest_snapshot(project.id) == first
+
+
+def test_activate_snapshot_validates_project_and_snapshot_ownership(
+    tmp_path: Path,
+) -> None:
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    first_path = tmp_path / "first.flp"
+    second_path = tmp_path / "second.flp"
+    first_project = repository.upsert_project(
+        first_path,
+        display_name="First",
+    )
+    second_project = repository.upsert_project(
+        second_path,
+        display_name="Second",
+        modified_at="2026-07-13T00:00:00+00:00",
+    )
+    first_snapshot = repository.save_snapshot(
+        first_project.id,
+        _snapshot(first_path),
+    )
+
+    with pytest.raises(KeyError, match="missing-project"):
+        repository.activate_snapshot("missing-project", first_snapshot.id)
+    with pytest.raises(KeyError, match="missing-snapshot"):
+        repository.activate_snapshot(first_project.id, "missing-snapshot")
+    with pytest.raises(ValueError, match="belong"):
+        repository.activate_snapshot(second_project.id, first_snapshot.id)
+
+    unchanged = repository.get_project(second_project.id)
+    assert unchanged.latest_snapshot_id is None
+    assert unchanged.modified_at == "2026-07-13T00:00:00+00:00"
+
+
 def test_snapshot_normalizes_relative_path_in_record_and_json(tmp_path: Path) -> None:
     repository = StudioRepository(tmp_path / "studio.sqlite3")
     relative_path = Path("relative") / "song.flp"
@@ -392,6 +456,27 @@ def test_create_and_update_scan_job_counts(tmp_path: Path) -> None:
         repository.update_scan_job(created.id, parsed_count=-1)
     with pytest.raises(TypeError, match="unexpected"):
         repository.update_scan_job(created.id, unexpected_count=2)
+
+
+def test_get_scan_job_reads_persisted_jobs_and_rejects_unknown_ids(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "studio.sqlite3"
+    repository = StudioRepository(db_path)
+    created = repository.create_scan_job(status="queued")
+    completed = repository.update_scan_job(
+        created.id,
+        status="completed",
+        discovered_count=3,
+        parsed_count=2,
+        cached_count=1,
+    )
+
+    reopened = StudioRepository(db_path)
+
+    assert reopened.get_scan_job(created.id) == completed
+    with pytest.raises(KeyError, match="missing-job"):
+        reopened.get_scan_job("missing-job")
 
 
 def test_scan_job_count_columns_default_to_zero(tmp_path: Path) -> None:
