@@ -81,14 +81,19 @@ class PyFlpParser:
         )
         channels = map_section("channels", lambda: _channels(project), [])
         plugins = map_section("plugins", lambda: _plugins(project), [])
-        mixer_inserts = map_section("mixer", lambda: _mixer(project), [])
+        mixer_inserts = map_section(
+            "mixer", lambda: _mixer(project, diagnostics), []
+        )
         automations = map_section(
             "automations", lambda: _automations(project), []
         )
         dependencies = map_section(
             "dependencies",
-            lambda: _dependencies(project, source_path),
+            lambda: _dependencies(project, source_path, diagnostics),
             [],
+        )
+        unknown_event_count = map_section(
+            "unknown_events", lambda: _unknown_event_count(project), 0
         )
 
         return FlpAnalysisSnapshot(
@@ -106,7 +111,7 @@ class PyFlpParser:
             automations=automations,
             dependencies=dependencies,
             diagnostics=diagnostics,
-            unknown_event_count=_unknown_event_count(project),
+            unknown_event_count=unknown_event_count,
         )
 
 
@@ -279,7 +284,9 @@ def _plugins(project: Any) -> list[PluginInstance]:
     return plugins
 
 
-def _mixer(project: Any) -> list[MixerInsertSummary]:
+def _mixer(
+    project: Any, diagnostics: list[AnalysisDiagnostic]
+) -> list[MixerInsertSummary]:
     summaries: list[MixerInsertSummary] = []
     mixer = _public_attr(project, "mixer", None)
     for insert_index, insert in enumerate(_public_items(mixer)):
@@ -301,18 +308,25 @@ def _mixer(project: Any) -> list[MixerInsertSummary]:
             slot_plugin_ids.append(
                 f"mixer:{insert_id}:slot:{public_slot_index}"
             )
-        routes = [
-            _identifier(route, str(route_index))
-            for route_index, route in enumerate(
-                _public_items(insert, "routes")
+        if _public_items(insert, "routes"):
+            diagnostics.append(
+                AnalysisDiagnostic(
+                    code="unsupported_structure",
+                    severity="warning",
+                    message=(
+                        "PyFLP public API only exposes mixer route send levels; "
+                        "route target IDs are unavailable"
+                    ),
+                    target_type="mixer",
+                    target_id=insert_id,
+                )
             )
-        ]
         summaries.append(
             MixerInsertSummary(
                 id=insert_id,
                 name=_name(insert, f"Insert {insert_id}"),
                 slot_plugin_ids=slot_plugin_ids,
-                route_target_ids=routes,
+                route_target_ids=[],
             )
         )
     return summaries
@@ -338,12 +352,38 @@ def _automations(project: Any) -> list[AutomationSummary]:
     return summaries
 
 
-def _dependencies(project: Any, source_path: Path) -> list[DependencyReference]:
+def _dependencies(
+    project: Any,
+    source_path: Path,
+    diagnostics: list[AnalysisDiagnostic],
+) -> list[DependencyReference]:
     references: list[DependencyReference] = []
     seen: set[tuple[str, str]] = set()
 
     def add(path_value: Any, kind: str) -> None:
         if path_value in (None, ""):
+            return
+        raw_path = str(path_value)
+        if "%flstudiofactorydata%" in raw_path.casefold():
+            key = (kind, raw_path)
+            if key in seen:
+                return
+            seen.add(key)
+            references.append(
+                DependencyReference(path=raw_path, kind=kind, exists=False)
+            )
+            diagnostics.append(
+                AnalysisDiagnostic(
+                    code="unresolved_dependency",
+                    severity="warning",
+                    message=(
+                        "Dependency requires the FL Studio factory data root "
+                        "to resolve"
+                    ),
+                    target_type="dependency",
+                    target_id=raw_path,
+                )
+            )
             return
         path = Path(path_value).expanduser()
         if not path.is_absolute():
@@ -389,7 +429,7 @@ def _public_items(obj: Any, name: str | None = None) -> tuple[Any, ...]:
     value = obj if name is None else _public_attr(obj, name, _MISSING)
     if value is None or value is _MISSING:
         return ()
-    return tuple(value)
+    return tuple(item for item in value)
 
 
 def _optional_text(value: Any) -> str | None:
@@ -477,7 +517,6 @@ def _note_key(value: Any) -> int:
 
 def _unknown_event_count(project: Any) -> int:
     value = _public_attr(project, "unknown_event_count", 0)
-    try:
-        return int(value)
-    except (TypeError, ValueError):
+    if value is None:
         return 0
+    return int(value)

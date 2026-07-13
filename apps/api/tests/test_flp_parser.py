@@ -81,7 +81,7 @@ def test_parser_maps_the_public_pyflp_object_graph(
     )
     channels = PublicObject(items=(channel,), automations=(automation,))
     slot = PublicObject(index=1, iid=31, name="Delay 3", plugin=effect)
-    insert = PublicObject(items=(slot,), iid=5, name="FX", routes=(0, 2))
+    insert = PublicObject(items=(slot,), iid=5, name="FX", routes=())
     mixer = PublicObject(items=(insert,))
     project = PublicObject(
         title="Public API Project",
@@ -162,7 +162,7 @@ def test_parser_maps_the_public_pyflp_object_graph(
     assert plugins["mixer:5:slot:1"].state_supported is True
     assert snapshot.mixer_inserts[0].id == "5"
     assert snapshot.mixer_inserts[0].name == "FX"
-    assert snapshot.mixer_inserts[0].route_target_ids == ["0", "2"]
+    assert snapshot.mixer_inserts[0].route_target_ids == []
     assert snapshot.mixer_inserts[0].slot_plugin_ids == ["mixer:5:slot:1"]
     assert snapshot.automations[0].id == "8"
     assert snapshot.automations[0].name == "Filter sweep"
@@ -177,14 +177,77 @@ def test_parser_maps_the_public_pyflp_object_graph(
     assert snapshot.diagnostics == []
 
 
-def test_missing_public_attributes_degrade_to_safe_defaults(
+def test_mixer_send_levels_do_not_become_route_target_ids(
     tmp_path: Path, monkeypatch: Any
+) -> None:
+    from kumikoroom.studio.parsers import pyflp_adapter
+
+    source = tmp_path / "routes.flp"
+    source.write_bytes(b"FLhd")
+    effect = PublicObject(name="Delay", state=b"state")
+    slot = PublicObject(index=2, plugin=effect)
+    insert = PublicObject(
+        items=(slot,), iid=6, name="Send source", routes=(6400, 12800)
+    )
+    project = PublicObject(
+        mixer=PublicObject(items=(insert,)),
+        unknown_event_count=0,
+    )
+    monkeypatch.setattr(pyflp_adapter.pyflp, "parse", lambda _path: project)
+
+    snapshot = pyflp_adapter.PyFlpParser().parse(source, source_hash="hash")
+
+    assert snapshot.status.value == "partial"
+    assert snapshot.mixer_inserts[0].id == "6"
+    assert snapshot.mixer_inserts[0].slot_plugin_ids == ["mixer:6:slot:2"]
+    assert snapshot.mixer_inserts[0].route_target_ids == []
+    assert len(snapshot.diagnostics) == 1
+    assert snapshot.diagnostics[0].code == "unsupported_structure"
+    assert snapshot.diagnostics[0].target_type == "mixer"
+    assert snapshot.diagnostics[0].target_id == "6"
+    assert "send levels" in snapshot.diagnostics[0].message
+
+
+def test_factory_data_token_remains_unresolved_dependency(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    from kumikoroom.studio.parsers import pyflp_adapter
+
+    source = tmp_path / "factory-sample.flp"
+    source.write_bytes(b"FLhd")
+    factory_path = r"%fLsTuDiOfAcToRyDaTa%\Packs\Drums\Kick.wav"
+    channel = PublicObject(iid=1, name="Factory kick", sample_path=factory_path)
+    project = PublicObject(
+        channels=PublicObject(items=(channel,), automations=()),
+        mixer=PublicObject(items=()),
+        unknown_event_count=0,
+    )
+    monkeypatch.setattr(pyflp_adapter.pyflp, "parse", lambda _path: project)
+
+    snapshot = pyflp_adapter.PyFlpParser().parse(source, source_hash="hash")
+
+    assert snapshot.status.value == "partial"
+    assert snapshot.dependencies[0].path == factory_path
+    assert snapshot.dependencies[0].kind == "sample"
+    assert snapshot.dependencies[0].exists is False
+    assert len(snapshot.diagnostics) == 1
+    assert snapshot.diagnostics[0].code == "unresolved_dependency"
+    assert snapshot.diagnostics[0].target_type == "dependency"
+    assert snapshot.diagnostics[0].target_id == factory_path
+    assert "factory data root" in snapshot.diagnostics[0].message.lower()
+
+
+@pytest.mark.parametrize(
+    "project", [PublicObject(), PublicObject(unknown_event_count=None)]
+)
+def test_missing_public_attributes_degrade_to_safe_defaults(
+    tmp_path: Path, monkeypatch: Any, project: PublicObject
 ) -> None:
     from kumikoroom.studio.parsers import pyflp_adapter
 
     source = tmp_path / "sparse.flp"
     source.write_bytes(b"FLhd")
-    monkeypatch.setattr(pyflp_adapter.pyflp, "parse", lambda _path: PublicObject())
+    monkeypatch.setattr(pyflp_adapter.pyflp, "parse", lambda _path: project)
 
     snapshot = pyflp_adapter.PyFlpParser().parse(
         source, source_hash="sparse-hash"
@@ -197,6 +260,72 @@ def test_missing_public_attributes_degrade_to_safe_defaults(
     assert snapshot.channels == []
     assert snapshot.playlist_clips == []
     assert snapshot.unknown_event_count == 0
+    assert snapshot.diagnostics == []
+
+
+class RaisingUnknownEventCountProject(PublicObject):
+    @property
+    def unknown_event_count(self) -> int:
+        raise RuntimeError("unknown event inspection failed")
+
+
+@pytest.mark.parametrize(
+    "project",
+    [
+        RaisingUnknownEventCountProject(),
+        PublicObject(unknown_event_count="invalid count"),
+    ],
+)
+def test_unknown_event_count_failure_is_isolated(
+    tmp_path: Path, monkeypatch: Any, project: PublicObject
+) -> None:
+    from kumikoroom.studio.parsers import pyflp_adapter
+
+    source = tmp_path / "unknown-events.flp"
+    source.write_bytes(b"FLhd")
+    monkeypatch.setattr(pyflp_adapter.pyflp, "parse", lambda _path: project)
+
+    snapshot = pyflp_adapter.PyFlpParser().parse(source, source_hash="hash")
+
+    assert snapshot.status.value == "partial"
+    assert snapshot.unknown_event_count == 0
+    assert len(snapshot.diagnostics) == 1
+    assert snapshot.diagnostics[0].code == "unsupported_structure"
+    assert snapshot.diagnostics[0].target_type == "unknown_events"
+
+
+class EmptyCollectionWithBrokenLength:
+    def __iter__(self) -> Iterator[Any]:
+        return iter(())
+
+    def __len__(self) -> int:
+        raise RuntimeError("NoModelsFound")
+
+
+def test_empty_public_collections_ignore_broken_length_hint(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    from kumikoroom.studio.parsers import pyflp_adapter
+
+    source = tmp_path / "empty-collections.flp"
+    source.write_bytes(b"FLhd")
+    empty = EmptyCollectionWithBrokenLength()
+    project = PublicObject(
+        patterns=empty,
+        channels=PublicObject(items=(), automations=()),
+        arrangements=PublicObject(items=()),
+        mixer=empty,
+        unknown_event_count=0,
+    )
+    monkeypatch.setattr(pyflp_adapter.pyflp, "parse", lambda _path: project)
+
+    snapshot = pyflp_adapter.PyFlpParser().parse(source, source_hash="hash")
+
+    assert snapshot.status.value == "ready"
+    assert snapshot.patterns == []
+    assert snapshot.mixer_inserts == []
+    assert snapshot.plugins == []
+    assert snapshot.dependencies == []
     assert snapshot.diagnostics == []
 
 
