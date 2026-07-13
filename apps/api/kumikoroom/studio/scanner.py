@@ -4,7 +4,7 @@ import hashlib
 import ntpath
 import os
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Iterator, Literal
@@ -36,17 +36,28 @@ class FileObservation:
     path: Path
     size: int
     modified_ns: int
+    _identity: tuple[int, int] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+
+class FileChangedDuringRead(RuntimeError):
+    pass
 
 
 def observe_file(path: Path) -> FileObservation:
     resolved = Path(path).expanduser().resolve(strict=True)
-    details = resolved.stat()
-    if not resolved.is_file():
-        raise ValueError(f"observed path must be a file: {path}")
+    with resolved.open("rb") as source:
+        details = os.fstat(source.fileno())
+        if not stat.S_ISREG(details.st_mode):
+            raise ValueError(f"observed path must be a file: {path}")
     return FileObservation(
         path=resolved,
         size=details.st_size,
         modified_ns=details.st_mtime_ns,
+        _identity=_file_identity(details),
     )
 
 
@@ -54,12 +65,55 @@ def is_stable(first: FileObservation, second: FileObservation) -> bool:
     return first.size == second.size and first.modified_ns == second.modified_ns
 
 
-def sha256_file(path: Path) -> str:
+def sha256_file(
+    path: Path,
+    *,
+    expected: FileObservation | None = None,
+) -> str:
+    resolved = Path(path).expanduser().resolve(strict=True)
     digest = hashlib.sha256()
-    with Path(path).open("rb") as source:
+    with resolved.open("rb") as source:
+        before = os.fstat(source.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError(f"hashed path must be a file: {path}")
+        if expected is not None and not _matches_observation(
+            resolved,
+            before,
+            expected,
+        ):
+            raise FileChangedDuringRead(
+                f"{resolved} does not match the expected observation"
+            )
         while chunk := source.read(1024 * 1024):
             digest.update(chunk)
+        after = os.fstat(source.fileno())
+        try:
+            current_path_details = resolved.lstat()
+        except OSError as exc:
+            raise FileChangedDuringRead(f"{resolved} changed during read") from exc
+        if (
+            not _same_file_version(before, after)
+            or not _same_file_version(after, current_path_details)
+        ):
+            raise FileChangedDuringRead(f"{resolved} changed during read")
     return digest.hexdigest()
+
+
+def _matches_observation(
+    path: Path,
+    details: os.stat_result,
+    expected: FileObservation,
+) -> bool:
+    expected_identity_matches = (
+        expected._identity is None
+        or expected._identity == _file_identity(details)
+    )
+    return (
+        _path_identity(path) == _path_identity(expected.path)
+        and expected_identity_matches
+        and expected.size == details.st_size
+        and expected.modified_ns == details.st_mtime_ns
+    )
 
 
 def default_fl_studio_backup_root() -> Path | None:
@@ -132,7 +186,10 @@ def discover_project_assets(main_flp: Path) -> list[ProjectAsset]:
         allowed_extensions = (
             _BACKUP_ASSET_EXTENSIONS if kind == "backup" else _AUDIO_ASSET_EXTENSIONS
         )
-        for path, details in _bounded_regular_files(resolved_directory):
+        for path, details in _bounded_regular_files(
+            resolved_directory,
+            expected_root_details=directory_details,
+        ):
             if path.suffix.casefold() not in allowed_extensions:
                 continue
             identity = _path_identity(path)
@@ -174,7 +231,10 @@ def discover_flp_files(roots: Iterable[Path]) -> list[DiscoveredFlp]:
             continue
         resolved_roots[root_identity] = resolved_root
 
-        for resolved, details in _bounded_regular_files(resolved_root):
+        for resolved, details in _bounded_regular_files(
+            resolved_root,
+            expected_root_details=root_details,
+        ):
             if resolved.suffix.casefold() != ".flp":
                 continue
             identity = _path_identity(resolved)
@@ -204,30 +264,99 @@ def _is_windows() -> bool:
     return os.name == "nt"
 
 
-def _bounded_regular_files(root: Path) -> Iterator[tuple[Path, os.stat_result]]:
-    pending = [root]
-    while pending:
-        directory = pending.pop()
+def _bounded_regular_files(
+    root: Path,
+    *,
+    expected_root_details: os.stat_result | None = None,
+) -> Iterator[tuple[Path, os.stat_result]]:
+    if expected_root_details is None:
         try:
-            entries = list(os.scandir(directory))
+            expected_root_details = root.lstat()
+        except OSError:
+            return
+    pending = [(root, expected_root_details)]
+    while pending:
+        directory, expected_details = pending.pop()
+        try:
+            current_directory_details = directory.lstat()
+            if (
+                _is_reparse_point(current_directory_details)
+                or not stat.S_ISDIR(current_directory_details.st_mode)
+                or not _same_file_version(
+                    expected_details,
+                    current_directory_details,
+                )
+            ):
+                continue
+
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    candidate = Path(entry.path)
+                    try:
+                        candidate_details = candidate.lstat()
+                        entry_details = entry.stat(follow_symlinks=False)
+                        if (
+                            _is_reparse_point(entry_details)
+                            or _is_reparse_point(candidate_details)
+                            or not _same_entry_metadata(
+                                entry_details,
+                                candidate_details,
+                            )
+                        ):
+                            continue
+                        if not (
+                            stat.S_ISDIR(candidate_details.st_mode)
+                            or stat.S_ISREG(candidate_details.st_mode)
+                        ):
+                            continue
+                        resolved = candidate.resolve(strict=True)
+                        if not resolved.is_relative_to(root):
+                            continue
+                        current_details = resolved.lstat()
+                        if (
+                            _is_reparse_point(current_details)
+                            or not _same_file_version(
+                                candidate_details,
+                                current_details,
+                            )
+                        ):
+                            continue
+                        if stat.S_ISDIR(current_details.st_mode):
+                            pending.append((resolved, current_details))
+                        elif stat.S_ISREG(current_details.st_mode):
+                            yield resolved, current_details
+                    except OSError:
+                        continue
         except OSError:
             continue
 
-        for entry in entries:
-            candidate = Path(entry.path)
-            try:
-                details = entry.stat(follow_symlinks=False)
-                if _is_reparse_point(details) or entry.is_symlink():
-                    continue
-                resolved = candidate.resolve(strict=True)
-                if not resolved.is_relative_to(root):
-                    continue
-                if stat.S_ISDIR(details.st_mode):
-                    pending.append(resolved)
-                elif stat.S_ISREG(details.st_mode):
-                    yield resolved, details
-            except OSError:
-                continue
+
+def _same_file_version(first: os.stat_result, second: os.stat_result) -> bool:
+    return (
+        _file_identity(first) == _file_identity(second)
+        and first.st_size == second.st_size
+        and first.st_mtime_ns == second.st_mtime_ns
+    )
+
+
+def _file_identity(details: os.stat_result) -> tuple[int, int]:
+    return details.st_dev, details.st_ino
+
+
+def _same_entry_metadata(first: os.stat_result, second: os.stat_result) -> bool:
+    first_identity = (first.st_dev, first.st_ino)
+    second_identity = (second.st_dev, second.st_ino)
+    identity_matches = (
+        not all(first_identity)
+        or not all(second_identity)
+        or first_identity == second_identity
+    )
+    return (
+        identity_matches
+        and stat.S_IFMT(first.st_mode) == stat.S_IFMT(second.st_mode)
+        and first.st_size == second.st_size
+        and first.st_mtime_ns == second.st_mtime_ns
+    )
 
 
 def _is_reparse_point(details: os.stat_result) -> bool:
