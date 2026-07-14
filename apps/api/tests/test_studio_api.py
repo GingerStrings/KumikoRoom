@@ -216,7 +216,7 @@ def test_create_root_rejects_blank_missing_and_file_paths(
         json={"path": str(regular_file)},
     )
 
-    assert blank.status_code == 422
+    assert blank.status_code == 400
     assert missing.status_code == 400
     assert file_response.status_code == 400
 

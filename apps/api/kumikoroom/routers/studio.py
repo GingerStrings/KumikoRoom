@@ -4,7 +4,7 @@ from threading import RLock
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict
 
 from kumikoroom.config import load_settings
 from kumikoroom.studio.models import (
@@ -48,14 +48,6 @@ class RootOut(StudioModel):
 
 class RootIn(BaseModel):
     path: str
-
-    @field_validator("path")
-    @classmethod
-    def path_must_not_be_blank(cls, value: str) -> str:
-        stripped = value.strip()
-        if not stripped:
-            raise ValueError("path must not be blank")
-        return stripped
 
 
 class ScanJobOut(StudioModel):
@@ -167,8 +159,11 @@ def create_root(
     response: Response,
     repository: StudioRepositoryDependency,
 ) -> RootOut:
+    root_path = payload.path.strip()
+    if not root_path:
+        raise HTTPException(status_code=400, detail="Studio root path is invalid")
     try:
-        canonical_path = Path(payload.path).expanduser().resolve(strict=True)
+        canonical_path = Path(root_path).expanduser().resolve(strict=True)
     except (OSError, RuntimeError):
         raise HTTPException(status_code=400, detail="Studio root path is invalid") from None
     if not canonical_path.is_dir() or not os.access(
