@@ -262,7 +262,13 @@ def get_project_analysis(
             status_code=404,
             detail="Studio project analysis not found",
         ) from None
-    return AnalysisOut.model_validate_json(record.payload_json)
+    try:
+        return AnalysisOut.model_validate_json(record.payload_json)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=409,
+            detail="Stored analysis is invalid; rescan the project.",
+        ) from None
 
 
 def _scan_job_out(job: StudioScanJob) -> ScanJobOut:

@@ -478,6 +478,34 @@ def test_project_list_fetches_latest_snapshots_in_one_batch(
     assert repository.get_latest_snapshot_calls == 0
 
 
+def test_corrupt_latest_analysis_returns_stable_409_without_payload_details(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "corrupt-analysis.flp"
+    repository = StudioRepository(load_settings().studio_db_path)
+    project = repository.upsert_project(path, display_name="corrupt-analysis")
+    record = repository.save_snapshot(project.id, analysis_snapshot(path))
+    with repository._connect() as connection:
+        connection.execute(
+            "UPDATE studio_snapshots SET payload_json = ? WHERE id = ?",
+            ("{malformed-secret-payload", record.id),
+        )
+
+    with TestClient(app, raise_server_exceptions=False) as error_client:
+        list_response = error_client.get("/api/studio/projects")
+        analysis_response = error_client.get(
+            f"/api/studio/projects/{project.id}/analysis"
+        )
+
+    assert list_response.status_code == 200
+    assert list_response.json()[0]["tempo"] is None
+    assert analysis_response.status_code == 409
+    assert analysis_response.json() == {
+        "detail": "Stored analysis is invalid; rescan the project."
+    }
+    assert "malformed-secret-payload" not in analysis_response.text
+
+
 def test_default_service_reuses_db_and_replaces_it_when_path_changes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
