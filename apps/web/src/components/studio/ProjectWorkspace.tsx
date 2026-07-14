@@ -73,32 +73,34 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
 
   return (
     <WorkspaceShell projectName={state.project.displayName} status={state.project.status}>
-      <nav className={studioCss.workspaceTabs} role="tablist" aria-label="工程分析视图">
-        {tabs.map((tab) => (
-          <button
-            key={tab.label}
-            type="button"
-            role="tab"
-            aria-selected={tab.available}
-            disabled={!tab.available}
-            title={tab.available ? undefined : "该视图将在后续分析阶段开放"}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </nav>
-      {state.snapshotNotice && (
-        <aside className={studioCss.snapshotNotice} role="status" aria-label="快照状态">
-          {state.snapshotNotice}
-        </aside>
-      )}
-      {state.analysis.status === "partial" && (
-        <aside className={studioCss.partialNotice} role="status" aria-label="部分解析">
-          这个快照只完成了部分解析，已展示可确认的数据；详情见解析说明。
-        </aside>
-      )}
-      <div className={studioCss.workspaceScroll} role="tabpanel" aria-label="总览">
-        <ProjectDashboard analysis={state.analysis} project={state.project} />
+      <div className={studioCss.workspaceContent}>
+        <nav className={studioCss.workspaceTabs} role="tablist" aria-label="工程分析视图">
+          {tabs.map((tab) => (
+            <button
+              key={tab.label}
+              type="button"
+              role="tab"
+              aria-selected={tab.available}
+              disabled={!tab.available}
+              title={tab.available ? undefined : "该视图将在后续分析阶段开放"}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </nav>
+        {state.snapshotNotice && (
+          <aside className={studioCss.snapshotNotice} role="status" aria-label="快照状态">
+            {state.snapshotNotice}
+          </aside>
+        )}
+        {state.analysis.status === "partial" && (
+          <aside className={studioCss.partialNotice} role="status" aria-label="部分解析">
+            这个快照只完成了部分解析，已展示可确认的数据；详情见解析说明。
+          </aside>
+        )}
+        <div className={studioCss.workspaceScroll} role="tabpanel" aria-label="总览">
+          <ProjectDashboard analysis={state.analysis} project={state.project} />
+        </div>
       </div>
     </WorkspaceShell>
   );

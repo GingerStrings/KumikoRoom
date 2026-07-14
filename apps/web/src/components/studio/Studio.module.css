@@ -312,8 +312,15 @@
 }
 
 .workspaceDesk {
-  grid-template-rows: 62px auto minmax(0, 1fr);
+  grid-template-rows: 62px minmax(0, 1fr);
   min-height: 0;
+}
+
+.workspaceContent {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .workspaceHeader p {
@@ -339,6 +346,7 @@
 .workspaceIdentity > small[data-status="partial"] { border-color: #d8c4aa; color: #846b4f; }
 
 .workspaceTabs {
+  flex: none;
   display: flex;
   gap: 0;
   overflow-x: auto;
@@ -364,6 +372,7 @@
 .workspaceTabs button:focus-visible { outline: 2px solid #2f7eba; outline-offset: -3px; }
 
 .partialNotice {
+  flex: none;
   padding: 9px 22px;
   border-bottom: 1px solid #dfcfba;
   background: #faf5ea;
@@ -373,6 +382,7 @@
 }
 
 .snapshotNotice {
+  flex: none;
   padding: 9px 22px;
   border-bottom: 1px solid #cad9d6;
   background: #eef5f2;
@@ -387,6 +397,7 @@
 .workspaceIdentity > small[data-status="stale"] { border-color: #d8c4aa; color: #846b4f; }
 
 .workspaceScroll {
+  flex: 1;
   min-height: 0;
   overflow-y: auto;
   background:

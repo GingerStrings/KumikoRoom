@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import StudioProjectPage from "../app/studio/projects/[id]/page";
@@ -95,6 +97,8 @@ const analysis: StudioAnalysis = {
   ],
   unknownEventCount: 2
 };
+
+const studioCssPath = path.resolve(__dirname, "../src/components/studio/Studio.module.css");
 
 beforeEach(() => {
   vi.mocked(studioApi.getStudioProject).mockResolvedValue(project);
@@ -220,6 +224,39 @@ describe("Project workspace", () => {
     expect(screen.getByRole("status", { name: "部分解析" })).toBeTruthy();
   });
 
+  it.each([
+    ["ready", "ready", 0],
+    ["queued", "ready", 1],
+    ["queued", "partial", 2]
+  ] as const)("keeps the scroll viewport in one content row with %s/%s and %i notices", async (projectStatus, analysisStatus, noticeCount) => {
+    vi.mocked(studioApi.getStudioProject).mockResolvedValueOnce({ ...project, status: projectStatus });
+    vi.mocked(studioApi.getStudioAnalysis).mockResolvedValueOnce({ ...analysis, status: analysisStatus });
+    render(<ProjectWorkspace projectId={`layout-${projectStatus}-${analysisStatus}`} />);
+
+    expect(await screen.findByRole("heading", { name: "Blue Hour" })).toBeTruthy();
+    const content = screen.getByRole("tablist", { name: "工程分析视图" }).parentElement;
+    expect(content).not.toBeNull();
+    expect(content?.className).toContain("workspaceContent");
+    expect(screen.getByRole("tabpanel", { name: "总览" }).parentElement).toBe(content);
+    const notices = screen.queryAllByRole("status");
+    expect(notices).toHaveLength(noticeCount);
+    for (const notice of notices) expect(notice.parentElement).toBe(content);
+  });
+
+  it("reserves one bounded flex row for tabs, notices, and the scroll viewport", () => {
+    const css = fs.readFileSync(studioCssPath, "utf8").replace(/\r\n/g, "\n");
+
+    expect(cssRule(css, ".workspaceDesk")).toContain("grid-template-rows: 62px minmax(0, 1fr);");
+    expect(cssRule(css, ".workspaceContent")).toContain("display: flex;");
+    expect(cssRule(css, ".workspaceContent")).toContain("flex-direction: column;");
+    expect(cssRule(css, ".workspaceContent")).toContain("min-height: 0;");
+    expect(cssRule(css, ".workspaceContent")).toContain("overflow: hidden;");
+    expect(cssRule(css, ".workspaceTabs")).toContain("flex: none;");
+    expect(cssRule(css, ".partialNotice")).toContain("flex: none;");
+    expect(cssRule(css, ".snapshotNotice")).toContain("flex: none;");
+    expect(cssRule(css, ".workspaceScroll")).toContain("flex: 1;");
+  });
+
   it("renders a project-specific failed state", async () => {
     vi.mocked(studioApi.getStudioProject).mockResolvedValueOnce({ ...project, status: "failed" });
     vi.mocked(studioApi.getStudioAnalysis).mockRejectedValueOnce(new ApiError("analysis failed", 409, {}));
@@ -297,3 +334,10 @@ describe("Project workspace", () => {
     expect(studioApi.getStudioProject).toHaveBeenCalledWith("route-id", expect.any(Object));
   });
 });
+
+function cssRule(css: string, selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = css.match(new RegExp(`${escaped}\\s*\\{(?<body>[^}]*)\\}`));
+  expect(match, `Expected ${selector} rule to exist`).not.toBeNull();
+  return match?.groups?.body ?? "";
+}
