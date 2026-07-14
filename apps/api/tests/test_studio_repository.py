@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError
 from datetime import datetime
 from pathlib import Path
+from threading import Barrier, Event
 
 import pytest
 
@@ -255,6 +256,104 @@ def test_list_latest_snapshots_returns_only_each_projects_active_record(
     }
     assert first_history not in records.values()
     assert empty_project.id not in records
+
+
+def test_list_projects_with_latest_snapshots_joins_current_records_without_parsing(
+    tmp_path: Path,
+) -> None:
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    first_path = tmp_path / "first.flp"
+    second_path = tmp_path / "second.flp"
+    empty_path = tmp_path / "empty.flp"
+    first_project = repository.upsert_project(first_path, display_name="First")
+    second_project = repository.upsert_project(second_path, display_name="Second")
+    empty_project = repository.upsert_project(empty_path, display_name="Empty")
+    first_history = repository.save_snapshot(
+        first_project.id,
+        _snapshot(first_path, "sha256:first-history"),
+    )
+    first_latest = repository.save_snapshot(
+        first_project.id,
+        _snapshot(first_path, "sha256:first-latest"),
+    )
+    second_latest = repository.save_snapshot(
+        second_project.id,
+        _snapshot(second_path, "sha256:second-latest"),
+    )
+    with sqlite3.connect(repository.db_path) as connection:
+        connection.execute(
+            "UPDATE studio_snapshots SET payload_json = ? WHERE id = ?",
+            ("{malformed", second_latest.id),
+        )
+
+    rows = repository.list_projects_with_latest_snapshots()
+
+    assert [project for project, _ in rows] == repository.list_projects()
+    records = {project.id: record for project, record in rows}
+    assert records[first_project.id] == first_latest
+    assert records[first_project.id] != first_history
+    assert records[second_project.id] == StudioSnapshotRecord(
+        id=second_latest.id,
+        project_id=second_latest.project_id,
+        source_path=second_latest.source_path,
+        source_hash=second_latest.source_hash,
+        analyzed_at=second_latest.analyzed_at,
+        payload_json="{malformed",
+    )
+    assert records[empty_project.id] is None
+
+
+def test_atomic_project_snapshot_listing_stays_consistent_during_activation(
+    tmp_path: Path,
+) -> None:
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    source_path = tmp_path / "switching.flp"
+    project = repository.upsert_project(source_path, display_name="Switching")
+    ready = repository.save_snapshot(
+        project.id,
+        _snapshot(source_path, "sha256:ready", AnalysisStatus.READY),
+    )
+    partial = repository.save_snapshot(
+        project.id,
+        _snapshot(source_path, "sha256:partial", AnalysisStatus.PARTIAL),
+    )
+    start = Barrier(2)
+    writer_done = Event()
+    failures: list[str] = []
+    observation_count = 0
+
+    def write_activations() -> None:
+        start.wait()
+        try:
+            for _ in range(200):
+                repository.activate_snapshot(project.id, ready.id)
+                repository.activate_snapshot(project.id, partial.id)
+        finally:
+            writer_done.set()
+
+    def read_joined_rows() -> None:
+        nonlocal observation_count
+        start.wait()
+        while not writer_done.is_set() or observation_count < 200:
+            rows = repository.list_projects_with_latest_snapshots()
+            observed_project, observed_record = rows[0]
+            observation_count += 1
+            if observed_record is None:
+                failures.append("latest snapshot record was missing")
+                continue
+            if observed_project.latest_snapshot_id != observed_record.id:
+                failures.append("project and snapshot ids came from different versions")
+            if observed_project.status is not observed_record.snapshot.status:
+                failures.append("project and snapshot statuses came from different versions")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        writer = executor.submit(write_activations)
+        reader = executor.submit(read_joined_rows)
+        writer.result()
+        reader.result()
+
+    assert observation_count >= 200
+    assert failures == []
 
 
 def test_duplicate_snapshot_hash_does_not_change_project_or_payload(

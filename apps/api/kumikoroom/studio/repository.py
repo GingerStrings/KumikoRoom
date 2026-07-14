@@ -251,6 +251,47 @@ class StudioRepository:
             for row in rows
         }
 
+    def list_projects_with_latest_snapshots(
+        self,
+    ) -> list[tuple[StudioProject, StudioSnapshotRecord | None]]:
+        connection = self._connect()
+        try:
+            rows = connection.execute(
+                """
+                SELECT projects.id, projects.canonical_path,
+                       projects.display_name, projects.status,
+                       projects.modified_at, projects.latest_snapshot_id,
+                       projects.created_at, projects.updated_at,
+                       snapshots.id AS snapshot_id,
+                       snapshots.project_id AS snapshot_project_id,
+                       snapshots.source_path AS snapshot_source_path,
+                       snapshots.source_hash AS snapshot_source_hash,
+                       snapshots.analyzed_at AS snapshot_analyzed_at,
+                       snapshots.payload_json AS snapshot_payload_json
+                FROM studio_projects AS projects
+                LEFT JOIN studio_snapshots AS snapshots
+                  ON snapshots.id = projects.latest_snapshot_id
+                ORDER BY projects.updated_at DESC, projects.rowid DESC
+                """
+            ).fetchall()
+        finally:
+            connection.close()
+
+        results: list[tuple[StudioProject, StudioSnapshotRecord | None]] = []
+        for row in rows:
+            record = None
+            if row["snapshot_id"] is not None:
+                record = StudioSnapshotRecord(
+                    id=row["snapshot_id"],
+                    project_id=row["snapshot_project_id"],
+                    source_path=row["snapshot_source_path"],
+                    source_hash=row["snapshot_source_hash"],
+                    analyzed_at=row["snapshot_analyzed_at"],
+                    payload_json=row["snapshot_payload_json"],
+                )
+            results.append((self._project_from_row(row), record))
+        return results
+
     def get_project(self, project_id: str) -> StudioProject:
         connection = self._connect()
         try:

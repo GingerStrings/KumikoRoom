@@ -222,11 +222,9 @@ def get_scan(scan_id: str, service: StudioServiceDependency) -> ScanJobOut:
 def list_projects(
     repository: StudioRepositoryDependency,
 ) -> list[ProjectSummary]:
-    projects = repository.list_projects()
-    latest_snapshots = repository.list_latest_snapshots()
     return [
-        _project_out(project, latest_snapshots.get(project.id))
-        for project in projects
+        _project_out(project, record)
+        for project, record in repository.list_projects_with_latest_snapshots()
     ]
 
 

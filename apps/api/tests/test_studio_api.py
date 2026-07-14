@@ -441,17 +441,18 @@ def test_project_list_fetches_latest_snapshots_in_one_batch(
     class CountingRepository(StudioRepository):
         def __init__(self, db_path: Path) -> None:
             super().__init__(db_path)
-            self.list_projects_calls = 0
-            self.list_latest_snapshots_calls = 0
+            self.atomic_list_calls = 0
             self.get_latest_snapshot_calls = 0
 
         def list_projects(self):
-            self.list_projects_calls += 1
-            return super().list_projects()
+            raise AssertionError("project list must use the atomic repository query")
 
         def list_latest_snapshots(self):
-            self.list_latest_snapshots_calls += 1
-            return super().list_latest_snapshots()
+            raise AssertionError("project list must use the atomic repository query")
+
+        def list_projects_with_latest_snapshots(self):
+            self.atomic_list_calls += 1
+            return super().list_projects_with_latest_snapshots()
 
         def get_latest_snapshot(self, project_id: str):
             self.get_latest_snapshot_calls += 1
@@ -473,8 +474,7 @@ def test_project_list_fetches_latest_snapshots_in_one_batch(
 
     assert response.status_code == 200
     assert len(response.json()) == 5
-    assert repository.list_projects_calls == 1
-    assert repository.list_latest_snapshots_calls == 1
+    assert repository.atomic_list_calls == 1
     assert repository.get_latest_snapshot_calls == 0
 
 
