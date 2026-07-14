@@ -100,16 +100,20 @@ export function getStudioProjects(): Promise<StudioProjectSummary[]> {
   return request<ProjectApi[]>("/api/studio/projects").then((values) => values.map(mapProject));
 }
 
-export function getStudioProject(projectId: string): Promise<StudioProjectDetail> {
-  return request<ProjectDetailApi>(`/api/studio/projects/${encodeURIComponent(projectId)}`).then((value) => ({
+export function getStudioProject(projectId: string, options: { signal?: AbortSignal } = {}): Promise<StudioProjectDetail> {
+  return request<ProjectDetailApi>(`/api/studio/projects/${encodeURIComponent(projectId)}`, {
+    signal: options.signal
+  }).then((value) => ({
     ...mapProject(value),
     latestSnapshotSourceHash: value.latest_snapshot_source_hash,
     latestSnapshotAnalyzedAt: value.latest_snapshot_analyzed_at
   }));
 }
 
-export function getStudioAnalysis(projectId: string): Promise<StudioAnalysis> {
-  return request<AnalysisApi>(`/api/studio/projects/${encodeURIComponent(projectId)}/analysis`).then(mapAnalysis);
+export function getStudioAnalysis(projectId: string, options: { signal?: AbortSignal } = {}): Promise<StudioAnalysis> {
+  return request<AnalysisApi>(`/api/studio/projects/${encodeURIComponent(projectId)}/analysis`, {
+    signal: options.signal
+  }).then(mapAnalysis);
 }
 
 function mapRoot(value: RootApi): StudioRoot {

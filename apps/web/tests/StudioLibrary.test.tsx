@@ -401,6 +401,115 @@ describe("StudioLibrary", () => {
     view.unmount();
   });
 
+  it("stops an old metadata queue from expanding after unmount", async () => {
+    const projects = Array.from({ length: 5 }, (_, index): StudioProjectSummary => ({
+      ...blueHour,
+      id: `unmount-${index + 1}`,
+      displayName: `Unmount ${index + 1}`,
+      latestSnapshotId: `snapshot-unmount-${index + 1}`
+    }));
+    const releases: Array<() => void> = [];
+    const hold = () => new Promise<never>((resolve) => {
+      releases.push(() => resolve(undefined as never));
+    });
+    vi.mocked(studioApi.getStudioAnalysis).mockImplementation(hold);
+    vi.mocked(studioApi.getStudioProject).mockImplementation(hold);
+    const view = render(<StudioLibrary initialProjects={projects} initialRoots={[root]} />);
+    await waitFor(() => expect(studioApi.getStudioAnalysis.mock.calls.length + studioApi.getStudioProject.mock.calls.length).toBe(4));
+
+    view.unmount();
+    await act(async () => { releases.splice(0).forEach((release) => release()); });
+
+    expect(studioApi.getStudioAnalysis.mock.calls.length + studioApi.getStudioProject.mock.calls.length).toBe(4);
+  });
+
+  it("times out hung metadata requests and advances the bounded queue", async () => {
+    vi.useFakeTimers();
+    const projects = Array.from({ length: 5 }, (_, index): StudioProjectSummary => ({
+      ...blueHour,
+      id: `timeout-${index + 1}`,
+      displayName: `Timeout ${index + 1}`,
+      latestSnapshotId: `snapshot-timeout-${index + 1}`
+    }));
+    let active = 0;
+    let maxActive = 0;
+    const signals: AbortSignal[] = [];
+    const holdUntilAbort = (_id: string, options?: { signal?: AbortSignal }) => new Promise<never>((_resolve, reject) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      if (!options?.signal) return;
+      signals.push(options.signal);
+      options.signal.addEventListener("abort", () => {
+        active -= 1;
+        reject(new DOMException("Aborted", "AbortError"));
+      }, { once: true });
+    });
+    vi.mocked(studioApi.getStudioAnalysis).mockImplementation(holdUntilAbort);
+    vi.mocked(studioApi.getStudioProject).mockImplementation(holdUntilAbort);
+    const view = render(<StudioLibrary initialProjects={projects} initialRoots={[root]} />);
+    await act(async () => {});
+    expect(active).toBe(4);
+
+    await act(async () => { vi.advanceTimersByTime(10000); });
+    const calls = studioApi.getStudioAnalysis.mock.calls.length + studioApi.getStudioProject.mock.calls.length;
+    expect(calls).toBeGreaterThan(4);
+    expect(maxActive).toBe(4);
+    expect(signals.slice(0, 4).every((signal) => signal.aborted)).toBe(true);
+    view.unmount();
+  });
+
+  it("aborts old metadata before a refreshed project generation starts", async () => {
+    vi.useFakeTimers();
+    const oldProjects = Array.from({ length: 3 }, (_, index): StudioProjectSummary => ({
+      ...blueHour,
+      id: `old-${index + 1}`,
+      displayName: `Old ${index + 1}`,
+      latestSnapshotId: `snapshot-old-${index + 1}`
+    }));
+    const newProjects = Array.from({ length: 3 }, (_, index): StudioProjectSummary => ({
+      ...blueHour,
+      id: `new-${index + 1}`,
+      displayName: `New ${index + 1}`,
+      latestSnapshotId: `snapshot-new-${index + 1}`
+    }));
+    let active = 0;
+    let maxActive = 0;
+    const holdUntilAbort = (_id: string, options?: { signal?: AbortSignal }) => new Promise<never>((_resolve, reject) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      options?.signal?.addEventListener("abort", () => {
+        active -= 1;
+        reject(new DOMException("Aborted", "AbortError"));
+      }, { once: true });
+    });
+    vi.mocked(studioApi.getStudioAnalysis).mockImplementation(holdUntilAbort);
+    vi.mocked(studioApi.getStudioProject).mockImplementation(holdUntilAbort);
+    vi.mocked(studioApi.getStudioProjects).mockResolvedValueOnce(newProjects);
+    vi.mocked(studioApi.getStudioScan).mockResolvedValueOnce({
+      id: "scan-generation",
+      status: "completed",
+      discoveredCount: 3,
+      parsedCount: 3,
+      cachedCount: 0,
+      failedCount: 0,
+      error: null,
+      createdAt: "2026-07-14T08:00:00Z",
+      updatedAt: "2026-07-14T08:00:01Z"
+    });
+    render(<StudioLibrary initialProjects={oldProjects} initialRoots={[root]} />);
+    await act(async () => {});
+    expect(active).toBe(4);
+
+    fireEvent.click(screen.getByRole("button", { name: "重新扫描" }));
+    await act(async () => {});
+    await act(async () => { vi.advanceTimersByTime(1000); });
+    await act(async () => {});
+
+    expect(screen.getAllByRole("link", { name: /New/ })).toHaveLength(3);
+    expect(maxActive).toBe(4);
+    expect(active).toBe(4);
+  });
+
   it("renders empty and request error states", async () => {
     const first = render(<StudioLibrary initialProjects={[]} initialRoots={[]} />);
     expect(screen.getByRole("heading", { name: "添加第一个工程目录" })).toBeTruthy();

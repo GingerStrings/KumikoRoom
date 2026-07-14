@@ -22,6 +22,7 @@ interface StudioLibraryProps {
   initialDetails?: Record<string, StudioProjectDetail>;
 }
 const METADATA_REQUEST_CONCURRENCY = 4;
+const METADATA_REQUEST_TIMEOUT_MS = 10000;
 const MAX_SCAN_POLL_RETRIES = 3;
 
 export function StudioLibrary({ initialProjects, initialRoots, initialAnalyses = {}, initialDetails = {} }: StudioLibraryProps) {
@@ -89,6 +90,7 @@ export function StudioLibrary({ initialProjects, initialRoots, initialAnalyses =
   useEffect(() => {
     const generation = ++metadataGeneration.current;
     let cancelled = false;
+    const generationController = new AbortController();
     const isFirstPass = firstMetadataPass.current;
     firstMetadataPass.current = false;
     const seededAnalyses = isFirstPass ? initialAnalyses : {};
@@ -99,13 +101,16 @@ export function StudioLibrary({ initialProjects, initialRoots, initialAnalyses =
       setDetails({});
     }
 
-    const tasks: Array<() => Promise<void>> = [];
+    const tasks: Array<(signal: AbortSignal) => Promise<void>> = [];
     for (const project of projects) {
       if (!project.latestSnapshotId) continue;
       if (!seededAnalyses[project.id]) {
-        tasks.push(async () => {
+        tasks.push(async (signal) => {
           try {
-            const value = await getStudioAnalysis(project.id);
+            const value = await metadataRequest(
+              (requestSignal) => getStudioAnalysis(project.id, { signal: requestSignal }),
+              signal
+            );
             if (!cancelled && metadataGeneration.current === generation) {
               setAnalyses((current) => ({ ...current, [project.id]: value }));
             }
@@ -115,9 +120,12 @@ export function StudioLibrary({ initialProjects, initialRoots, initialAnalyses =
         });
       }
       if (!seededDetails[project.id]) {
-        tasks.push(async () => {
+        tasks.push(async (signal) => {
           try {
-            const value = await getStudioProject(project.id);
+            const value = await metadataRequest(
+              (requestSignal) => getStudioProject(project.id, { signal: requestSignal }),
+              signal
+            );
             if (!cancelled && metadataGeneration.current === generation) {
               setDetails((current) => ({ ...current, [project.id]: value }));
             }
@@ -129,10 +137,11 @@ export function StudioLibrary({ initialProjects, initialRoots, initialAnalyses =
         });
       }
     }
-    void runBounded(tasks, METADATA_REQUEST_CONCURRENCY);
+    void runBounded(tasks, METADATA_REQUEST_CONCURRENCY, generationController.signal);
 
     return () => {
       cancelled = true;
+      generationController.abort();
     };
   }, [projects]);
 
@@ -284,17 +293,50 @@ function Filter({ label, value, onChange, options }: { label: string; value: str
   return <label>{label}<select aria-label={label} value={value} onChange={(event) => onChange(event.target.value)}>{options.map(([optionValue, name]) => <option key={optionValue} value={optionValue}>{name}</option>)}</select></label>;
 }
 
-async function runBounded(tasks: Array<() => Promise<void>>, limit: number): Promise<void> {
+async function runBounded(
+  tasks: Array<(signal: AbortSignal) => Promise<void>>,
+  limit: number,
+  signal: AbortSignal
+): Promise<void> {
   let nextIndex = 0;
   const worker = async () => {
-    while (nextIndex < tasks.length) {
+    while (!signal.aborted && nextIndex < tasks.length) {
       const task = tasks[nextIndex];
       nextIndex += 1;
-      await task();
+      await task(signal);
     }
   };
   const workers = Array.from({ length: Math.min(limit, tasks.length) }, () => worker());
   await Promise.all(workers);
+}
+
+async function metadataRequest<T>(
+  requestValue: (signal: AbortSignal) => Promise<T>,
+  generationSignal: AbortSignal
+): Promise<T> {
+  if (generationSignal.aborted) throw abortError();
+
+  const requestController = new AbortController();
+  const abortRequest = () => requestController.abort();
+  generationSignal.addEventListener("abort", abortRequest, { once: true });
+  const timeout = window.setTimeout(abortRequest, METADATA_REQUEST_TIMEOUT_MS);
+  const aborted = new Promise<never>((_resolve, reject) => {
+    requestController.signal.addEventListener("abort", () => reject(abortError()), { once: true });
+  });
+
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => requestValue(requestController.signal)),
+      aborted
+    ]);
+  } finally {
+    window.clearTimeout(timeout);
+    generationSignal.removeEventListener("abort", abortRequest);
+  }
+}
+
+function abortError(): DOMException {
+  return new DOMException("Metadata request aborted", "AbortError");
 }
 
 function matchesBpm(tempo: number | null, range: string): boolean {

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as studioApi from "../src/api/studioClient";
@@ -67,7 +67,13 @@ describe("StudioEntry", () => {
 
     expect(await screen.findByRole("link", { name: /Progressive/ })).toBeTruthy();
     expect(screen.queryByRole("status")).toBeNull();
-    expect(studioApi.getStudioAnalysis).toHaveBeenCalledWith("p-progressive");
-    expect(studioApi.getStudioProject).toHaveBeenCalledWith("p-progressive");
+    await waitFor(() => expect(studioApi.getStudioAnalysis).toHaveBeenCalledWith(
+      "p-progressive",
+      expect.objectContaining({ signal: expect.anything() })
+    ));
+    expect(studioApi.getStudioProject).toHaveBeenCalledWith(
+      "p-progressive",
+      expect.objectContaining({ signal: expect.anything() })
+    );
   });
 });

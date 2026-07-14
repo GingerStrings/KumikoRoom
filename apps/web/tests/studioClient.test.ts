@@ -149,7 +149,8 @@ describe("Studio API client", () => {
       latestSnapshotSourceHash: "hash-1",
       latestSnapshotAnalyzedAt: "2026-07-13T10:00:03Z"
     });
-    const mappedAnalysis = await getStudioAnalysis("p/1");
+    const analysisController = new AbortController();
+    const mappedAnalysis = await getStudioAnalysis("p/1", { signal: analysisController.signal });
     expect(mappedAnalysis).toMatchObject({
       sourcePath: "D:/Music/Blue Hour.flp",
       project: { flVersion: "21.2", timeSpentSeconds: 3600 },
@@ -171,6 +172,7 @@ describe("Studio API client", () => {
     expect(findSnakeCaseKeys(mappedAnalysis)).toEqual([]);
     expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/studio/projects/p%2F1", expect.any(Object));
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/studio/projects/p%2F1/analysis", expect.any(Object));
+    expect((fetchMock.mock.calls[1][1] as RequestInit).signal).toBe(analysisController.signal);
   });
 
   it("sends root mutations and starts scans", async () => {
