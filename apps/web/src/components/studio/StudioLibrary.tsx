@@ -63,7 +63,6 @@ export function StudioLibrary({ initialProjects, initialRoots, initialAnalyses =
         retryCount = 0;
         setError(null);
         setScanJob((current) => current?.id === jobId ? next : current);
-        if (next.status === "completed") await refreshProjects(generation);
         if (next.status === "failed" && next.error) setError(next.error);
       } catch (cause) {
         if (cancelled || scanGeneration.current !== generation) return;
@@ -84,6 +83,22 @@ export function StudioLibrary({ initialProjects, initialRoots, initialAnalyses =
     return () => {
       cancelled = true;
       if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [scanJob]);
+
+  useEffect(() => {
+    if (!scanJob || scanJob.status !== "completed") return;
+    const generation = scanGeneration.current;
+    let cancelled = false;
+
+    void refreshProjects(generation).catch((cause) => {
+      if (!cancelled && scanGeneration.current === generation) {
+        setError(errorMessage(cause));
+      }
+    });
+
+    return () => {
+      cancelled = true;
     };
   }, [scanJob]);
 

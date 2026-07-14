@@ -319,6 +319,97 @@ describe("StudioLibrary", () => {
     expect(studioApi.getStudioProjects).toHaveBeenCalledTimes(1);
   });
 
+  it("reports a completed scan refresh failure after completion is rendered", async () => {
+    vi.useFakeTimers();
+    const queued: StudioScanJob = {
+      id: "scan-refresh-error",
+      status: "queued",
+      discoveredCount: 0,
+      parsedCount: 0,
+      cachedCount: 0,
+      failedCount: 0,
+      error: null,
+      createdAt: "2026-07-14T08:00:00Z",
+      updatedAt: "2026-07-14T08:00:00Z"
+    };
+    let rejectRefresh: ((reason: unknown) => void) | undefined;
+    vi.mocked(studioApi.startStudioScan).mockResolvedValueOnce(queued);
+    vi.mocked(studioApi.getStudioScan).mockResolvedValueOnce({
+      ...queued,
+      status: "completed",
+      discoveredCount: 1,
+      parsedCount: 1
+    });
+    vi.mocked(studioApi.getStudioProjects).mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { rejectRefresh = reject; })
+    );
+    render(
+      <StudioLibrary
+        initialProjects={[blueHour]}
+        initialRoots={[root]}
+        initialAnalyses={{ p1: analysis("FLEX") }}
+        initialDetails={{ p1: detail(blueHour) }}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "重新扫描" }));
+    await act(async () => {});
+    await act(async () => { vi.advanceTimersByTime(1000); });
+    expect(screen.getByText("扫描完成")).toBeTruthy();
+
+    await act(async () => { rejectRefresh?.(new Error("project refresh unavailable")); });
+    expect(screen.getByRole("alert").textContent).toContain("project refresh unavailable");
+  });
+
+  it("ignores an old completed refresh error after a newer scan starts", async () => {
+    vi.useFakeTimers();
+    const queued = (id: string): StudioScanJob => ({
+      id,
+      status: "queued",
+      discoveredCount: 0,
+      parsedCount: 0,
+      cachedCount: 0,
+      failedCount: 0,
+      error: null,
+      createdAt: "2026-07-14T08:00:00Z",
+      updatedAt: "2026-07-14T08:00:00Z"
+    });
+    let rejectOldRefresh: ((reason: unknown) => void) | undefined;
+    vi.mocked(studioApi.startStudioScan)
+      .mockResolvedValueOnce(queued("scan-refresh-old"))
+      .mockResolvedValueOnce(queued("scan-refresh-new"));
+    vi.mocked(studioApi.getStudioScan).mockResolvedValueOnce({
+      ...queued("scan-refresh-old"),
+      status: "completed",
+      discoveredCount: 1,
+      parsedCount: 1
+    });
+    vi.mocked(studioApi.getStudioProjects).mockImplementationOnce(
+      () => new Promise((_resolve, reject) => { rejectOldRefresh = reject; })
+    );
+    render(
+      <StudioLibrary
+        initialProjects={[blueHour]}
+        initialRoots={[root]}
+        initialAnalyses={{ p1: analysis("FLEX") }}
+        initialDetails={{ p1: detail(blueHour) }}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "重新扫描" }));
+    await act(async () => {});
+    await act(async () => { vi.advanceTimersByTime(1000); });
+    expect(screen.getByText("扫描完成")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "重新扫描" }));
+    await act(async () => {});
+    expect(screen.getByText("等待扫描")).toBeTruthy();
+    await act(async () => { rejectOldRefresh?.(new Error("obsolete refresh error")); });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText("等待扫描")).toBeTruthy();
+  });
+
   it("ignores an old polling response after a newer scan starts", async () => {
     vi.useFakeTimers();
     const queued = (id: string): StudioScanJob => ({
