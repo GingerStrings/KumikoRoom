@@ -1,36 +1,43 @@
 import { render, screen } from "@testing-library/react";
 import React from "react";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as studioApi from "../src/api/studioClient";
 import { StudioEntry } from "../src/components/StudioEntry";
 
+vi.mock("../src/api/studioClient", () => ({
+  getStudioRoots: vi.fn(),
+  getStudioProjects: vi.fn(),
+  getStudioAnalysis: vi.fn(),
+  getStudioProject: vi.fn(),
+  addStudioRoot: vi.fn(),
+  removeStudioRoot: vi.fn(),
+  startStudioScan: vi.fn(),
+  getStudioScan: vi.fn()
+}));
+
+beforeEach(() => {
+  vi.mocked(studioApi.getStudioRoots).mockResolvedValue([]);
+  vi.mocked(studioApi.getStudioProjects).mockResolvedValue([]);
+});
+
 describe("StudioEntry", () => {
-  it("renders Studio as a quiet materials workbench", () => {
+  it("keeps the Studio shell and loads the live project library", async () => {
     render(<StudioEntry />);
 
     expect(screen.getByRole("heading", { name: "资料室" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "回到聊天" }).getAttribute("href")).toBe("/room");
     expect(screen.getByRole("link", { name: "回到入口" }).getAttribute("href")).toBe("/");
-    expect(screen.getByRole("button", { name: "工程" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "素材" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "笔记" })).toBeTruthy();
-    expect(screen.getByText("还没有接入本地资料。")).toBeTruthy();
-    expect(screen.getByText("未连接本地目录")).toBeTruthy();
-    expect(screen.queryByText("先回到房间")).toBeNull();
-    expect(screen.queryByText("回到房间")).toBeNull();
-    expect(document.querySelector(".studio-workbench")).toBeTruthy();
-    expect(document.querySelector(".studio-shelf")).toBeTruthy();
-    expect(document.querySelector(".studio-empty-paper")).toBeNull();
-    expect(document.querySelector(".studio-module")).toBeNull();
+    expect(screen.getByRole("status").textContent).toContain("正在整理工程档案");
+    expect(await screen.findByRole("heading", { name: "添加第一个工程目录" })).toBeTruthy();
+    expect(studioApi.getStudioRoots).toHaveBeenCalledOnce();
+    expect(studioApi.getStudioProjects).toHaveBeenCalledOnce();
   });
 
-  it("does not render the old module-card grid", () => {
+  it("shows a recoverable load error", async () => {
+    vi.mocked(studioApi.getStudioProjects).mockRejectedValueOnce(new Error("library offline"));
     render(<StudioEntry />);
 
-    expect(screen.queryByText("创作资料")).toBeNull();
-    expect(screen.queryByText("工程概览")).toBeNull();
-    expect(screen.queryByText("Demo 音频")).toBeNull();
-    expect(screen.queryByText(/之后这里可以放/)).toBeNull();
-    expect(screen.queryByText(/不用假内容/)).toBeNull();
-    expect(screen.queryByText(/这里更像一个轻资料柜/)).toBeNull();
+    expect((await screen.findByRole("alert")).textContent).toContain("library offline");
+    expect(screen.getByRole("button", { name: "重试" })).toBeTruthy();
   });
 });
