@@ -157,6 +157,46 @@ describe("StudioLibrary", () => {
     expect(screen.queryByRole("link", { name: /Amber Line/ })).toBeNull();
   });
 
+  it("offers every project analysis status as a filter", () => {
+    render(<StudioLibrary initialProjects={[blueHour]} initialRoots={[root]} />);
+
+    const values = within(screen.getByLabelText("解析状态")).getAllByRole("option").map(
+      (option) => (option as HTMLOptionElement).value
+    );
+    expect(values).toEqual([
+      "all",
+      "discovered",
+      "queued",
+      "parsing",
+      "ready",
+      "partial",
+      "failed",
+      "stale"
+    ]);
+  });
+
+  it("keeps unavailable dependency analysis truthful and filterable", () => {
+    render(
+      <StudioLibrary
+        initialProjects={[blueHour, amberLine]}
+        initialRoots={[root]}
+        initialAnalyses={{ p2: analysis("Serum") }}
+      />
+    );
+
+    const blueCard = screen.getByRole("link", { name: /Blue Hour/ });
+    expect(blueCard.textContent).toContain("依赖尚未分析");
+    expect(blueCard.textContent).not.toContain("依赖完整");
+
+    fireEvent.change(screen.getByLabelText("依赖状态"), { target: { value: "complete" } });
+    expect(screen.queryByRole("link", { name: /Blue Hour/ })).toBeNull();
+    expect(screen.getByRole("link", { name: /Amber Line/ })).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("依赖状态"), { target: { value: "unknown" } });
+    expect(screen.getByRole("link", { name: /Blue Hour/ })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: /Amber Line/ })).toBeNull();
+  });
+
   it("sorts projects by recent edit or name", () => {
     render(<StudioLibrary initialProjects={[blueHour, amberLine]} initialRoots={[root]} />);
     const projectList = screen.getByLabelText("工程列表");

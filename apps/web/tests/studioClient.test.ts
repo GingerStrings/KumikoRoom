@@ -149,10 +149,11 @@ describe("Studio API client", () => {
       latestSnapshotSourceHash: "hash-1",
       latestSnapshotAnalyzedAt: "2026-07-13T10:00:03Z"
     });
-    await expect(getStudioAnalysis("p/1")).resolves.toMatchObject({
+    const mappedAnalysis = await getStudioAnalysis("p/1");
+    expect(mappedAnalysis).toMatchObject({
       sourcePath: "D:/Music/Blue Hour.flp",
       project: { flVersion: "21.2", timeSpentSeconds: 3600 },
-      patterns: [{ usedInPlaylist: true, notes: [{ channelId: "ch-1" }] }],
+      patterns: [{ usedInPlaylist: true }],
       plugins: [{ stateSupported: true }],
       mixerInserts: [{ slotPluginIds: ["plug-2"], routeTargetIds: [] }],
       dependencies: [{ exists: false }],
@@ -160,6 +161,14 @@ describe("Studio API client", () => {
       diagnostics: [{ targetType: "dependency" }],
       unknownEventCount: 2
     });
+    expect(mappedAnalysis.patterns[0].notes[0]).toEqual({
+      key: 60,
+      position: 0,
+      length: 96,
+      velocity: 100,
+      channelId: "ch-1"
+    });
+    expect(findSnakeCaseKeys(mappedAnalysis)).toEqual([]);
     expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/studio/projects/p%2F1", expect.any(Object));
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/studio/projects/p%2F1/analysis", expect.any(Object));
   });
@@ -214,3 +223,14 @@ describe("Studio API client", () => {
     );
   });
 });
+
+function findSnakeCaseKeys(value: unknown, path = "analysis"): string[] {
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) => findSnakeCaseKeys(item, `${path}[${index}]`));
+  }
+  if (value === null || typeof value !== "object") return [];
+  return Object.entries(value).flatMap(([key, nested]) => [
+    ...(key.includes("_") ? [`${path}.${key}`] : []),
+    ...findSnakeCaseKeys(nested, `${path}.${key}`)
+  ]);
+}

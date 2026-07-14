@@ -65,13 +65,18 @@ export function StudioLibrary({ initialProjects, initialRoots, initialAnalyses =
     return [...projects]
       .filter((project) => {
         const projectPlugins = analyses[project.id]?.plugins.map((item) => item.name) ?? [];
-        const missing = analyses[project.id]?.dependencies.some((item) => !item.exists) ?? false;
+        const projectAnalysis = analyses[project.id];
+        const dependencyStatus = projectAnalysis === undefined
+          ? "unknown"
+          : projectAnalysis.dependencies.some((item) => !item.exists)
+            ? "missing"
+            : "complete";
         return (!normalizedQuery || `${project.displayName} ${project.canonicalPath}`.toLocaleLowerCase().includes(normalizedQuery))
           && (status === "all" || project.status === status)
           && matchesBpm(project.tempo, bpm)
           && (key === "all" || project.inferredKey === key)
           && (plugin === "all" || projectPlugins.includes(plugin))
-          && (dependency === "all" || (dependency === "missing" ? missing : !missing));
+          && (dependency === "all" || dependency === dependencyStatus);
       })
       .sort((left, right) => sort === "name"
         ? left.displayName.localeCompare(right.displayName, "zh-CN")
@@ -170,11 +175,11 @@ export function StudioLibrary({ initialProjects, initialRoots, initialAnalyses =
         <>
           <section className={studioCss.filters} aria-label="筛选工程">
             <label className={studioCss.searchField}>搜索工程<input type="search" aria-label="搜索工程" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="名称或路径" /></label>
-            <Filter label="解析状态" value={status} onChange={setStatus} options={[["all", "全部状态"], ["ready", "解析完成"], ["partial", "部分解析"], ["failed", "解析失败"], ["stale", "需要更新"]]} />
+            <Filter label="解析状态" value={status} onChange={setStatus} options={[["all", "全部状态"], ["discovered", "待解析"], ["queued", "排队中"], ["parsing", "解析中"], ["ready", "解析完成"], ["partial", "部分解析"], ["failed", "解析失败"], ["stale", "需要更新"]]} />
             <Filter label="BPM 范围" value={bpm} onChange={setBpm} options={[["all", "全部速度"], ["slow", "低于 90"], ["medium", "90–119"], ["fast", "120 以上"]]} />
             <Filter label="推测调式" value={key} onChange={setKey} options={[["all", "全部调式"], ...keys.map((item) => [item, item] as [string, string])]} />
             <Filter label="插件" value={plugin} onChange={setPlugin} options={[["all", "全部插件"], ...plugins.map((item) => [item, item] as [string, string])]} />
-            <Filter label="依赖状态" value={dependency} onChange={setDependency} options={[["all", "全部依赖"], ["complete", "依赖完整"], ["missing", "存在缺失"]]} />
+            <Filter label="依赖状态" value={dependency} onChange={setDependency} options={[["all", "全部依赖"], ["complete", "依赖完整"], ["missing", "存在缺失"], ["unknown", "尚未分析"]]} />
             <Filter label="排序" value={sort} onChange={setSort} options={[["recent", "最近编辑"], ["name", "工程名称"]]} />
           </section>
 

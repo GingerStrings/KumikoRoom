@@ -18,6 +18,11 @@ interface ProjectCardProps {
 }
 export function ProjectCard({ project, analysis, detail }: ProjectCardProps) {
   const missingDependencies = analysis?.dependencies.filter((item) => !item.exists).length ?? 0;
+  const dependencyStatus = analysis === undefined
+    ? "unknown"
+    : missingDependencies > 0
+      ? "missing"
+      : "complete";
   const issueCount = project.warningCount + project.errorCount;
   const pluginNames = Array.from(new Set(analysis?.plugins.map((plugin) => plugin.name) ?? [])).slice(0, 3);
 
@@ -39,7 +44,9 @@ export function ProjectCard({ project, analysis, detail }: ProjectCardProps) {
 
       <div className={studioCss.projectSignals}>
         {issueCount > 0 ? <span data-tone="warm">{issueCount} 个提醒</span> : <span>结构平稳</span>}
-        {missingDependencies > 0 ? <span data-tone="danger">缺少 {missingDependencies} 项依赖</span> : <span>依赖完整</span>}
+        {dependencyStatus === "missing" ? <span data-tone="danger">缺少 {missingDependencies} 项依赖</span> : null}
+        {dependencyStatus === "complete" ? <span>依赖完整</span> : null}
+        {dependencyStatus === "unknown" ? <span data-tone="unknown">依赖尚未分析</span> : null}
       </div>
 
       {pluginNames.length > 0 ? (

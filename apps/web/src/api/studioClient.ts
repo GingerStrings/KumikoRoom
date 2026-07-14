@@ -143,7 +143,13 @@ function mapAnalysis(value: AnalysisApi): StudioAnalysis {
   };
   const patterns: StudioPatternSummary[] = value.patterns.map((pattern) => ({
     id: pattern.id, name: pattern.name, usedInPlaylist: pattern.used_in_playlist,
-    notes: pattern.notes.map((note) => ({ ...note, channelId: note.channel_id }))
+    notes: pattern.notes.map((note) => ({
+      key: note.key,
+      position: note.position,
+      length: note.length,
+      velocity: note.velocity,
+      channelId: note.channel_id
+    }))
   }));
   const channels: StudioChannelSummary[] = value.channels.map((channel) => ({ id: channel.id, name: channel.name, pluginName: channel.plugin_name, channelType: channel.channel_type }));
   const playlistClips: StudioPlaylistClipSummary[] = value.playlist_clips.map((clip) => ({ id: clip.id, trackIndex: clip.track_index, start: clip.start, length: clip.length, clipType: clip.clip_type, sourceId: clip.source_id }));
