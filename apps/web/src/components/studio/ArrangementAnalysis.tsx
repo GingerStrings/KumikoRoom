@@ -49,6 +49,15 @@ export function ArrangementAnalysis({ analysis, onSelectPattern }: ArrangementAn
         </div>
       </header>
 
+      {(arrangement.clippedClipCount > 0 || arrangement.ignoredClipCount > 0) && (
+        <p className={studioCss.analysisDataNotice} role="status" aria-label="编曲数据修正">
+          {[
+            arrangement.clippedClipCount > 0 ? `${arrangement.clippedClipCount} 个片段裁剪到工程起点` : null,
+            arrangement.ignoredClipCount > 0 ? `${arrangement.ignoredClipCount} 个片段因无效轨道或时间区间被忽略` : null
+          ].filter(Boolean).join(" · ")}
+        </p>
+      )}
+
       {arrangement.clips.length === 0 ? (
         <section className={studioCss.analysisEmpty}>
           <h2>没有可绘制的 Playlist Clip。</h2>
@@ -179,24 +188,42 @@ function Clip({
 
 function buildArrangement(analysis: StudioAnalysis) {
   const patternNames = new Map(analysis.patterns.map((pattern) => [pattern.id, pattern.name.trim() || "未命名 Pattern"]));
-  const clips = analysis.playlistClips.flatMap<PositionedClip>((clip) => {
-    if (!Number.isFinite(clip.start) || !Number.isFinite(clip.length) || clip.length <= 0) return [];
+  const clips: PositionedClip[] = [];
+  let ignoredClipCount = 0;
+  let clippedClipCount = 0;
+  for (const clip of analysis.playlistClips) {
+    if (!Number.isInteger(clip.trackIndex) || clip.trackIndex < 0) {
+      ignoredClipCount += 1;
+      continue;
+    }
+    if (!Number.isFinite(clip.start) || !Number.isFinite(clip.length) || clip.length <= 0) {
+      ignoredClipCount += 1;
+      continue;
+    }
+    const rawEnd = clip.start + clip.length;
+    if (!Number.isFinite(rawEnd)) {
+      ignoredClipCount += 1;
+      continue;
+    }
     const start = Math.max(0, clip.start);
-    const end = start + clip.length;
-    if (!Number.isFinite(end) || end <= start) return [];
-    const rawTrack = Number.isFinite(clip.trackIndex) ? Math.trunc(clip.trackIndex) : 0;
-    const trackIndex = Math.max(0, rawTrack);
-    return [{
+    const end = Math.max(0, rawEnd);
+    const length = end - start;
+    if (length <= 0) {
+      ignoredClipCount += 1;
+      continue;
+    }
+    if (clip.start < 0) clippedClipCount += 1;
+    clips.push({
       clip,
-      trackIndex,
+      trackIndex: clip.trackIndex,
       start,
       end,
-      length: clip.length,
+      length,
       patternName: normalizedClipType(clip.clipType) === "pattern" && clip.sourceId !== null
         ? patternNames.get(clip.sourceId) ?? null
         : null
-    }];
-  });
+    });
+  }
   const projectEnd = Math.max(1, ...clips.map((item) => item.end));
   const tracks = [...new Set(clips.map((item) => item.trackIndex))].sort((a, b) => a - b);
   const clipsByTrack = new Map<number, PositionedClip[]>();
@@ -206,15 +233,23 @@ function buildArrangement(analysis: StudioAnalysis) {
     else clipsByTrack.set(clip.trackIndex, [clip]);
   }
   const ppq = finitePositive(analysis.project.ppq);
-  const numerator = finitePositive(analysis.project.timeSignatureNumerator) ?? 4;
-  const denominator = finitePositive(analysis.project.timeSignatureDenominator) ?? 4;
-  const barTicks = ppq === null ? null : ppq * numerator * (4 / denominator);
+  const timeSignature = validTimeSignature(
+    analysis.project.timeSignatureNumerator,
+    analysis.project.timeSignatureDenominator
+  );
+  const barTicks = ppq === null || timeSignature === null
+    ? null
+    : ppq * timeSignature.numerator * (4 / timeSignature.denominator);
   const timingDescription = ppq === null
     ? "PPQ 未读取；时间线保留工程中的原始 tick 位置。"
-    : `${formatTick(ppq)} PPQ · ${numerator}/${denominator} 拍号 · 坐标按工程时基归一化`;
+    : timeSignature === null
+      ? `${formatTick(ppq)} PPQ · 拍号未读取；时间线使用原始 tick 标签。`
+      : `${formatTick(ppq)} PPQ · ${timeSignature.numerator}/${timeSignature.denominator} 拍号 · 坐标按工程时基归一化`;
 
   return {
     clips,
+    ignoredClipCount,
+    clippedClipCount,
     clipsByTrack,
     tracks,
     projectEnd,
@@ -311,4 +346,17 @@ function percent(value: number, total: number): string {
 
 function finitePositive(value: number | null): number | null {
   return value !== null && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function validTimeSignature(numerator: number | null, denominator: number | null) {
+  if (
+    numerator === null
+    || denominator === null
+    || !Number.isInteger(numerator)
+    || !Number.isInteger(denominator)
+    || numerator <= 0
+    || denominator <= 0
+    || (denominator & (denominator - 1)) !== 0
+  ) return null;
+  return { numerator, denominator };
 }

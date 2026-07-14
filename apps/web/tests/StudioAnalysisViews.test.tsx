@@ -144,7 +144,7 @@ describe("Pattern Explorer", () => {
     expect(screen.getByRole("heading", { name: "Verse" })).toBeTruthy();
     expect(screen.getByLabelText("Verse Piano Roll")).toBeTruthy();
     expect(screen.getByLabelText("Verse 音符与力度条")).toBeTruthy();
-    expect(screen.getByText(/3 个音符 · 音域 50–65/)).toBeTruthy();
+    expect(screen.getByText(/3 个音符 · 长度 240 ticks · 2.5 beats · 音域 50–65/)).toBeTruthy();
     expect(within(screen.getByLabelText("Channel 图例")).getByText("Keys")).toBeTruthy();
     expect(within(screen.getByLabelText("Channel 图例")).getByText("未知 Channel")).toBeTruthy();
     expect(screen.getByRole("button", { name: /Verse Alt · 相似度/ })).toBeTruthy();
@@ -192,8 +192,11 @@ describe("Pattern Explorer", () => {
           name: "Odd Notes",
           usedInPlaylist: true,
           notes: [
-            { key: 60, position: -20, length: 0, velocity: 130, channelId: "missing-channel" },
-            { key: Number.NaN, position: Number.POSITIVE_INFINITY, length: 4, velocity: 20, channelId: null }
+            { key: 60, position: -20, length: 12, velocity: 90, channelId: "missing-channel" },
+            { key: 61, position: 0, length: 12, velocity: 130, channelId: "missing-channel" },
+            { key: 62, position: 0, length: 0, velocity: 90, channelId: "missing-channel" },
+            { key: Number.NaN, position: Number.POSITIVE_INFINITY, length: 4, velocity: 20, channelId: null },
+            { key: 64, position: 0, length: 96, velocity: 90, channelId: "missing-channel" }
           ]
         }
       ],
@@ -209,6 +212,7 @@ describe("Pattern Explorer", () => {
 
     rerender(<PatternExplorer analysis={uncertain} selectedPatternId="odd" onSelectPattern={() => undefined} />);
     expect(within(screen.getByLabelText("Channel 图例")).getByText("未知 Channel")).toBeTruthy();
+    expect(screen.getByText("已忽略 4 条无效音符记录。")).toBeTruthy();
     expect(document.body.textContent).not.toMatch(/NaN|Infinity/);
 
     rerender(<ArrangementAnalysis analysis={uncertain} onSelectPattern={() => undefined} />);
@@ -217,7 +221,47 @@ describe("Pattern Explorer", () => {
     expect(document.body.textContent).not.toMatch(/NaN|Infinity/);
   });
 
-  it("normalizes finite negative positions and very long project coordinates without creating empty lanes", () => {
+  it("clips negative-start intervals, rejects invalid tracks, and reports every correction", () => {
+    const corrected: StudioAnalysis = {
+      ...analysis,
+      patterns: [{ id: "pat-corrected", name: "Corrected", usedInPlaylist: true, notes: [] }],
+      playlistClips: [
+        { id: "crosses-zero", trackIndex: 4, start: -96, length: 192, clipType: "pattern", sourceId: "pat-corrected" },
+        { id: "negative-track", trackIndex: -1, start: 0, length: 96, clipType: "pattern", sourceId: "pat-corrected" },
+        { id: "before-zero", trackIndex: 5, start: -192, length: 96, clipType: "audio", sourceId: null }
+      ]
+    };
+    render(<ArrangementAnalysis analysis={corrected} onSelectPattern={() => undefined} />);
+
+    const clip = screen.getByRole("button", { name: "Corrected clip at bar 1" });
+    expect(clip.getAttribute("style")).toContain("left: 0%");
+    expect(clip.getAttribute("style")).toContain("width: 100%");
+    expect(clip.getAttribute("title")).toContain("1 beats");
+    expect(screen.getByRole("status", { name: "编曲数据修正" }).textContent).toContain("1 个片段裁剪到工程起点");
+    expect(screen.getByRole("status", { name: "编曲数据修正" }).textContent).toContain("2 个片段因无效轨道或时间区间被忽略");
+    expect(screen.queryByLabelText("Playlist track 0")).toBeNull();
+    expect(screen.getByText("1 clips · 1 tracks")).toBeTruthy();
+  });
+
+  it("uses tick labels and avoids bar or gap claims when the time signature is unknown", () => {
+    const unknownSignature: StudioAnalysis = {
+      ...analysis,
+      project: {
+        ...analysis.project,
+        ppq: 96,
+        timeSignatureNumerator: null,
+        timeSignatureDenominator: null
+      }
+    };
+    render(<ArrangementAnalysis analysis={unknownSignature} onSelectPattern={() => undefined} />);
+
+    expect(screen.getByText(/96 PPQ · 拍号未读取/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Verse clip at tick 0" })).toBeTruthy();
+    expect(screen.queryByTitle(/长空白/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /bar/ })).toBeNull();
+  });
+
+  it("keeps very long finite coordinates without creating empty lanes", () => {
     const extreme: StudioAnalysis = {
       ...analysis,
       patterns: [{
@@ -242,5 +286,59 @@ describe("Pattern Explorer", () => {
     rerender(<PatternExplorer analysis={extreme} selectedPatternId="pat-extreme" onSelectPattern={() => undefined} />);
     expect(screen.getByLabelText("Long Form Piano Roll")).toBeTruthy();
     expect(document.body.innerHTML).not.toMatch(/NaN|Infinity/);
+  });
+
+  it("shows Pattern length, note-duration bins, onset rhythm, and usage from valid MIDI notes", () => {
+    const rhythmic: StudioAnalysis = {
+      ...analysis,
+      patterns: [{
+        id: "pat-rhythm",
+        name: "Rhythm Study",
+        usedInPlaylist: false,
+        notes: [
+          { key: 60, position: 0, length: 24, velocity: 80, channelId: "ch-keys" },
+          { key: 62, position: 48, length: 72, velocity: 90, channelId: "ch-keys" },
+          { key: 64, position: 120, length: 144, velocity: 100, channelId: "ch-keys" }
+        ]
+      }]
+    };
+    render(<PatternExplorer analysis={rhythmic} selectedPatternId="pat-rhythm" onSelectPattern={() => undefined} />);
+
+    const row = screen.getByRole("option");
+    expect(row.textContent).toContain("Rhythm Study");
+    expect(row.textContent).toContain("264 ticks · 2.75 beats");
+    expect(row.textContent).toContain("未使用");
+    expect(screen.getByText("264 ticks · 2.75 beats")).toBeTruthy();
+    expect(screen.getByLabelText("音符时值分布").textContent).toContain("短 1 · 中 1 · 长 1");
+    expect(screen.getByLabelText("起音节奏分布").textContent).toContain("正拍 1 · 反拍 1 · 其他 1");
+  });
+
+  it("uses exact tick distributions when PPQ is unavailable and explains empty Pattern statistics", () => {
+    const tickOnly: StudioAnalysis = {
+      ...analysis,
+      project: { ...analysis.project, ppq: null },
+      patterns: [
+        {
+          id: "tick-only",
+          name: "Tick Only",
+          usedInPlaylist: true,
+          notes: [
+            { key: 60, position: 0, length: 24, velocity: 80, channelId: "ch-keys" },
+            { key: 62, position: 36, length: 48, velocity: 90, channelId: "ch-keys" }
+          ]
+        },
+        { id: "empty-stats", name: "Empty Stats", usedInPlaylist: false, notes: [] }
+      ]
+    };
+    const { rerender } = render(<PatternExplorer analysis={tickOnly} selectedPatternId="tick-only" onSelectPattern={() => undefined} />);
+
+    expect(screen.getByLabelText("音符时值分布").textContent).toContain("24 ticks × 1");
+    expect(screen.getByLabelText("音符时值分布").textContent).toContain("48 ticks × 1");
+    expect(screen.getByLabelText("起音节奏分布").textContent).toContain("tick 0 × 1");
+    expect(screen.getByLabelText("起音节奏分布").textContent).toContain("无法推断正拍/反拍");
+
+    rerender(<PatternExplorer analysis={tickOnly} selectedPatternId="empty-stats" onSelectPattern={() => undefined} />);
+    expect(screen.getByLabelText("音符时值分布").textContent).toContain("没有有效音符可统计时值");
+    expect(screen.getByLabelText("起音节奏分布").textContent).toContain("没有有效音符可统计起音位置");
   });
 });

@@ -26,6 +26,7 @@ export function PatternExplorer({ analysis, selectedPatternId, onSelectPattern }
   const [query, setQuery] = useState("");
   const [scrollTop, setScrollTop] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
+  const ppq = finitePositive(analysis.project.ppq);
   const selectedPattern = analysis.patterns.find((pattern) => pattern.id === selectedPatternId) ?? analysis.patterns[0] ?? null;
   const filteredPatterns = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase();
@@ -63,6 +64,7 @@ export function PatternExplorer({ analysis, selectedPatternId, onSelectPattern }
         <PatternList
           patterns={filteredPatterns}
           totalCount={analysis.patterns.length}
+          ppq={ppq}
           selectedPatternId={selectedPattern?.id ?? null}
           scrollTop={scrollTop}
           onScroll={setScrollTop}
@@ -85,6 +87,7 @@ export function PatternExplorer({ analysis, selectedPatternId, onSelectPattern }
 function PatternList({
   patterns,
   totalCount,
+  ppq,
   selectedPatternId,
   scrollTop,
   onScroll,
@@ -93,6 +96,7 @@ function PatternList({
 }: {
   patterns: StudioPatternSummary[];
   totalCount: number;
+  ppq: number | null;
   selectedPatternId: string | null;
   scrollTop: number;
   onScroll: (value: number) => void;
@@ -123,6 +127,8 @@ function PatternList({
           <div className={studioCss.patternListWindow} style={{ height: virtualized ? `${patterns.length * ROW_HEIGHT}px` : "auto" }}>
             {visible.map((pattern, offset) => {
               const index = start + offset;
+              const validated = validateNotes(pattern.notes);
+              const metrics = patternMetrics(validated.notes, ppq);
               return (
                 <button
                   key={pattern.id}
@@ -135,7 +141,10 @@ function PatternList({
                   style={virtualized ? { position: "absolute", top: `${index * ROW_HEIGHT}px` } : undefined}
                   onClick={() => onSelectPattern(pattern.id)}
                 >
-                  <span><strong>{displayPatternName(pattern)}</strong><small>{pattern.notes.length} notes</small></span>
+                  <span>
+                    <strong>{displayPatternName(pattern)}</strong>
+                    <small>{validated.notes.length} notes · {metrics.lengthLabel}{validated.ignoredCount > 0 ? ` · ${validated.ignoredCount} ignored` : ""}</small>
+                  </span>
                   <em data-used={pattern.usedInPlaylist}>{pattern.usedInPlaylist ? "已使用" : "未使用"}</em>
                 </button>
               );
@@ -152,8 +161,10 @@ function PatternDetail({ analysis, pattern, onSelectPattern }: {
   pattern: StudioPatternSummary;
   onSelectPattern: (patternId: string) => void;
 }) {
-  const notes = sanitizeNotes(pattern.notes);
-  const metrics = patternMetrics(notes, finitePositive(analysis.project.ppq));
+  const ppq = finitePositive(analysis.project.ppq);
+  const validated = validateNotes(pattern.notes);
+  const notes = validated.notes;
+  const metrics = patternMetrics(notes, ppq);
   const similarities = similarPatterns(pattern, analysis.patterns);
   const channelNames = new Map(analysis.channels.map((channel) => [channel.id, channel.name.trim() || channel.id]));
   const channelLegend = buildChannelLegend(notes, channelNames);
@@ -168,8 +179,12 @@ function PatternDetail({ analysis, pattern, onSelectPattern }: {
       </header>
 
       <p className={studioCss.patternTextSummary} aria-label={`${name} 音符摘要`}>{summary}</p>
+      {validated.ignoredCount > 0 && (
+        <p className={studioCss.patternDataNotice} role="status">已忽略 {validated.ignoredCount} 条无效音符记录。</p>
+      )}
       <dl className={studioCss.patternMetrics}>
         <Metric label="音符" value={String(metrics.count)} />
+        <Metric label="Pattern 长度" value={metrics.lengthLabel} />
         <Metric label="音域" value={metrics.rangeLabel} />
         <Metric label="密度" value={metrics.densityLabel} />
         <Metric label="平均力度" value={metrics.velocityLabel} />
@@ -183,6 +198,11 @@ function PatternDetail({ analysis, pattern, onSelectPattern }: {
       ) : (
         <PianoRoll name={name} notes={notes} channelNames={channelNames} />
       )}
+
+      <div className={studioCss.patternDistributions}>
+        <DurationDistribution notes={notes} ppq={ppq} />
+        <OnsetDistribution notes={notes} ppq={ppq} />
+      </div>
 
       <div className={studioCss.patternDetailLower}>
         <section className={studioCss.patternSubpanel} aria-label="Channel 图例">
@@ -289,26 +309,139 @@ function Metric({ label, value }: { label: string; value: string }) {
   return <div><dt>{label}</dt><dd>{value}</dd></div>;
 }
 
-function sanitizeNotes(notes: StudioNoteSummary[]): DrawableNote[] {
-  return notes.flatMap((note) => {
-    if (!Number.isFinite(note.key) || note.key < 0 || note.key > 127) return [];
-    if (!Number.isFinite(note.position) || !Number.isFinite(note.length) || note.length < 0) return [];
-    const position = Math.max(0, note.position);
-    const end = position + note.length;
-    if (!Number.isFinite(end)) return [];
-    return [{
-      key: Math.round(note.key),
-      position,
+function DurationDistribution({ notes, ppq }: { notes: DrawableNote[]; ppq: number | null }) {
+  if (notes.length === 0) {
+    return <DistributionPanel label="音符时值分布" title="音符时值" summary="没有有效音符可统计时值。" bins={[]} />;
+  }
+  if (ppq === null) {
+    const bins = exactBins(notes.map((note) => note.length), (value) => `${formatNumber(value)} ticks`);
+    return (
+      <DistributionPanel
+        label="音符时值分布"
+        title="音符时值（tick）"
+        summary={bins.map((bin) => `${bin.label} × ${bin.count}`).join(" · ")}
+        bins={bins}
+        note="PPQ 未读取；保留原始 tick 时值。"
+      />
+    );
+  }
+  const bins = [
+    { label: "短", count: notes.filter((note) => note.length / ppq < 0.5).length },
+    { label: "中", count: notes.filter((note) => note.length / ppq >= 0.5 && note.length / ppq < 1).length },
+    { label: "长", count: notes.filter((note) => note.length / ppq >= 1).length }
+  ];
+  return (
+    <DistributionPanel
+      label="音符时值分布"
+      title="音符时值"
+      summary={bins.map((bin) => `${bin.label} ${bin.count}`).join(" · ")}
+      bins={bins}
+      note="短 < 0.5 拍 · 中 0.5–<1 拍 · 长 ≥ 1 拍"
+    />
+  );
+}
+
+function OnsetDistribution({ notes, ppq }: { notes: DrawableNote[]; ppq: number | null }) {
+  if (notes.length === 0) {
+    return <DistributionPanel label="起音节奏分布" title="起音节奏" summary="没有有效音符可统计起音位置。" bins={[]} />;
+  }
+  if (ppq === null) {
+    const bins = exactBins(notes.map((note) => note.position), (value) => `tick ${formatNumber(value)}`);
+    return (
+      <DistributionPanel
+        label="起音节奏分布"
+        title="起音位置（tick）"
+        summary={bins.map((bin) => `${bin.label} × ${bin.count}`).join(" · ")}
+        bins={bins}
+        note="PPQ 未读取，无法推断正拍/反拍。"
+      />
+    );
+  }
+  const counts = { downbeat: 0, offbeat: 0, other: 0 };
+  for (const note of notes) {
+    const remainder = note.position % ppq;
+    if (approximately(remainder, 0) || approximately(remainder, ppq)) counts.downbeat += 1;
+    else if (approximately(remainder, ppq / 2)) counts.offbeat += 1;
+    else counts.other += 1;
+  }
+  const bins = [
+    { label: "正拍", count: counts.downbeat },
+    { label: "反拍", count: counts.offbeat },
+    { label: "其他", count: counts.other }
+  ];
+  return (
+    <DistributionPanel
+      label="起音节奏分布"
+      title="起音节奏"
+      summary={bins.map((bin) => `${bin.label} ${bin.count}`).join(" · ")}
+      bins={bins}
+      note="正拍 = 整拍起音 · 反拍 = 半拍起音"
+    />
+  );
+}
+
+function DistributionPanel({ label, title, summary, bins, note }: {
+  label: string;
+  title: string;
+  summary: string;
+  bins: Array<{ label: string; count: number }>;
+  note?: string;
+}) {
+  const maximum = Math.max(1, ...bins.map((bin) => bin.count));
+  return (
+    <section className={studioCss.distributionPanel} aria-label={label}>
+      <header><h3>{title}</h3><span>{bins.reduce((total, bin) => total + bin.count, 0)} notes</span></header>
+      <p>{summary}</p>
+      {bins.length > 0 && (
+        <ul aria-hidden="true">
+          {bins.map((bin) => (
+            <li key={bin.label} title={`${bin.label}：${bin.count}`}>
+              <span>{bin.label}</span><i><b style={{ width: `${bin.count / maximum * 100}%` }} /></i><strong>{bin.count}</strong>
+            </li>
+          ))}
+        </ul>
+      )}
+      {note && <small>{note}</small>}
+    </section>
+  );
+}
+
+function validateNotes(notes: StudioNoteSummary[]): { notes: DrawableNote[]; ignoredCount: number } {
+  const valid: DrawableNote[] = [];
+  let ignoredCount = 0;
+  for (const note of notes) {
+    const validKey = Number.isInteger(note.key) && note.key >= 0 && note.key <= 127;
+    const validPosition = Number.isFinite(note.position) && note.position >= 0;
+    const validLength = Number.isFinite(note.length) && note.length > 0;
+    const validVelocity = Number.isFinite(note.velocity) && note.velocity >= 0 && note.velocity <= 127;
+    const end = note.position + note.length;
+    if (!validKey || !validPosition || !validLength || !validVelocity || !Number.isFinite(end)) {
+      ignoredCount += 1;
+      continue;
+    }
+    valid.push({
+      key: note.key,
+      position: note.position,
       length: note.length,
-      velocity: Number.isFinite(note.velocity) ? Math.round(Math.max(0, Math.min(127, note.velocity))) : 0,
+      velocity: note.velocity,
       channelId: note.channelId
-    }];
-  });
+    });
+  }
+  return { notes: valid, ignoredCount };
 }
 
 function patternMetrics(notes: DrawableNote[], ppq: number | null) {
   if (notes.length === 0) {
-    return { count: 0, rangeLabel: "—", densityLabel: ppq === null ? "PPQ 未读取" : "0 / 拍", velocityLabel: "—", minKey: null, maxKey: null };
+    return {
+      count: 0,
+      lengthTicks: 0,
+      lengthLabel: formatPatternLength(0, ppq),
+      rangeLabel: "—",
+      densityLabel: ppq === null ? "PPQ 未读取" : "0 / 拍",
+      velocityLabel: "—",
+      minKey: null,
+      maxKey: null
+    };
   }
   const minKey = Math.min(...notes.map((note) => note.key));
   const maxKey = Math.max(...notes.map((note) => note.key));
@@ -317,6 +450,8 @@ function patternMetrics(notes: DrawableNote[], ppq: number | null) {
   const velocity = notes.reduce((total, note) => total + note.velocity, 0) / notes.length;
   return {
     count: notes.length,
+    lengthTicks: end,
+    lengthLabel: formatPatternLength(end, ppq),
     rangeLabel: `${minKey}–${maxKey}`,
     densityLabel: density === null ? (ppq === null ? "PPQ 未读取" : "时长不可用") : `${formatNumber(density)} / 拍`,
     velocityLabel: formatNumber(velocity),
@@ -326,8 +461,8 @@ function patternMetrics(notes: DrawableNote[], ppq: number | null) {
 }
 
 function noteSummary(metrics: ReturnType<typeof patternMetrics>): string {
-  if (metrics.count === 0) return "0 个音符 · 音域不可用 · 平均力度不可用";
-  return `${metrics.count} 个音符 · 音域 ${metrics.minKey}–${metrics.maxKey} · 密度 ${metrics.densityLabel} · 平均力度 ${metrics.velocityLabel}`;
+  if (metrics.count === 0) return `0 个音符 · 长度 ${metrics.lengthLabel} · 音域不可用 · 平均力度不可用`;
+  return `${metrics.count} 个音符 · 长度 ${metrics.lengthLabel} · 音域 ${metrics.minKey}–${metrics.maxKey} · 密度 ${metrics.densityLabel} · 平均力度 ${metrics.velocityLabel}`;
 }
 
 function buildChannelLegend(notes: DrawableNote[], channelNames: Map<string, string>) {
@@ -351,13 +486,13 @@ function toneMap(notes: DrawableNote[]): Map<string, number> {
 }
 
 function similarPatterns(selected: StudioPatternSummary, patterns: StudioPatternSummary[]) {
-  const selectedNotes = sanitizeNotes(selected.notes);
+  const selectedNotes = validateNotes(selected.notes).notes;
   if (selectedNotes.length < 2) return [];
   const selectedSignature = noteSignature(selectedNotes);
   return patterns
     .filter((pattern) => pattern.id !== selected.id)
     .flatMap((pattern) => {
-      const notes = sanitizeNotes(pattern.notes);
+      const notes = validateNotes(pattern.notes).notes;
       if (notes.length < 2) return [];
       const score = jaccard(selectedSignature, noteSignature(notes));
       return score >= 0.5 ? [{ pattern, score }] : [];
@@ -380,6 +515,31 @@ function jaccard(left: Set<string>, right: Set<string>): number {
   const intersection = [...left].filter((token) => right.has(token)).length;
   const union = new Set([...left, ...right]).size;
   return union === 0 ? 0 : intersection / union;
+}
+
+function formatPatternLength(ticks: number, ppq: number | null): string {
+  return ppq === null
+    ? `${formatNumber(ticks)} ticks`
+    : `${formatNumber(ticks)} ticks · ${formatNumber(ticks / ppq)} beats`;
+}
+
+function exactBins(values: number[], label: (value: number) => string): Array<{ label: string; count: number }> {
+  const counts = new Map<number, number>();
+  for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+  const entries = [...counts.entries()].sort((left, right) => left[0] - right[0]);
+  const visible = entries.slice(0, 7).map(([value, count]) => ({ label: label(value), count }));
+  if (entries.length <= 7) return visible;
+  return [
+    ...visible,
+    {
+      label: `其他 ${entries.length - 7} 种`,
+      count: entries.slice(7).reduce((total, [, count]) => total + count, 0)
+    }
+  ];
+}
+
+function approximately(left: number, right: number): boolean {
+  return Math.abs(left - right) < 1e-6;
 }
 
 function displayPatternName(pattern: StudioPatternSummary): string {

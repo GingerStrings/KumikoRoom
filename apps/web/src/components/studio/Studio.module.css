@@ -620,6 +620,7 @@ button.timelineClip:hover { border-color: #4d7e88; background: #c8e0e2; }
 .timelineClip small { max-width: 100%; overflow: hidden; color: currentColor; font-size: 7px; font-weight: 800; letter-spacing: .08em; opacity: .75; text-overflow: ellipsis; text-transform: uppercase; }
 
 .analysisFootnote { display: flex; justify-content: space-between; gap: 16px; color: #607577; font-size: 10px; }
+.analysisDataNotice, .patternDataNotice { margin: 0; border: 1px solid #dfcfba; padding: 9px 11px; background: #faf5ea; color: #715d45; font-size: 10px; line-height: 1.5; }
 .analysisEmpty { min-height: 280px; display: grid; align-content: center; justify-items: start; gap: 9px; border: 1px solid #d6e0db; padding: clamp(24px, 5vw, 54px); background: #fffefa; }
 .analysisEmpty h2 { margin: 0; color: #344c4f; font-family: var(--font-serif); font-size: 24px; font-weight: 550; }
 .analysisEmpty p { margin: 0; color: #718484; font-size: 12px; line-height: 1.7; }
@@ -639,7 +640,7 @@ button.timelineClip:hover { border-color: #4d7e88; background: #c8e0e2; }
 .patternRow[aria-selected="true"] { background: #e3eff0; box-shadow: inset 2px 0 #4d7e88; }
 .patternRow > span { min-width: 0; display: grid; gap: 3px; }
 .patternRow strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.patternRow small { color: #607577; font-size: 8px; }
+.patternRow small { overflow: hidden; color: #607577; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .patternRow em { flex: none; border: 1px solid #d6dfda; padding: 2px 4px; color: #607577; font-size: 7px; font-style: normal; font-weight: 900; }
 .patternRow em[data-used="true"] { border-color: #b9d0c8; background: #edf5f0; color: #476e62; }
 .patternNoResults { margin: 0; padding: 30px 14px; color: #6d8181; font-size: 11px; line-height: 1.6; }
@@ -650,7 +651,7 @@ button.timelineClip:hover { border-color: #4d7e88; background: #c8e0e2; }
 .patternDetailHeader > span { flex: none; border: 1px solid #d5dfda; padding: 4px 7px; color: #607577; font-size: 8px; font-weight: 900; }
 .patternDetailHeader > span[data-used="true"] { border-color: #b9d0c8; color: #476e62; }
 .patternTextSummary { margin: 0; color: #4d686a; font-size: 11px; line-height: 1.5; text-wrap: pretty; }
-.patternMetrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; border: 1px solid #d5dfda; background: #fffefa; }
+.patternMetrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0; border: 1px solid #d5dfda; background: #fffefa; }
 .patternMetrics div { min-width: 0; display: grid; gap: 5px; padding: 11px 13px; border-right: 1px solid #dce4df; }
 .patternMetrics div:last-child { border-right: 0; }
 .patternMetrics dt { color: #607577; font-size: 8px; font-weight: 900; }
@@ -673,6 +674,20 @@ button.timelineClip:hover { border-color: #4d7e88; background: #c8e0e2; }
 .pianoEmpty { min-height: 190px; display: grid; align-content: center; gap: 8px; border: 1px solid #d6e0db; padding: 24px; background: #fffefa; }
 .pianoEmpty h3 { margin: 0; color: #3d5558; font-family: var(--font-serif); font-size: 19px; font-weight: 550; }
 .pianoEmpty p { margin: 0; color: #607577; font-size: 11px; }
+
+.patternDistributions { min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
+.distributionPanel { min-width: 0; border: 1px solid #d5dfda; padding: 12px; background: #fffefa; }
+.distributionPanel header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding-bottom: 9px; border-bottom: 1px solid #e2e8e4; }
+.distributionPanel h3 { margin: 0; color: #3d575a; font-family: var(--font-serif); font-size: 16px; font-weight: 550; }
+.distributionPanel header span { color: #607577; font-size: 8px; font-weight: 850; }
+.distributionPanel > p { margin: 10px 0 0; color: #405d60; font-size: 10px; font-weight: 750; line-height: 1.6; text-wrap: pretty; }
+.distributionPanel ul { display: grid; gap: 7px; margin: 11px 0 0; padding: 0; list-style: none; }
+.distributionPanel li { min-width: 0; display: grid; grid-template-columns: minmax(52px, auto) minmax(40px, 1fr) 24px; gap: 8px; align-items: center; }
+.distributionPanel li > span { overflow: hidden; color: #5c7476; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.distributionPanel li > i { height: 3px; overflow: hidden; background: #e1e9e4; }
+.distributionPanel li > i > b { height: 100%; display: block; background: #749ba0; }
+.distributionPanel li > strong { color: #4a6365; font-size: 9px; text-align: right; }
+.distributionPanel > small { display: block; margin-top: 10px; color: #607577; font-size: 8px; line-height: 1.5; text-wrap: pretty; }
 
 .patternDetailLower { min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
 .patternSubpanel { min-width: 0; border: 1px solid #d5dfda; background: #fffefa; }
@@ -714,9 +729,11 @@ button.timelineClip:hover { border-color: #4d7e88; background: #c8e0e2; }
   .patternSearch { width: 100%; }
   .patternExplorerGrid { grid-template-columns: 1fr; }
   .patternList { height: 260px; }
+  .patternDistributions { grid-template-columns: 1fr; }
   .patternMetrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .patternMetrics div:nth-child(2) { border-right: 0; }
-  .patternMetrics div:nth-child(-n + 2) { border-bottom: 1px solid #dce4df; }
+  .patternMetrics div:nth-child(n) { border-right: 1px solid #dce4df; border-bottom: 1px solid #dce4df; }
+  .patternMetrics div:nth-child(2n) { border-right: 0; }
+  .patternMetrics div:last-child { grid-column: 1 / -1; border-right: 0; border-bottom: 0; }
   .inferenceNote { grid-template-columns: 1fr; }
 }
 
