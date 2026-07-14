@@ -89,7 +89,7 @@ export function MusicalFingerprint({ fingerprint }: MusicalFingerprintProps) {
           <path d="M42 68H518" stroke="#91a3a1" strokeDasharray="4 6" />
         )}
         <g transform="translate(42 112)">
-          <FingerprintBar label="DENSITY · NOTES/BEAT" value={densityScale} display={`${densityLabel}/拍`} x={0} gradientId={spectrumGradientId} />
+          <FingerprintBar label="DENSITY · 0–8+ / BEAT" value={densityScale} display={`${densityLabel}/拍`} x={0} gradientId={spectrumGradientId} />
           <FingerprintBar label="VELOCITY" value={velocity === null ? 0 : Math.round((velocity / 127) * 100)} display={velocity === null ? "—" : `${velocity}/127`} x={166} muted={velocity === null} gradientId={spectrumGradientId} />
           <FingerprintBar label="REUSE" value={reuse} display={`${reuse}%`} x={332} gradientId={spectrumGradientId} />
         </g>

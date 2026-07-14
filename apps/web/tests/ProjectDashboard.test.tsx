@@ -122,6 +122,7 @@ describe("Project dashboard", () => {
 
     const fingerprint = screen.getByLabelText("音乐指纹");
     expect(within(fingerprint).getByText("D minor · 82% 可信度")).toBeTruthy();
+    expect(within(fingerprint).getByText("DENSITY · 0–8+ / BEAT")).toBeTruthy();
     expect(within(fingerprint).getByText("D 音级重心")).toBeTruthy();
     expect(within(fingerprint).getByText("A–D 终止倾向")).toBeTruthy();
     expect(within(fingerprint).getByText(/音域 50–86/)).toBeTruthy();
@@ -197,6 +198,37 @@ describe("Project dashboard", () => {
       const color = cssRule(css, selector).match(/(?:^|[;\s])color:\s*(#[0-9a-f]{6})/i)?.[1];
       expect(color, `Expected ${selector} to declare a six-digit text color`).toBeDefined();
       expect(contrastRatio(color as string, background), `${selector} contrast`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it("keeps fingerprint small text AA-readable on every composited gradient and texture endpoint", () => {
+    const css = fs.readFileSync(studioCssPath, "utf8").replace(/\r\n/g, "\n");
+    const fingerprintRule = cssRule(css, ".fingerprint");
+    expect(fingerprintRule).toContain("rgba(233, 242, 240, .96)");
+    expect(fingerprintRule).toContain("rgba(250, 246, 238, .93)");
+    expect(fingerprintRule).toContain("rgba(232, 225, 235, .8)");
+    expect(fingerprintRule).toContain("#f6f5ef");
+    const textureRule = cssRule(css, ".fingerprint::after");
+    expect(textureRule).toContain("opacity: .35;");
+    expect(textureRule).toContain("rgba(75, 108, 112, .07)");
+
+    const base = hexRgb("#f6f5ef");
+    const texture = hexRgb("#4b6c70");
+    const endpoints: Array<[string, number]> = [
+      ["#e9f2f0", 0.96],
+      ["#faf6ee", 0.93],
+      ["#e8e1eb", 0.8]
+    ];
+    const backgrounds = endpoints.flatMap(([color, alpha]) => {
+      const endpoint = alphaComposite(hexRgb(color), alpha, base);
+      return [endpoint, alphaComposite(texture, 0.07 * 0.35, endpoint)];
+    });
+
+    for (const selector of [".fingerprint .panelKicker", ".keyInference span"]) {
+      const color = cssRule(css, selector).match(/(?:^|[;\s])color:\s*(#[0-9a-f]{6})/i)?.[1];
+      expect(color, `Expected ${selector} to declare a six-digit text color`).toBeDefined();
+      const ratios = backgrounds.map((background) => contrastRatioRgb(hexRgb(color as string), background));
+      expect(Math.min(...ratios), `${selector} worst composited contrast`).toBeGreaterThanOrEqual(4.5);
     }
   });
 });
@@ -399,8 +431,27 @@ function contrastRatio(foreground: string, background: string): number {
 }
 
 function relativeLuminance(hex: string): number {
-  const channels = [1, 3, 5].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16) / 255);
-  const linear = channels.map((channel) => channel <= 0.04045
+  return relativeLuminanceRgb(hexRgb(hex));
+}
+
+type Rgb = [number, number, number];
+
+function hexRgb(hex: string): Rgb {
+  return [1, 3, 5].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16)) as Rgb;
+}
+
+function alphaComposite(foreground: Rgb, alpha: number, background: Rgb): Rgb {
+  return foreground.map((channel, index) => channel * alpha + background[index] * (1 - alpha)) as Rgb;
+}
+
+function contrastRatioRgb(foreground: Rgb, background: Rgb): number {
+  const lighter = Math.max(relativeLuminanceRgb(foreground), relativeLuminanceRgb(background));
+  const darker = Math.min(relativeLuminanceRgb(foreground), relativeLuminanceRgb(background));
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function relativeLuminanceRgb(rgb: Rgb): number {
+  const linear = rgb.map((value) => value / 255).map((channel) => channel <= 0.04045
     ? channel / 12.92
     : ((channel + 0.055) / 1.055) ** 2.4);
   return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];

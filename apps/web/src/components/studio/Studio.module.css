@@ -457,11 +457,12 @@
 }
 
 .fingerprintHeader, .fingerprintSvg, .fingerprintSummary { position: relative; z-index: 1; }
+.fingerprint .panelKicker { color: #486164; }
 .fingerprintHeader { grid-column: 1 / -1; display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
 .fingerprintHeader h2 { margin: 6px 0 0; color: #29464b; font-family: var(--font-serif); font-size: 27px; font-weight: 600; }
 .keyInference { display: grid; gap: 4px; margin: 0; text-align: right; }
 .keyInference strong { color: #3c5d62; font-size: 15px; }
-.keyInference span { color: #5f7476; font-size: 10px; }
+.keyInference span { color: #486164; font-size: 10px; }
 .fingerprintSvg { width: 100%; height: auto; align-self: center; }
 
 .fingerprintSummary { align-self: stretch; display: grid; align-content: center; gap: 15px; border-top: 1px solid rgba(64, 91, 95, .25); border-bottom: 1px solid rgba(64, 91, 95, .25); padding: 18px 0; }
