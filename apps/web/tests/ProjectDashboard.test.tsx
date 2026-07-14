@@ -234,7 +234,7 @@ describe("Project dashboard", () => {
 });
 
 describe("Project workspace", () => {
-  it("loads the route project id and exposes only the implemented overview tab", async () => {
+  it("loads the route project id and exposes the implemented analysis tabs", async () => {
     render(<ProjectWorkspace projectId="p/1" />);
 
     expect(screen.getByRole("status").textContent).toContain("正在读取工程分析");
@@ -244,7 +244,10 @@ describe("Project workspace", () => {
 
     const tabs = screen.getByRole("tablist", { name: "工程分析视图" });
     expect(within(tabs).getByRole("tab", { name: "总览" }).getAttribute("aria-selected")).toBe("true");
-    for (const name of ["编曲", "Pattern", "插件与 Mixer", "依赖", "版本"]) {
+    for (const name of ["编曲", "Pattern"]) {
+      expect((within(tabs).getByRole("tab", { name }) as HTMLButtonElement).disabled).toBe(false);
+    }
+    for (const name of ["插件与 Mixer", "依赖", "版本"]) {
       expect((within(tabs).getByRole("tab", { name }) as HTMLButtonElement).disabled).toBe(true);
     }
   });

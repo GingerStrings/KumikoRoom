@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { ApiError } from "../../api/client";
 import { getStudioAnalysis, getStudioProject } from "../../api/studioClient";
 import type { StudioAnalysis, StudioProjectDetail } from "../../api/studioTypes";
+import { ArrangementAnalysis } from "./ArrangementAnalysis";
+import { PatternExplorer } from "./PatternExplorer";
 import { ProjectDashboard } from "./ProjectDashboard";
 import studioCss from "./Studio.module.css";
 
@@ -19,22 +21,28 @@ type WorkspaceState =
   | { phase: "not-found" }
   | { phase: "error"; message: string };
 
-const tabs = [
-  { label: "总览", available: true },
-  { label: "编曲", available: false },
-  { label: "Pattern", available: false },
-  { label: "插件与 Mixer", available: false },
-  { label: "依赖", available: false },
-  { label: "版本", available: false }
+type WorkspaceTab = "overview" | "arrangement" | "pattern" | "plugins" | "dependencies" | "versions";
+
+const tabs: Array<{ id: WorkspaceTab; label: string; available: boolean }> = [
+  { id: "overview", label: "总览", available: true },
+  { id: "arrangement", label: "编曲", available: true },
+  { id: "pattern", label: "Pattern", available: true },
+  { id: "plugins", label: "插件与 Mixer", available: false },
+  { id: "dependencies", label: "依赖", available: false },
+  { id: "versions", label: "版本", available: false }
 ] as const;
 
 export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
   const [state, setState] = useState<WorkspaceState>({ phase: "loading" });
   const [retryKey, setRetryKey] = useState(0);
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>("overview");
+  const [selectedPatternId, setSelectedPatternId] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
     setState({ phase: "loading" });
+    setActiveTab("overview");
+    setSelectedPatternId(null);
     void loadWorkspace(projectId, controller.signal).then((next) => {
       if (!controller.signal.aborted) setState(next);
     });
@@ -80,9 +88,12 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
               key={tab.label}
               type="button"
               role="tab"
-              aria-selected={tab.available}
+              id={`workspace-tab-${tab.id}`}
+              aria-controls={`workspace-panel-${tab.id}`}
+              aria-selected={activeTab === tab.id}
               disabled={!tab.available}
               title={tab.available ? undefined : "该视图将在后续分析阶段开放"}
+              onClick={() => tab.available && setActiveTab(tab.id)}
             >
               {tab.label}
             </button>
@@ -98,8 +109,30 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
             这个快照只完成了部分解析，已展示可确认的数据；详情见解析说明。
           </aside>
         )}
-        <div className={studioCss.workspaceScroll} role="tabpanel" aria-label="总览">
-          <ProjectDashboard analysis={state.analysis} project={state.project} />
+        <div
+          id={`workspace-panel-${activeTab}`}
+          className={studioCss.workspaceScroll}
+          role="tabpanel"
+          aria-labelledby={`workspace-tab-${activeTab}`}
+          aria-label={tabs.find((tab) => tab.id === activeTab)?.label}
+        >
+          {activeTab === "overview" && <ProjectDashboard analysis={state.analysis} project={state.project} />}
+          {activeTab === "arrangement" && (
+            <ArrangementAnalysis
+              analysis={state.analysis}
+              onSelectPattern={(patternId) => {
+                setSelectedPatternId(patternId);
+                setActiveTab("pattern");
+              }}
+            />
+          )}
+          {activeTab === "pattern" && (
+            <PatternExplorer
+              analysis={state.analysis}
+              selectedPatternId={selectedPatternId}
+              onSelectPattern={setSelectedPatternId}
+            />
+          )}
         </div>
       </div>
     </WorkspaceShell>
