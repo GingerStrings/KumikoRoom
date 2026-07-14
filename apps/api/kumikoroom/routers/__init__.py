@@ -1,1 +1,3 @@
-__all__ = ["room"]
+from . import room, studio
+
+__all__ = ["room", "studio"]
