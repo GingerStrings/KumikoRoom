@@ -434,6 +434,50 @@ def test_project_list_locally_degrades_a_corrupt_snapshot(
     assert projects["corrupt"]["warning_count"] == 0
 
 
+def test_project_list_fetches_latest_snapshots_in_one_batch(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    class CountingRepository(StudioRepository):
+        def __init__(self, db_path: Path) -> None:
+            super().__init__(db_path)
+            self.list_projects_calls = 0
+            self.list_latest_snapshots_calls = 0
+            self.get_latest_snapshot_calls = 0
+
+        def list_projects(self):
+            self.list_projects_calls += 1
+            return super().list_projects()
+
+        def list_latest_snapshots(self):
+            self.list_latest_snapshots_calls += 1
+            return super().list_latest_snapshots()
+
+        def get_latest_snapshot(self, project_id: str):
+            self.get_latest_snapshot_calls += 1
+            return super().get_latest_snapshot(project_id)
+
+    repository = CountingRepository(load_settings().studio_db_path)
+    for index in range(5):
+        path = tmp_path / f"project-{index}.flp"
+        project = repository.upsert_project(path, display_name=path.stem)
+        repository.save_snapshot(
+            project.id,
+            analysis_snapshot(path, source_hash=f"hash-{index}"),
+        )
+    app.dependency_overrides[studio.studio_repository] = lambda: repository
+    try:
+        response = client.get("/api/studio/projects")
+    finally:
+        app.dependency_overrides.pop(studio.studio_repository, None)
+
+    assert response.status_code == 200
+    assert len(response.json()) == 5
+    assert repository.list_projects_calls == 1
+    assert repository.list_latest_snapshots_calls == 1
+    assert repository.get_latest_snapshot_calls == 0
+
+
 def test_default_service_reuses_db_and_replaces_it_when_path_changes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

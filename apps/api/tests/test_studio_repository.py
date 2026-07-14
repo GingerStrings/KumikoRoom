@@ -212,6 +212,51 @@ def test_snapshot_round_trip_latest_hash_lookup_and_idempotency(tmp_path: Path) 
         repository.find_snapshot_by_hash(project.id, "missing-hash")
 
 
+def test_list_latest_snapshots_returns_only_each_projects_active_record(
+    tmp_path: Path,
+) -> None:
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    first_path = tmp_path / "first.flp"
+    second_path = tmp_path / "second.flp"
+    empty_path = tmp_path / "empty.flp"
+    first_project = repository.upsert_project(first_path, display_name="First")
+    second_project = repository.upsert_project(second_path, display_name="Second")
+    empty_project = repository.upsert_project(empty_path, display_name="Empty")
+    first_history = repository.save_snapshot(
+        first_project.id,
+        _snapshot(first_path, "sha256:first-history"),
+    )
+    first_latest = repository.save_snapshot(
+        first_project.id,
+        _snapshot(first_path, "sha256:first-latest"),
+    )
+    second_latest = repository.save_snapshot(
+        second_project.id,
+        _snapshot(second_path, "sha256:second-latest"),
+    )
+    with sqlite3.connect(repository.db_path) as connection:
+        connection.execute(
+            "UPDATE studio_snapshots SET payload_json = ? WHERE id = ?",
+            ("{malformed", second_latest.id),
+        )
+
+    records = repository.list_latest_snapshots()
+
+    assert records == {
+        first_project.id: first_latest,
+        second_project.id: StudioSnapshotRecord(
+            id=second_latest.id,
+            project_id=second_latest.project_id,
+            source_path=second_latest.source_path,
+            source_hash=second_latest.source_hash,
+            analyzed_at=second_latest.analyzed_at,
+            payload_json="{malformed",
+        ),
+    }
+    assert first_history not in records.values()
+    assert empty_project.id not in records
+
+
 def test_duplicate_snapshot_hash_does_not_change_project_or_payload(
     tmp_path: Path,
 ) -> None:

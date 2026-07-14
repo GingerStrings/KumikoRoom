@@ -222,7 +222,12 @@ def get_scan(scan_id: str, service: StudioServiceDependency) -> ScanJobOut:
 def list_projects(
     repository: StudioRepositoryDependency,
 ) -> list[ProjectSummary]:
-    return [_project_summary(repository, project) for project in repository.list_projects()]
+    projects = repository.list_projects()
+    latest_snapshots = repository.list_latest_snapshots()
+    return [
+        _project_out(project, latest_snapshots.get(project.id))
+        for project in projects
+    ]
 
 
 @router.get("/projects/{project_id}", response_model=ProjectDetail)
@@ -235,8 +240,8 @@ def get_project(
     except KeyError:
         raise HTTPException(status_code=404, detail="Studio project not found") from None
 
-    summary = _project_summary(repository, project)
     record = _latest_snapshot(repository, project)
+    summary = _project_out(project, record)
     return ProjectDetail(
         **summary.model_dump(),
         latest_snapshot_source_hash=(record.source_hash if record is not None else None),
@@ -264,11 +269,11 @@ def _scan_job_out(job: StudioScanJob) -> ScanJobOut:
     return ScanJobOut.model_validate(job)
 
 
-def _project_summary(
-    repository: StudioRepository,
+def _project_out(
     project: StudioProject,
+    record: StudioSnapshotRecord | None,
 ) -> ProjectSummary:
-    snapshot = _snapshot_value(_latest_snapshot(repository, project))
+    snapshot = _snapshot_value(record)
     diagnostics = snapshot.diagnostics if snapshot is not None else []
     return ProjectSummary.model_validate(project).model_copy(
         update={

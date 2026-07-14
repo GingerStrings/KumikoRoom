@@ -231,6 +231,26 @@ class StudioRepository:
             connection.close()
         return [self._project_from_row(row) for row in rows]
 
+    def list_latest_snapshots(self) -> dict[str, StudioSnapshotRecord]:
+        connection = self._connect()
+        try:
+            rows = connection.execute(
+                """
+                SELECT snapshots.id, snapshots.project_id,
+                       snapshots.source_path, snapshots.source_hash,
+                       snapshots.analyzed_at, snapshots.payload_json
+                FROM studio_projects AS projects
+                JOIN studio_snapshots AS snapshots
+                  ON snapshots.id = projects.latest_snapshot_id
+                """
+            ).fetchall()
+        finally:
+            connection.close()
+        return {
+            row["project_id"]: self._snapshot_from_row(row)
+            for row in rows
+        }
+
     def get_project(self, project_id: str) -> StudioProject:
         connection = self._connect()
         try:
