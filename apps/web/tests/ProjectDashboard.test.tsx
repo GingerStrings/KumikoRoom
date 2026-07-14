@@ -10,6 +10,7 @@ import type {
   StudioProjectDetail,
   StudioProjectSummary
 } from "../src/api/studioTypes";
+import { MusicalFingerprint } from "../src/components/studio/MusicalFingerprint";
 import { ProjectDashboard } from "../src/components/studio/ProjectDashboard";
 import { ProjectWorkspace } from "../src/components/studio/ProjectWorkspace";
 
@@ -148,6 +149,55 @@ describe("Project dashboard", () => {
     expect(screen.getByText("调性未推断")).toBeTruthy();
     expect(screen.getByText("没有足够的 MIDI 音符来估算音域与平均力度。")).toBeTruthy();
     expect(document.body.textContent).not.toMatch(/NaN|Infinity/);
+  });
+
+  it("keeps gradient definitions and references isolated across fingerprint instances", () => {
+    render(
+      <>
+        <MusicalFingerprint fingerprint={analysis.fingerprint} />
+        <MusicalFingerprint fingerprint={analysis.fingerprint} />
+      </>
+    );
+
+    const svgs = screen.getAllByRole("img");
+    const allGradientIds = svgs.flatMap((svg) =>
+      Array.from(svg.querySelectorAll("linearGradient"), (gradient) => gradient.id)
+    );
+    expect(new Set(allGradientIds).size).toBe(allGradientIds.length);
+
+    for (const svg of svgs) {
+      const ownIds = new Set(Array.from(svg.querySelectorAll("linearGradient"), (gradient) => gradient.id));
+      expect(ownIds.size).toBe(2);
+      for (const id of ownIds) expect(id).toMatch(/^[A-Za-z_][A-Za-z0-9_.-]*$/);
+
+      const referencedIds = new Set<string>();
+      for (const element of Array.from(svg.querySelectorAll("*"))) {
+        for (const attribute of ["fill", "stroke"] as const) {
+          const match = element.getAttribute(attribute)?.match(/^url\(#(.+)\)$/);
+          if (match) referencedIds.add(match[1]);
+        }
+      }
+      expect(referencedIds).toEqual(ownIds);
+    }
+  });
+
+  it("keeps every Task 9 small-text color at WCAG AA contrast", () => {
+    const css = fs.readFileSync(studioCssPath, "utf8").replace(/\r\n/g, "\n");
+    const background = "#fffefa";
+    const selectors = [
+      ".panelKicker",
+      ".heroMetadata dt",
+      ".metricLedger span",
+      ".keyInference span",
+      ".paperPanelHeader > span",
+      ".diagnosticList small"
+    ];
+
+    for (const selector of selectors) {
+      const color = cssRule(css, selector).match(/(?:^|[;\s])color:\s*(#[0-9a-f]{6})/i)?.[1];
+      expect(color, `Expected ${selector} to declare a six-digit text color`).toBeDefined();
+      expect(contrastRatio(color as string, background), `${selector} contrast`).toBeGreaterThanOrEqual(4.5);
+    }
   });
 });
 
@@ -340,4 +390,18 @@ function cssRule(css: string, selector: string): string {
   const match = css.match(new RegExp(`${escaped}\\s*\\{(?<body>[^}]*)\\}`));
   expect(match, `Expected ${selector} rule to exist`).not.toBeNull();
   return match?.groups?.body ?? "";
+}
+
+function contrastRatio(foreground: string, background: string): number {
+  const lighter = Math.max(relativeLuminance(foreground), relativeLuminance(background));
+  const darker = Math.min(relativeLuminance(foreground), relativeLuminance(background));
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function relativeLuminance(hex: string): number {
+  const channels = [1, 3, 5].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16) / 255);
+  const linear = channels.map((channel) => channel <= 0.04045
+    ? channel / 12.92
+    : ((channel + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
 }
