@@ -172,6 +172,54 @@ describe("Project workspace", () => {
     expect(screen.getByRole("status", { name: "部分解析" }).textContent).toContain("已展示可确认的数据");
   });
 
+  it.each([
+    ["discovered", "工程已发现", "等待开始解析"],
+    ["queued", "等待解析", "解析队列"],
+    ["parsing", "正在解析工程", "解析正在进行"],
+    ["failed", "Blue Hour 解析失败", "没有可浏览的成功快照"],
+    ["stale", "工程待更新", "等待生成新快照"]
+  ] as const)("shows the truthful %s state when the project has no snapshot", async (status, heading, copy) => {
+    vi.mocked(studioApi.getStudioProject).mockResolvedValueOnce({
+      ...project,
+      status,
+      latestSnapshotId: null,
+      latestSnapshotSourceHash: null,
+      latestSnapshotAnalyzedAt: null
+    });
+    render(<ProjectWorkspace projectId={`no-snapshot-${status}`} />);
+
+    expect(await screen.findByRole("heading", { name: heading })).toBeTruthy();
+    expect(screen.getByText(new RegExp(copy))).toBeTruthy();
+    expect(studioApi.getStudioAnalysis).not.toHaveBeenCalled();
+    expect(screen.queryByRole("heading", { name: "没有找到这个工程" })).toBeNull();
+  });
+
+  it.each([
+    ["queued", "等待解析", "新一轮解析正在等待；展示上次成功快照。"],
+    ["parsing", "解析中", "新一轮解析正在进行；展示上次成功快照。"],
+    ["failed", "解析失败", "当前解析失败；展示上次成功快照。"],
+    ["stale", "需要更新", "源工程已变化；展示上次成功快照，等待更新。"]
+  ] as const)("keeps old analysis browsable while the current project is %s", async (status, statusLabel, banner) => {
+    vi.mocked(studioApi.getStudioProject).mockResolvedValueOnce({ ...project, status });
+    vi.mocked(studioApi.getStudioAnalysis).mockResolvedValueOnce(analysis);
+    render(<ProjectWorkspace projectId={`old-snapshot-${status}`} />);
+
+    expect(await screen.findByRole("heading", { name: "Blue Hour" })).toBeTruthy();
+    expect(screen.getByText(statusLabel)).toBeTruthy();
+    expect(screen.getByRole("status", { name: "快照状态" }).textContent).toContain(banner);
+  });
+
+  it("keeps the displayed snapshot's partial warning alongside the current scan status", async () => {
+    vi.mocked(studioApi.getStudioProject).mockResolvedValueOnce({ ...project, status: "queued" });
+    vi.mocked(studioApi.getStudioAnalysis).mockResolvedValueOnce({ ...analysis, status: "partial" });
+    render(<ProjectWorkspace projectId="queued-with-partial-snapshot" />);
+
+    expect(await screen.findByRole("heading", { name: "Blue Hour" })).toBeTruthy();
+    expect(screen.getByText("等待解析")).toBeTruthy();
+    expect(screen.getByRole("status", { name: "快照状态" })).toBeTruthy();
+    expect(screen.getByRole("status", { name: "部分解析" })).toBeTruthy();
+  });
+
   it("renders a project-specific failed state", async () => {
     vi.mocked(studioApi.getStudioProject).mockResolvedValueOnce({ ...project, status: "failed" });
     vi.mocked(studioApi.getStudioAnalysis).mockRejectedValueOnce(new ApiError("analysis failed", 409, {}));
@@ -189,6 +237,33 @@ describe("Project workspace", () => {
     expect(await screen.findByRole("heading", { name: "没有找到这个工程" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "返回工程库" }).getAttribute("href")).toBe("/studio");
     expect(studioApi.getStudioAnalysis).not.toHaveBeenCalled();
+  });
+
+  it("does not turn a missing analysis snapshot into a project 404", async () => {
+    vi.mocked(studioApi.getStudioAnalysis).mockRejectedValueOnce(new ApiError("analysis snapshot missing", 404, {}));
+    render(<ProjectWorkspace projectId="ready-with-missing-snapshot" />);
+
+    expect(await screen.findByRole("heading", { name: "暂时无法读取工程" })).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain("analysis snapshot missing");
+    expect(screen.queryByRole("heading", { name: "没有找到这个工程" })).toBeNull();
+  });
+
+  it("falls back to the current queued state when its recorded snapshot is missing", async () => {
+    vi.mocked(studioApi.getStudioProject).mockResolvedValueOnce({ ...project, status: "queued" });
+    vi.mocked(studioApi.getStudioAnalysis).mockRejectedValueOnce(new ApiError("analysis snapshot missing", 404, {}));
+    render(<ProjectWorkspace projectId="queued-with-missing-snapshot" />);
+
+    expect(await screen.findByRole("heading", { name: "等待解析" })).toBeTruthy();
+    expect(screen.getByText(/解析队列/)).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "没有找到这个工程" })).toBeNull();
+  });
+
+  it("keeps a corrupt ready analysis response in the error boundary", async () => {
+    vi.mocked(studioApi.getStudioAnalysis).mockRejectedValueOnce(new ApiError("analysis snapshot corrupt", 409, {}));
+    render(<ProjectWorkspace projectId="ready-with-corrupt-snapshot" />);
+
+    expect(await screen.findByRole("heading", { name: "暂时无法读取工程" })).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain("analysis snapshot corrupt");
   });
 
   it("can retry a transient request error", async () => {

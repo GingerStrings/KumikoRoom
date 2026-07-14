@@ -372,6 +372,20 @@
   line-height: 1.5;
 }
 
+.snapshotNotice {
+  padding: 9px 22px;
+  border-bottom: 1px solid #cad9d6;
+  background: #eef5f2;
+  color: #49686d;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.workspaceIdentity > small[data-status="failed"] { border-color: #d9b9ae; color: #8d5549; }
+.workspaceIdentity > small[data-status="queued"],
+.workspaceIdentity > small[data-status="parsing"] { border-color: #b9d1d7; color: #4c7480; }
+.workspaceIdentity > small[data-status="stale"] { border-color: #d8c4aa; color: #846b4f; }
+
 .workspaceScroll {
   min-height: 0;
   overflow-y: auto;

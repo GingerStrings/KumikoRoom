@@ -13,7 +13,8 @@ interface ProjectWorkspaceProps {
 
 type WorkspaceState =
   | { phase: "loading" }
-  | { phase: "ready"; project: StudioProjectDetail; analysis: StudioAnalysis }
+  | { phase: "ready"; project: StudioProjectDetail; analysis: StudioAnalysis; snapshotNotice: string | null }
+  | { phase: "pending"; project: StudioProjectDetail; title: string; message: string; loading: boolean }
   | { phase: "failed"; project: StudioProjectDetail; message: string }
   | { phase: "not-found" }
   | { phase: "error"; message: string };
@@ -58,12 +59,20 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
     );
   }
 
+  if (state.phase === "pending") {
+    return (
+      <WorkspaceShell projectName={state.project.displayName} status={state.project.status}>
+        <StatePanel role="status" title={state.title} body={state.message} loading={state.loading} />
+      </WorkspaceShell>
+    );
+  }
+
   if (state.phase === "failed") {
-    return <WorkspaceShell projectName={state.project.displayName}><StatePanel role="alert" title={`${state.project.displayName} 解析失败`} body={state.message} /></WorkspaceShell>;
+    return <WorkspaceShell projectName={state.project.displayName} status={state.project.status}><StatePanel role="alert" title={`${state.project.displayName} 解析失败`} body={state.message} /></WorkspaceShell>;
   }
 
   return (
-    <WorkspaceShell projectName={state.project.displayName} status={state.analysis.status}>
+    <WorkspaceShell projectName={state.project.displayName} status={state.project.status}>
       <nav className={studioCss.workspaceTabs} role="tablist" aria-label="工程分析视图">
         {tabs.map((tab) => (
           <button
@@ -78,6 +87,11 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
           </button>
         ))}
       </nav>
+      {state.snapshotNotice && (
+        <aside className={studioCss.snapshotNotice} role="status" aria-label="快照状态">
+          {state.snapshotNotice}
+        </aside>
+      )}
       {state.analysis.status === "partial" && (
         <aside className={studioCss.partialNotice} role="status" aria-label="部分解析">
           这个快照只完成了部分解析，已展示可确认的数据；详情见解析说明。
@@ -99,15 +113,93 @@ async function loadWorkspace(projectId: string, signal: AbortSignal): Promise<Wo
     return { phase: "error", message: errorMessage(cause) };
   }
 
+  if (project.latestSnapshotId === null) {
+    return stateWithoutSnapshot(project);
+  }
+
   try {
     const analysis = await getStudioAnalysis(projectId, { signal });
-    return { phase: "ready", project, analysis };
+    return {
+      phase: "ready",
+      project,
+      analysis,
+      snapshotNotice: snapshotNoticeFor(project.status)
+    };
   } catch (cause) {
-    if (cause instanceof ApiError && cause.status === 404) return { phase: "not-found" };
-    if (project.status === "failed" || (cause instanceof ApiError && cause.status === 409)) {
+    if (
+      cause instanceof ApiError
+      && cause.status === 404
+      && project.status !== "ready"
+      && project.status !== "partial"
+    ) {
+      return stateWithoutSnapshot(project);
+    }
+    if (project.status === "failed") {
       return { phase: "failed", project, message: errorMessage(cause) };
     }
     return { phase: "error", message: errorMessage(cause) };
+  }
+}
+
+function stateWithoutSnapshot(project: StudioProjectDetail): WorkspaceState {
+  switch (project.status) {
+    case "discovered":
+      return {
+        phase: "pending",
+        project,
+        title: "工程已发现",
+        message: "这个工程正在等待开始解析，完成后会在这里生成第一份分析快照。",
+        loading: false
+      };
+    case "queued":
+      return {
+        phase: "pending",
+        project,
+        title: "等待解析",
+        message: "工程已进入解析队列，当前还没有可浏览的分析快照。",
+        loading: true
+      };
+    case "parsing":
+      return {
+        phase: "pending",
+        project,
+        title: "正在解析工程",
+        message: "解析正在进行，第一份分析快照完成后会自动出现在这里。",
+        loading: true
+      };
+    case "failed":
+      return {
+        phase: "failed",
+        project,
+        message: "当前解析失败，且没有可浏览的成功快照。请在重新扫描后再试。"
+      };
+    case "stale":
+      return {
+        phase: "pending",
+        project,
+        title: "工程待更新",
+        message: "源工程已经变化，正在等待生成新快照。",
+        loading: false
+      };
+    case "ready":
+    case "partial":
+      return {
+        phase: "error",
+        message: "工程状态与分析快照不一致：当前没有可用的分析快照。"
+      };
+  }
+}
+
+function snapshotNoticeFor(status: StudioProjectDetail["status"]): string | null {
+  switch (status) {
+    case "queued": return "新一轮解析正在等待；展示上次成功快照。";
+    case "parsing": return "新一轮解析正在进行；展示上次成功快照。";
+    case "failed": return "当前解析失败；展示上次成功快照。";
+    case "stale": return "源工程已变化；展示上次成功快照，等待更新。";
+    case "discovered": return "工程已重新发现；展示最近一次成功快照。";
+    case "ready":
+    case "partial":
+      return null;
   }
 }
 
