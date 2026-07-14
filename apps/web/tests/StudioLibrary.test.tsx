@@ -158,7 +158,14 @@ describe("StudioLibrary", () => {
   });
 
   it("offers every project analysis status as a filter", () => {
-    render(<StudioLibrary initialProjects={[blueHour]} initialRoots={[root]} />);
+    render(
+      <StudioLibrary
+        initialProjects={[blueHour]}
+        initialRoots={[root]}
+        initialAnalyses={{ p1: analysis("FLEX") }}
+        initialDetails={{ p1: detail(blueHour) }}
+      />
+    );
 
     const values = within(screen.getByLabelText("解析状态")).getAllByRole("option").map(
       (option) => (option as HTMLOptionElement).value
@@ -176,11 +183,15 @@ describe("StudioLibrary", () => {
   });
 
   it("keeps unavailable dependency analysis truthful and filterable", () => {
+    vi.mocked(studioApi.getStudioAnalysis).mockImplementation((id) =>
+      id === "p1" ? new Promise(() => {}) : Promise.resolve(analysis("Serum"))
+    );
     render(
       <StudioLibrary
         initialProjects={[blueHour, amberLine]}
         initialRoots={[root]}
         initialAnalyses={{ p2: analysis("Serum") }}
+        initialDetails={{ p1: detail(blueHour), p2: detail(amberLine) }}
       />
     );
 
@@ -198,7 +209,14 @@ describe("StudioLibrary", () => {
   });
 
   it("sorts projects by recent edit or name", () => {
-    render(<StudioLibrary initialProjects={[blueHour, amberLine]} initialRoots={[root]} />);
+    render(
+      <StudioLibrary
+        initialProjects={[blueHour, amberLine]}
+        initialRoots={[root]}
+        initialAnalyses={{ p1: analysis("FLEX"), p2: analysis("Serum") }}
+        initialDetails={{ p1: detail(blueHour), p2: detail(amberLine) }}
+      />
+    );
     const projectList = screen.getByLabelText("工程列表");
     expect(within(projectList).getAllByRole("link")[0].textContent).toContain("Blue Hour");
 
@@ -267,6 +285,120 @@ describe("StudioLibrary", () => {
 
     await act(async () => { vi.advanceTimersByTime(5000); });
     expect(studioApi.getStudioScan).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a transient scan polling error and still reaches completion", async () => {
+    vi.useFakeTimers();
+    const queued: StudioScanJob = {
+      id: "scan-retry",
+      status: "queued",
+      discoveredCount: 0,
+      parsedCount: 0,
+      cachedCount: 0,
+      failedCount: 0,
+      error: null,
+      createdAt: "2026-07-14T08:00:00Z",
+      updatedAt: "2026-07-14T08:00:00Z"
+    };
+    vi.mocked(studioApi.startStudioScan).mockResolvedValueOnce(queued);
+    vi.mocked(studioApi.getStudioScan)
+      .mockRejectedValueOnce(new Error("temporary transport error"))
+      .mockResolvedValueOnce({ ...queued, status: "completed", discoveredCount: 1, parsedCount: 1 });
+    render(<StudioLibrary initialProjects={[blueHour]} initialRoots={[root]} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "重新扫描" }));
+    await act(async () => {});
+    await act(async () => { vi.advanceTimersByTime(1000); });
+    expect(studioApi.getStudioScan).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("alert").textContent).toContain("temporary transport error");
+
+    await act(async () => { vi.advanceTimersByTime(2000); });
+    expect(studioApi.getStudioScan).toHaveBeenCalledTimes(2);
+    await act(async () => {});
+    expect(screen.getByText("扫描完成")).toBeTruthy();
+    expect(studioApi.getStudioProjects).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores an old polling response after a newer scan starts", async () => {
+    vi.useFakeTimers();
+    const queued = (id: string): StudioScanJob => ({
+      id,
+      status: "queued",
+      discoveredCount: 0,
+      parsedCount: 0,
+      cachedCount: 0,
+      failedCount: 0,
+      error: null,
+      createdAt: "2026-07-14T08:00:00Z",
+      updatedAt: "2026-07-14T08:00:00Z"
+    });
+    let resolveOld: ((job: StudioScanJob) => void) | undefined;
+    vi.mocked(studioApi.startStudioScan)
+      .mockResolvedValueOnce(queued("scan-old"))
+      .mockResolvedValueOnce(queued("scan-new"));
+    vi.mocked(studioApi.getStudioScan).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveOld = resolve; })
+    );
+    render(
+      <StudioLibrary
+        initialProjects={[blueHour]}
+        initialRoots={[root]}
+        initialAnalyses={{ p1: analysis("FLEX") }}
+        initialDetails={{ p1: detail(blueHour) }}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "重新扫描" }));
+    await act(async () => {});
+    await act(async () => { vi.advanceTimersByTime(1000); });
+    expect(studioApi.getStudioScan).toHaveBeenCalledWith("scan-old");
+
+    fireEvent.change(screen.getByLabelText("工程目录"), { target: { value: "E:/Archive" } });
+    fireEvent.submit(screen.getByRole("form", { name: "添加工程目录" }));
+    await act(async () => {});
+    expect(studioApi.startStudioScan).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      resolveOld?.({ ...queued("scan-old"), status: "completed", discoveredCount: 1, parsedCount: 1 });
+    });
+    expect(screen.queryByText("扫描完成")).toBeNull();
+    expect(screen.getByText("等待扫描")).toBeTruthy();
+    expect(studioApi.getStudioProjects).not.toHaveBeenCalled();
+  });
+
+  it("loads project metadata progressively with bounded request concurrency", async () => {
+    const projects = Array.from({ length: 5 }, (_, index): StudioProjectSummary => ({
+      ...blueHour,
+      id: `bounded-${index + 1}`,
+      displayName: `Bounded ${index + 1}`,
+      latestSnapshotId: `snapshot-${index + 1}`
+    }));
+    let active = 0;
+    let maxActive = 0;
+    const pending = new Map<string, { resolve: (value: unknown) => void; reject: (reason: unknown) => void }>();
+    const hold = (key: string) => new Promise<unknown>((resolve, reject) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      pending.set(key, {
+        resolve: (value) => { active -= 1; resolve(value); },
+        reject: (reason) => { active -= 1; reject(reason); }
+      });
+    });
+    vi.mocked(studioApi.getStudioAnalysis).mockImplementation((id) => hold(`analysis:${id}`) as Promise<StudioAnalysis>);
+    vi.mocked(studioApi.getStudioProject).mockImplementation((id) => hold(`detail:${id}`) as Promise<StudioProjectDetail>);
+
+    const view = render(<StudioLibrary initialProjects={projects} initialRoots={[root]} />);
+
+    expect(screen.getAllByRole("link", { name: /Bounded/ })).toHaveLength(5);
+    await waitFor(() => expect(active).toBe(4));
+    expect(maxActive).toBe(4);
+    pending.get("detail:bounded-1")?.reject(new Error("detail unavailable"));
+    pending.get("analysis:bounded-1")?.resolve(analysis("FLEX"));
+    await waitFor(() => expect(screen.getByRole("link", { name: /Bounded 1/ }).textContent).toContain("依赖完整"));
+    expect(screen.getByRole("link", { name: /Bounded 1/ }).textContent).toContain("上次分析 不可用");
+    expect(maxActive).toBe(4);
+    expect(active).toBe(4);
+    view.unmount();
   });
 
   it("renders empty and request error states", async () => {

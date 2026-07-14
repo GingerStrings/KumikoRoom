@@ -14,7 +14,7 @@ const statusLabels: Record<StudioProjectSummary["status"], string> = {
 interface ProjectCardProps {
   project: StudioProjectSummary;
   analysis?: StudioAnalysis;
-  detail?: StudioProjectDetail;
+  detail?: StudioProjectDetail | null;
 }
 export function ProjectCard({ project, analysis, detail }: ProjectCardProps) {
   const missingDependencies = analysis?.dependencies.filter((item) => !item.exists).length ?? 0;
@@ -55,7 +55,7 @@ export function ProjectCard({ project, analysis, detail }: ProjectCardProps) {
 
       <footer className={studioCss.projectCardFooter}>
         <span>最近编辑 {formatDate(project.modifiedAt)}</span>
-        <span>上次分析 {formatDate(detail?.latestSnapshotAnalyzedAt ?? project.updatedAt)}</span>
+        <span>上次分析 {detail === undefined ? "待载入" : detail === null ? "不可用" : formatDate(detail.latestSnapshotAnalyzedAt)}</span>
       </footer>
     </a>
   );

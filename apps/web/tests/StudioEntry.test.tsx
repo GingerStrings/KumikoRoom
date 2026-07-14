@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as studioApi from "../src/api/studioClient";
+import type { StudioProjectSummary } from "../src/api/studioTypes";
 import { StudioEntry } from "../src/components/StudioEntry";
 
 vi.mock("../src/api/studioClient", () => ({
@@ -39,5 +40,34 @@ describe("StudioEntry", () => {
 
     expect((await screen.findByRole("alert")).textContent).toContain("library offline");
     expect(screen.getByRole("button", { name: "重试" })).toBeTruthy();
+  });
+
+  it("renders project summaries without waiting for project metadata", async () => {
+    const project: StudioProjectSummary = {
+      id: "p-progressive",
+      canonicalPath: "D:/Music/Progressive.flp",
+      displayName: "Progressive",
+      status: "ready",
+      modifiedAt: "2026-07-14T08:00:00Z",
+      latestSnapshotId: "snapshot-progressive",
+      createdAt: "2026-07-14T08:00:00Z",
+      updatedAt: "2026-07-14T08:00:00Z",
+      tempo: 120,
+      patternCount: 8,
+      warningCount: 0,
+      errorCount: 0,
+      diagnosticCount: 0,
+      inferredKey: "D minor"
+    };
+    vi.mocked(studioApi.getStudioProjects).mockResolvedValueOnce([project]);
+    vi.mocked(studioApi.getStudioAnalysis).mockImplementationOnce(() => new Promise(() => {}));
+    vi.mocked(studioApi.getStudioProject).mockImplementationOnce(() => new Promise(() => {}));
+
+    render(<StudioEntry />);
+
+    expect(await screen.findByRole("link", { name: /Progressive/ })).toBeTruthy();
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(studioApi.getStudioAnalysis).toHaveBeenCalledWith("p-progressive");
+    expect(studioApi.getStudioProject).toHaveBeenCalledWith("p-progressive");
   });
 });

@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { getStudioAnalysis, getStudioProject, getStudioProjects, getStudioRoots } from "../api/studioClient";
-import type { StudioAnalysis, StudioProjectDetail, StudioProjectSummary, StudioRoot } from "../api/studioTypes";
+import { getStudioProjects, getStudioRoots } from "../api/studioClient";
+import type { StudioProjectSummary, StudioRoot } from "../api/studioTypes";
 import { StudioLibrary } from "./studio/StudioLibrary";
 import studioCss from "./studio/Studio.module.css";
 
@@ -13,8 +13,6 @@ type LoadState =
       phase: "ready";
       roots: StudioRoot[];
       projects: StudioProjectSummary[];
-      analyses: Record<string, StudioAnalysis>;
-      details: Record<string, StudioProjectDetail>;
     };
 
 const studioTabs = ["工程", "素材", "笔记"];
@@ -26,17 +24,7 @@ export function StudioEntry() {
     setState({ phase: "loading" });
     try {
       const [roots, projects] = await Promise.all([getStudioRoots(), getStudioProjects()]);
-      const records = await Promise.all(projects.filter((project) => project.latestSnapshotId).map(async (project) => {
-        const [analysis, detail] = await Promise.allSettled([getStudioAnalysis(project.id), getStudioProject(project.id)]);
-        return { id: project.id, analysis, detail };
-      }));
-      const analyses: Record<string, StudioAnalysis> = {};
-      const details: Record<string, StudioProjectDetail> = {};
-      records.forEach((record) => {
-        if (record.analysis.status === "fulfilled") analyses[record.id] = record.analysis.value;
-        if (record.detail.status === "fulfilled") details[record.id] = record.detail.value;
-      });
-      setState({ phase: "ready", roots, projects, analyses, details });
+      setState({ phase: "ready", roots, projects });
     } catch (cause) {
       setState({ phase: "error", message: cause instanceof Error && cause.message ? cause.message : "无法读取工程库" });
     }
@@ -66,7 +54,7 @@ export function StudioEntry() {
           ) : state.phase === "error" ? (
             <section className={studioCss.entryState} role="alert"><p>{state.message}</p><button type="button" onClick={() => void load()}>重试</button></section>
           ) : (
-            <StudioLibrary initialProjects={state.projects} initialRoots={state.roots} initialAnalyses={state.analyses} initialDetails={state.details} />
+            <StudioLibrary initialProjects={state.projects} initialRoots={state.roots} />
           )}
         </section>
       </section>

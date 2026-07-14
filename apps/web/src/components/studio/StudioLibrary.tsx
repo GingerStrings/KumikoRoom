@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   addStudioRoot,
   getStudioAnalysis,
@@ -21,16 +21,14 @@ interface StudioLibraryProps {
   initialAnalyses?: Record<string, StudioAnalysis>;
   initialDetails?: Record<string, StudioProjectDetail>;
 }
-type Metadata = {
-  analyses: Record<string, StudioAnalysis>;
-  details: Record<string, StudioProjectDetail>;
-};
+const METADATA_REQUEST_CONCURRENCY = 4;
+const MAX_SCAN_POLL_RETRIES = 3;
 
 export function StudioLibrary({ initialProjects, initialRoots, initialAnalyses = {}, initialDetails = {} }: StudioLibraryProps) {
   const [projects, setProjects] = useState(initialProjects);
   const [roots, setRoots] = useState(initialRoots);
   const [analyses, setAnalyses] = useState(initialAnalyses);
-  const [details, setDetails] = useState(initialDetails);
+  const [details, setDetails] = useState<Record<string, StudioProjectDetail | null>>(initialDetails);
   const [scanJob, setScanJob] = useState<StudioScanJob | null>(null);
   const [path, setPath] = useState("");
   const [query, setQuery] = useState("");
@@ -42,21 +40,101 @@ export function StudioLibrary({ initialProjects, initialRoots, initialAnalyses =
   const [sort, setSort] = useState("recent");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const scanGeneration = useRef(0);
+  const metadataGeneration = useRef(0);
+  const firstMetadataPass = useRef(true);
 
   useEffect(() => {
     if (!scanJob || (scanJob.status !== "queued" && scanJob.status !== "running")) return;
-    const timer = window.setTimeout(async () => {
+    const jobId = scanJob.id;
+    const generation = scanGeneration.current;
+    let cancelled = false;
+    let timer: number | undefined;
+    let retryCount = 0;
+
+    const schedule = (delay: number) => {
+      timer = window.setTimeout(poll, delay);
+    };
+    const poll = async () => {
       try {
-        const next = await getStudioScan(scanJob.id);
-        setScanJob(next);
-        if (next.status === "completed") await refreshProjects();
+        const next = await getStudioScan(jobId);
+        if (cancelled || scanGeneration.current !== generation) return;
+        retryCount = 0;
+        setError(null);
+        setScanJob((current) => current?.id === jobId ? next : current);
+        if (next.status === "completed") await refreshProjects(generation);
         if (next.status === "failed" && next.error) setError(next.error);
       } catch (cause) {
-        setError(errorMessage(cause));
+        if (cancelled || scanGeneration.current !== generation) return;
+        const message = errorMessage(cause);
+        setError(message);
+        retryCount += 1;
+        if (retryCount <= MAX_SCAN_POLL_RETRIES) {
+          schedule(1000 * (2 ** retryCount));
+        } else {
+          setScanJob((current) => current?.id === jobId
+            ? { ...current, status: "failed", error: `无法继续获取扫描状态：${message}` }
+            : current);
+        }
       }
-    }, 1000);
-    return () => window.clearTimeout(timer);
+    };
+
+    schedule(1000);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, [scanJob]);
+
+  useEffect(() => {
+    const generation = ++metadataGeneration.current;
+    let cancelled = false;
+    const isFirstPass = firstMetadataPass.current;
+    firstMetadataPass.current = false;
+    const seededAnalyses = isFirstPass ? initialAnalyses : {};
+    const seededDetails = isFirstPass ? initialDetails : {};
+
+    if (!isFirstPass) {
+      setAnalyses({});
+      setDetails({});
+    }
+
+    const tasks: Array<() => Promise<void>> = [];
+    for (const project of projects) {
+      if (!project.latestSnapshotId) continue;
+      if (!seededAnalyses[project.id]) {
+        tasks.push(async () => {
+          try {
+            const value = await getStudioAnalysis(project.id);
+            if (!cancelled && metadataGeneration.current === generation) {
+              setAnalyses((current) => ({ ...current, [project.id]: value }));
+            }
+          } catch {
+            // Metadata failures stay local; the summary remains available.
+          }
+        });
+      }
+      if (!seededDetails[project.id]) {
+        tasks.push(async () => {
+          try {
+            const value = await getStudioProject(project.id);
+            if (!cancelled && metadataGeneration.current === generation) {
+              setDetails((current) => ({ ...current, [project.id]: value }));
+            }
+          } catch {
+            if (!cancelled && metadataGeneration.current === generation) {
+              setDetails((current) => ({ ...current, [project.id]: null }));
+            }
+          }
+        });
+      }
+    }
+    void runBounded(tasks, METADATA_REQUEST_CONCURRENCY);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [projects]);
 
   const keys = useMemo(() => uniqueSorted(projects.map((project) => project.inferredKey)), [projects]);
   const plugins = useMemo(() => uniqueSorted(Object.values(analyses).flatMap((analysis) => analysis.plugins.map((item) => item.name))), [analyses]);
@@ -83,19 +161,22 @@ export function StudioLibrary({ initialProjects, initialRoots, initialAnalyses =
         : dateValue(right.modifiedAt) - dateValue(left.modifiedAt));
   }, [analyses, bpm, dependency, key, plugin, projects, query, sort, status]);
 
-  async function refreshProjects() {
+  async function refreshProjects(expectedScanGeneration: number) {
     const nextProjects = await getStudioProjects();
+    if (scanGeneration.current !== expectedScanGeneration) return;
+    metadataGeneration.current += 1;
+    setAnalyses({});
+    setDetails({});
     setProjects(nextProjects);
-    const metadata = await loadMetadata(nextProjects);
-    setAnalyses(metadata.analyses);
-    setDetails(metadata.details);
   }
 
   async function beginScan() {
     setBusy(true);
     setError(null);
     try {
-      setScanJob(await startStudioScan());
+      const generation = ++scanGeneration.current;
+      const job = await startStudioScan();
+      if (scanGeneration.current === generation) setScanJob(job);
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -113,7 +194,9 @@ export function StudioLibrary({ initialProjects, initialRoots, initialAnalyses =
       const added = await addStudioRoot(normalizedPath);
       setRoots((current) => current.some((root) => root.id === added.id) ? current : [...current, added]);
       setPath("");
-      setScanJob(await startStudioScan());
+      const generation = ++scanGeneration.current;
+      const job = await startStudioScan();
+      if (scanGeneration.current === generation) setScanJob(job);
     } catch (cause) {
       setError(errorMessage(cause));
     } finally {
@@ -201,18 +284,17 @@ function Filter({ label, value, onChange, options }: { label: string; value: str
   return <label>{label}<select aria-label={label} value={value} onChange={(event) => onChange(event.target.value)}>{options.map(([optionValue, name]) => <option key={optionValue} value={optionValue}>{name}</option>)}</select></label>;
 }
 
-async function loadMetadata(projects: StudioProjectSummary[]): Promise<Metadata> {
-  const records = await Promise.all(projects.filter((project) => project.latestSnapshotId).map(async (project) => {
-    const [analysis, detail] = await Promise.allSettled([getStudioAnalysis(project.id), getStudioProject(project.id)]);
-    return { id: project.id, analysis, detail };
-  }));
-  const analyses: Record<string, StudioAnalysis> = {};
-  const details: Record<string, StudioProjectDetail> = {};
-  for (const record of records) {
-    if (record.analysis.status === "fulfilled") analyses[record.id] = record.analysis.value;
-    if (record.detail.status === "fulfilled") details[record.id] = record.detail.value;
-  }
-  return { analyses, details };
+async function runBounded(tasks: Array<() => Promise<void>>, limit: number): Promise<void> {
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < tasks.length) {
+      const task = tasks[nextIndex];
+      nextIndex += 1;
+      await task();
+    }
+  };
+  const workers = Array.from({ length: Math.min(limit, tasks.length) }, () => worker());
+  await Promise.all(workers);
 }
 
 function matchesBpm(tempo: number | null, range: string): boolean {
