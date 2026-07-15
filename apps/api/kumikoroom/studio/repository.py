@@ -9,7 +9,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from .models import AnalysisStatus, FlpAnalysisSnapshot
+from .models import (
+    AnalysisStatus,
+    DependencyOpenIdentity,
+    DependencyReference,
+    FlpAnalysisSnapshot,
+)
 
 
 ScanJobStatus = Literal["queued", "running", "completed", "failed"]
@@ -30,6 +35,7 @@ _SCAN_JOB_COUNT_FIELDS: frozenset[str] = frozenset(
     {"discovered_count", "parsed_count", "cached_count", "failed_count"}
 )
 _SQLITE_MAX_INT = 2**63 - 1
+_DEPENDENCY_IDENTITY_CAPTURE_LIMIT = 512
 
 
 @dataclass(frozen=True)
@@ -824,8 +830,6 @@ class StudioRepository:
             _normalize_utc_iso(analyzed_at) if analyzed_at is not None else _utc_now()
         )
         normalized_snapshot = replace(snapshot, source_path=source_path)
-        payload_json = normalized_snapshot.to_json()
-        summary_json = _snapshot_summary_json(normalized_snapshot)
         updated_at = _utc_now()
         connection = self._connect()
         try:
@@ -842,6 +846,16 @@ class StudioRepository:
                     raise ValueError(
                         "snapshot source_path must match the project canonical_path"
                     )
+
+                normalized_snapshot = replace(
+                    normalized_snapshot,
+                    dependencies=_capture_dependency_open_identities(
+                        normalized_snapshot.dependencies,
+                        project_folder=Path(source_path).parent,
+                    ),
+                )
+                payload_json = normalized_snapshot.to_json()
+                summary_json = _snapshot_summary_json(normalized_snapshot)
 
                 cursor = connection.execute(
                     """
@@ -1404,6 +1418,65 @@ def _canonical_path(path: Path) -> str:
 
 def _path_identity(path: Path) -> str:
     return os.path.normcase(_canonical_path(path))
+
+
+def _capture_dependency_open_identities(
+    dependencies: list[DependencyReference],
+    *,
+    project_folder: Path,
+) -> list[DependencyReference]:
+    captured: list[DependencyReference] = []
+    remaining_budget = _DEPENDENCY_IDENTITY_CAPTURE_LIMIT
+    for dependency in dependencies:
+        identity: DependencyOpenIdentity | None = None
+        if (
+            dependency.exists
+            and remaining_budget > 0
+            and not _is_network_dependency_path(dependency.path)
+        ):
+            remaining_budget -= 1
+            identity = _capture_dependency_open_identity(
+                dependency.path,
+                project_folder=project_folder,
+            )
+        captured.append(replace(dependency, open_identity=identity))
+    return captured
+
+
+def _capture_dependency_open_identity(
+    recorded_path: str,
+    *,
+    project_folder: Path,
+) -> DependencyOpenIdentity | None:
+    raw_path = Path(recorded_path).expanduser()
+    candidate = raw_path if raw_path.is_absolute() else project_folder / raw_path
+    try:
+        if _has_link_or_reparse_component(candidate):
+            return None
+        resolved = candidate.resolve(strict=True)
+        first = resolved.lstat()
+        if (
+            not stat.S_ISREG(first.st_mode)
+            or _is_reparse_point(first)
+            or not all(_file_identity(first))
+        ):
+            return None
+        current = resolved.lstat()
+        if not _same_file_version(first, current):
+            return None
+    except OSError:
+        return None
+    return DependencyOpenIdentity(
+        canonical_path_identity=os.path.normcase(str(resolved)),
+        file_dev=current.st_dev,
+        file_ino=current.st_ino,
+        size=current.st_size,
+        modified_ns=current.st_mtime_ns,
+    )
+
+
+def _is_network_dependency_path(recorded_path: str) -> bool:
+    return recorded_path.replace("\\", "/").startswith("//")
 
 
 def _capture_open_identity(

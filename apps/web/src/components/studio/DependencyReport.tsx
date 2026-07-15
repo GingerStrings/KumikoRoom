@@ -4,6 +4,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { openStudioAsset } from "../../api/studioClient";
 import type { StudioAnalysis, StudioAnalysisDiagnostic, StudioDependencyReference } from "../../api/studioTypes";
 import type { PluginMixerTarget } from "./PluginMixerView";
+import { classifyDependencies } from "./dependencyClassification";
 import studioCss from "./Studio.module.css";
 
 export type DiagnosticNavigation =
@@ -24,25 +25,23 @@ export function DependencyReport({ analysis, projectId, onNavigate }: Dependency
   const [openingEntityId, setOpeningEntityId] = useState<string | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
   const diagnosticReportHeadingId = `${instanceId}-diagnostic-report-heading`;
-  const unresolvedTargets = new Set(analysis.diagnostics
-    .filter((diagnostic) => (
-      diagnostic.code === "unresolved_dependency"
-      && normalizeTargetType(diagnostic.targetType) === "dependency"
-      && typeof diagnostic.targetId === "string"
-      && diagnostic.targetId.length > 0
-    ))
-    .map((diagnostic) => diagnostic.targetId as string));
-  const missing = analysis.dependencies.filter((dependency) => dependency.exists === false && !unresolvedTargets.has(dependency.path));
-  const available = analysis.dependencies.filter((dependency) => dependency.exists === true);
-  const unknown = analysis.dependencies.filter((dependency) => dependency.exists === false && unresolvedTargets.has(dependency.path));
+  const { missing, available, unknown } = classifyDependencies(analysis);
   const severities = (["error", "warning", "notice"] as const).map((severity) => ({
     severity,
     diagnostics: analysis.diagnostics.filter((diagnostic) => diagnostic.severity === severity)
   }));
 
-  useEffect(() => () => {
+  useEffect(() => {
     requestSequence.current += 1;
     controller.current?.abort();
+    controller.current = null;
+    setOpeningEntityId(null);
+    setOpenError(null);
+    return () => {
+      requestSequence.current += 1;
+      controller.current?.abort();
+      controller.current = null;
+    };
   }, [projectId]);
 
   async function openDependency(entityId: string) {

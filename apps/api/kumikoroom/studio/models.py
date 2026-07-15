@@ -97,10 +97,20 @@ class ProjectAsset:
 
 
 @dataclass(frozen=True)
+class DependencyOpenIdentity:
+    canonical_path_identity: str
+    file_dev: int
+    file_ino: int
+    size: int
+    modified_ns: int
+
+
+@dataclass(frozen=True)
 class DependencyReference:
     path: str
     kind: str
     exists: bool
+    open_identity: DependencyOpenIdentity | None = None
 
 
 @dataclass(frozen=True)

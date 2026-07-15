@@ -10,6 +10,7 @@ import pytest
 
 from kumikoroom.studio.models import (
     AnalysisStatus,
+    DependencyReference,
     FlpAnalysisSnapshot,
     ProjectInfo,
 )
@@ -38,6 +39,43 @@ def _assert_utc_iso(value: str) -> None:
     parsed = datetime.fromisoformat(value)
     assert parsed.utcoffset() is not None
     assert parsed.utcoffset().total_seconds() == 0
+
+
+def test_save_snapshot_persists_bounded_dependency_open_identity(
+    tmp_path: Path,
+) -> None:
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    project_path = tmp_path / "song.flp"
+    dependency_path = tmp_path / "kick.wav"
+    project_path.write_bytes(b"FLhd")
+    dependency_path.write_bytes(b"RIFF")
+    project = repository.upsert_project(project_path, display_name="song")
+    snapshot = _snapshot(project_path)
+
+    record = repository.save_snapshot(
+        project.id,
+        FlpAnalysisSnapshot(
+            **{
+                **snapshot.__dict__,
+                "dependencies": [
+                    DependencyReference(str(dependency_path), "audio", True),
+                    DependencyReference(
+                        "//offline.invalid/share/network.wav", "audio", True
+                    ),
+                ],
+            }
+        ),
+    )
+
+    available, network = record.snapshot.dependencies
+    identity = getattr(available, "open_identity", None)
+    assert identity is not None
+    assert identity.canonical_path_identity == os.path.normcase(
+        str(dependency_path.resolve())
+    )
+    assert identity.size == 4
+    assert network.exists is True
+    assert getattr(network, "open_identity", None) is None
 
 
 def test_repository_creates_parent_directory_and_persists_roots(tmp_path: Path) -> None:

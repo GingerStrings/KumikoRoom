@@ -1,6 +1,7 @@
 "use client";
 
 import type { StudioAnalysis, StudioProjectDetail } from "../../api/studioTypes";
+import { classifyDependencies } from "./dependencyClassification";
 import studioCss from "./Studio.module.css";
 
 interface ProjectReportProps {
@@ -10,13 +11,11 @@ interface ProjectReportProps {
 
 export function ProjectReport({ project, analysis }: ProjectReportProps) {
   const title = analysis.project.title?.trim() || project.displayName;
-  const validClips = analysis.playlistClips.filter(validClip);
-  const arrangementEnd = validClips.reduce((end, clip) => Math.max(end, clip.start + clip.length), 0);
-  const displayedClips = validClips.slice(0, 120);
+  const arrangement = buildReportArrangement(analysis.playlistClips);
   const notes = analysis.patterns.reduce((count, pattern) => (
     count + pattern.notes.filter((note) => Number.isFinite(note.key) && Number.isFinite(note.position) && Number.isFinite(note.length) && note.length > 0).length
   ), 0);
-  const missingDependencies = analysis.dependencies.filter((item) => item.exists === false).length;
+  const dependencyCounts = classifyDependencies(analysis);
   const unsupportedPlugins = analysis.plugins.filter((item) => !item.stateSupported).length;
   const diagnostics = (["error", "warning", "notice"] as const).flatMap((severity) => (
     analysis.diagnostics.filter((item) => item.severity === severity)
@@ -28,13 +27,18 @@ export function ProjectReport({ project, analysis }: ProjectReportProps) {
         <div>
           <p className={studioCss.reportEdition}>KUMIKOROOM · PROJECT DOSSIER</p>
           <h1>{title}</h1>
-          <p>{analysis.project.author?.trim() || "作者未记录"} · {project.status === "partial" ? "部分解析快照" : "只读解析快照"}</p>
+          <p>{analysis.project.author?.trim() || "作者未记录"} · 只读工程报告</p>
         </div>
         <div className={studioCss.reportActions}>
           <button type="button" onClick={() => window.print()}>打印报告</button>
           <small>浏览器打印 · 不修改源 FLP</small>
         </div>
       </header>
+
+      <section className={studioCss.reportStatus} role="status" aria-label="报告状态" data-status={project.status}>
+        <strong>{projectStatusCopy(project.status)}</strong>
+        <span>快照状态：{analysis.status.toUpperCase()}</span>
+      </section>
 
       <section className={studioCss.reportMetadata} aria-label="工程元数据">
         <ReportDatum label="FL Studio" value={analysis.project.flVersion || "未读取"} />
@@ -74,7 +78,9 @@ export function ProjectReport({ project, analysis }: ProjectReportProps) {
             <ReportMetric label="Mixer Insert" value={String(analysis.mixerInserts.length)} />
             <ReportMetric label="Automation" value={String(analysis.automations.length)} />
             <ReportMetric label="依赖记录" value={String(analysis.dependencies.length)} />
-            <ReportMetric label="缺失依赖" value={String(missingDependencies)} />
+            <ReportMetric label="可用依赖" value={String(dependencyCounts.available.length)} />
+            <ReportMetric label="缺失依赖" value={String(dependencyCounts.missing.length)} />
+            <ReportMetric label="未知依赖" value={String(dependencyCounts.unknown.length)} />
           </dl>
           <p>{unsupportedPlugins > 0 ? `${unsupportedPlugins} 个插件状态未完整解析` : "已报告插件状态均在解析器覆盖范围内"}</p>
         </section>
@@ -83,25 +89,25 @@ export function ProjectReport({ project, analysis }: ProjectReportProps) {
       <section className={studioCss.reportArrangement}>
         <div className={studioCss.reportSectionHeading}>
           <div><span>03 · ARRANGEMENT PLATE</span><h2>编曲结构</h2></div>
-          <p>{validClips.length} 个有效片段 · {uniqueTracks(validClips)} 条轨道</p>
+          <p>{arrangement.validClipCount} 个有效片段 · {arrangement.trackCount} 条轨道</p>
         </div>
-        {displayedClips.length > 0 && arrangementEnd > 0 ? (
+        {arrangement.displayed.length > 0 && arrangement.end > 0 ? (
           <div className={studioCss.reportArrangementPlate} role="img" aria-label="编曲结构缩略图">
-            {displayedClips.map((clip) => (
+            {arrangement.displayed.map(({ clip, top }) => (
               <span
                 key={clip.id}
                 data-kind={clip.clipType}
                 title={`${clip.clipType} · track ${clip.trackIndex}`}
                 style={{
-                  left: `${Math.max(0, clip.start) / arrangementEnd * 100}%`,
-                  width: `${Math.max(0.35, Math.min(100, clip.length / arrangementEnd * 100))}%`,
-                  top: `${trackPosition(validClips, clip.trackIndex)}%`
+                  left: `${Math.max(0, clip.start) / arrangement.end * 100}%`,
+                  width: `${Math.max(0.35, Math.min(100, clip.length / arrangement.end * 100))}%`,
+                  top: `${top}%`
                 }}
               />
             ))}
           </div>
         ) : <p className={studioCss.reportEmpty}>快照没有可绘制的 Playlist 片段。</p>}
-        {validClips.length > displayedClips.length && <small>缩略图绘制前 120 个片段；统计保留全部 {validClips.length} 个有效片段。</small>}
+        {arrangement.validClipCount > arrangement.displayed.length && <small>缩略图绘制前 120 个片段；统计保留全部 {arrangement.validClipCount} 个有效片段。</small>}
       </section>
 
       <div className={studioCss.reportBottomGrid}>
@@ -142,20 +148,53 @@ function ReportMetric({ label, value }: { label: string; value: string }) {
   return <div><dt>{label}</dt><dd>{value}</dd></div>;
 }
 
-function validClip(clip: StudioAnalysis["playlistClips"][number]): boolean {
-  return Number.isFinite(clip.trackIndex) && clip.trackIndex >= 0
-    && Number.isFinite(clip.start) && Number.isFinite(clip.length)
-    && clip.length > 0 && clip.start + clip.length > 0;
+export function buildReportArrangement(
+  clips: StudioAnalysis["playlistClips"],
+  displayLimit = 120
+) {
+  const trackOrdinals = new Map<number, number>();
+  const shown: StudioAnalysis["playlistClips"] = [];
+  let validClipCount = 0;
+  let end = 0;
+  for (const clip of clips) {
+    const trackIndex = clip.trackIndex;
+    const start = clip.start;
+    const length = clip.length;
+    if (
+      !Number.isFinite(trackIndex) || trackIndex < 0
+      || !Number.isFinite(start) || !Number.isFinite(length)
+      || length <= 0 || start + length <= 0
+    ) continue;
+    validClipCount += 1;
+    end = Math.max(end, start + length);
+    if (!trackOrdinals.has(trackIndex)) trackOrdinals.set(trackIndex, trackOrdinals.size);
+    if (shown.length < displayLimit) shown.push(clip);
+  }
+  const trackCount = trackOrdinals.size;
+  return {
+    end,
+    validClipCount,
+    trackCount,
+    displayed: shown.map((clip) => {
+      const ordinal = trackOrdinals.get(clip.trackIndex) ?? 0;
+      return {
+        clip,
+        top: trackCount <= 1 ? 42 : 8 + ordinal / (trackCount - 1) * 76
+      };
+    })
+  };
 }
 
-function trackPosition(clips: StudioAnalysis["playlistClips"], trackIndex: number): number {
-  const tracks = [...new Set(clips.map((clip) => clip.trackIndex))].sort((a, b) => a - b);
-  const index = Math.max(0, tracks.indexOf(trackIndex));
-  return tracks.length <= 1 ? 42 : 8 + index / (tracks.length - 1) * 76;
-}
-
-function uniqueTracks(clips: StudioAnalysis["playlistClips"]): number {
-  return new Set(clips.map((clip) => clip.trackIndex)).size;
+function projectStatusCopy(status: StudioProjectDetail["status"]): string {
+  return {
+    ready: "当前工程状态：解析完成",
+    partial: "当前可用快照仅部分解析",
+    queued: "工程等待重新解析；本报告展示上次成功快照",
+    parsing: "工程正在重新解析；本报告展示当前可用快照",
+    failed: "最近解析失败；本报告展示上次成功快照",
+    stale: "工程文件已变化；本报告展示上次成功快照",
+    discovered: "工程已发现；本报告展示当前可用快照"
+  }[status];
 }
 
 function timeSignature(analysis: StudioAnalysis): string {

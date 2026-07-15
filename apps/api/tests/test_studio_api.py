@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -597,6 +598,98 @@ def test_open_dependency_uses_opaque_id_from_current_snapshot(
     assert opener.targets == [dependency_path.parent.resolve()]
 
 
+def test_get_analysis_builds_large_dependency_ids_without_filesystem_io(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project_path = tmp_path / "pure-read.flp"
+    project_path.write_bytes(b"FLhd")
+    repository = StudioRepository(load_settings().studio_db_path)
+    project = repository.upsert_project(project_path, display_name="pure read")
+    snapshot = analysis_snapshot(project_path)
+    dependency_count = 5_000
+    record = repository.save_snapshot(
+        project.id,
+        FlpAnalysisSnapshot(
+            **{
+                **snapshot.__dict__,
+                "dependencies": [
+                    DependencyReference(
+                        path=f"//offline.invalid/share/sample-{index}.wav",
+                        kind="audio",
+                        exists=False,
+                    )
+                    for index in range(dependency_count)
+                ],
+            }
+        ),
+    )
+    persisted_payload = json.loads(record.payload_json)
+    for index, dependency in enumerate(persisted_payload["dependencies"]):
+        dependency["exists"] = True
+        dependency["open_identity"] = {
+            "canonical_path_identity": f"//offline.invalid/share/sample-{index}.wav",
+            "file_dev": 1,
+            "file_ino": index + 1,
+            "size": 4,
+            "modified_ns": 100 + index,
+        }
+    with sqlite3.connect(repository.db_path) as connection:
+        connection.execute(
+            "UPDATE studio_snapshots SET payload_json = ? WHERE id = ?",
+            (json.dumps(persisted_payload), record.id),
+        )
+
+    def filesystem_bomb(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("analysis reads must not resolve or stat dependencies")
+
+    with monkeypatch.context() as filesystem_guard:
+        filesystem_guard.setattr(Path, "resolve", filesystem_bomb)
+        filesystem_guard.setattr(Path, "stat", filesystem_bomb)
+        response = studio.get_project_analysis(project.id, repository)
+
+    assert len(response.dependencies) == dependency_count
+    assert response.dependencies[0].entity_id.startswith("dependency_")
+    assert response.dependencies[-1].entity_id.startswith("dependency_")
+
+
+def test_legacy_dependency_without_persisted_identity_is_not_openable(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    project_path = tmp_path / "legacy-dependency.flp"
+    dependency_path = tmp_path / "legacy.wav"
+    project_path.write_bytes(b"FLhd")
+    dependency_path.write_bytes(b"RIFF")
+    repository = StudioRepository(load_settings().studio_db_path)
+    project = repository.upsert_project(project_path, display_name="legacy")
+    snapshot = analysis_snapshot(project_path)
+    record = repository.save_snapshot(
+        project.id,
+        FlpAnalysisSnapshot(
+            **{
+                **snapshot.__dict__,
+                "dependencies": [
+                    DependencyReference(str(dependency_path), "audio", True)
+                ],
+            }
+        ),
+    )
+    legacy_payload = json.loads(record.payload_json)
+    legacy_payload["dependencies"][0].pop("open_identity", None)
+    with sqlite3.connect(repository.db_path) as connection:
+        connection.execute(
+            "UPDATE studio_snapshots SET payload_json = ? WHERE id = ?",
+            (json.dumps(legacy_payload), record.id),
+        )
+
+    entity_id = client.get(
+        f"/api/studio/projects/{project.id}/analysis"
+    ).json()["dependencies"][0]["entity_id"]
+
+    assert entity_id is None
+
+
 def test_open_action_rejects_paths_unknown_entities_and_cross_project_ids(
     client: TestClient,
     tmp_path: Path,
@@ -650,7 +743,7 @@ def test_open_action_rejects_paths_unknown_entities_and_cross_project_ids(
     assert cross_project.status_code == 404
 
 
-def test_open_missing_dependency_returns_409_without_calling_opener(
+def test_missing_dependency_is_not_issued_an_open_entity_id(
     client: TestClient,
     tmp_path: Path,
 ) -> None:
@@ -677,20 +770,7 @@ def test_open_missing_dependency_returns_409_without_calling_opener(
         f"/api/studio/projects/{project.id}/analysis"
     ).json()["dependencies"][0]["entity_id"]
 
-    class ForbiddenOpener:
-        def open(self, target: Path) -> None:
-            raise AssertionError(f"must not open missing target: {target}")
-
-    app.dependency_overrides[studio.local_opener] = lambda: ForbiddenOpener()
-    try:
-        response = client.post(
-            f"/api/studio/projects/{project.id}/open",
-            json={"kind": "dependency", "entity_id": entity_id},
-        )
-    finally:
-        app.dependency_overrides.pop(studio.local_opener, None)
-
-    assert response.status_code == 409
+    assert entity_id is None
 
 
 def test_open_dependency_rejects_a_target_replaced_after_entity_id_was_issued(

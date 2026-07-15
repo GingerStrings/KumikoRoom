@@ -1,5 +1,5 @@
 import json
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
@@ -10,6 +10,7 @@ from kumikoroom.studio.models import (
     AnalysisStatus,
     AutomationSummary,
     ChannelSummary,
+    DependencyOpenIdentity,
     DependencyReference,
     FlpAnalysisSnapshot,
     MixerInsertSummary,
@@ -181,6 +182,7 @@ def test_studio_package_exports_public_models() -> None:
         "AnalysisStatus": AnalysisStatus,
         "AutomationSummary": AutomationSummary,
         "ChannelSummary": ChannelSummary,
+        "DependencyOpenIdentity": DependencyOpenIdentity,
         "DependencyReference": DependencyReference,
         "FlpAnalysisSnapshot": FlpAnalysisSnapshot,
         "MixerInsertSummary": MixerInsertSummary,
@@ -246,10 +248,35 @@ def test_domain_models_expose_the_stable_field_contract() -> None:
     assert mixer.route_target_ids == []
     assert automation.target_name is None and automation.point_count == 0
     assert asset.modified_at is None and asset.size is None
-    assert dependency.exists is True
+    assert dependency.exists is True and dependency.open_identity is None
     assert diagnostic.target_type is None and diagnostic.target_id is None
     assert fingerprint.note_density == 0.0 and fingerprint.pattern_reuse == 0.0
     assert plugin.state_supported is True
 
     with pytest.raises(FrozenInstanceError):
         project.title = "Changed"  # type: ignore[misc]
+
+
+def test_dependency_open_identity_round_trips_and_legacy_json_stays_readable() -> None:
+    identity = DependencyOpenIdentity(
+        canonical_path_identity="d:/samples/kick.wav",
+        file_dev=3,
+        file_ino=9,
+        size=4,
+        modified_ns=123,
+    )
+    snapshot = _full_snapshot()
+    current = replace(
+        snapshot,
+        dependencies=[replace(snapshot.dependencies[0], open_identity=identity)],
+    )
+
+    assert FlpAnalysisSnapshot.from_json(current.to_json()).dependencies[
+        0
+    ].open_identity == identity
+
+    legacy_payload = json.loads(snapshot.to_json())
+    legacy_payload["dependencies"][0].pop("open_identity", None)
+    legacy = FlpAnalysisSnapshot.from_json(json.dumps(legacy_payload))
+
+    assert legacy.dependencies[0].open_identity is None

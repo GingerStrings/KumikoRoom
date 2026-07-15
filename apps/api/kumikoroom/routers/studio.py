@@ -14,6 +14,8 @@ from kumikoroom.studio.models import (
     AnalysisStatus,
     AutomationSummary,
     ChannelSummary,
+    DependencyOpenIdentity,
+    DependencyReference,
     FlpAnalysisSnapshot,
     MixerInsertSummary,
     MusicalFingerprint,
@@ -87,7 +89,7 @@ class ProjectDetail(ProjectSummary):
 
 
 class DependencyOut(StudioModel):
-    entity_id: str
+    entity_id: str | None
     path: str
     kind: str
     exists: bool
@@ -342,12 +344,15 @@ def get_project_analysis(
             **snapshot.__dict__,
             "dependencies": [
                 DependencyOut(
-                    entity_id=_dependency_entity_id(
-                        project_id,
-                        record.id,
-                        index,
-                        dependency.path,
-                        Path(snapshot.source_path).parent,
+                    entity_id=(
+                        _dependency_entity_id(
+                            project_id,
+                            record.id,
+                            index,
+                            dependency,
+                        )
+                        if dependency.open_identity is not None
+                        else None
                     ),
                     path=dependency.path,
                     kind=dependency.kind,
@@ -592,9 +597,10 @@ def _resolve_open_target(
         (
             (index, item)
             for index, item in enumerate(snapshot.dependencies)
-            if payload.entity_id.startswith(
-                f"{_entity_id('dependency', project.id, record.id, index, item.path)}_"
-            )
+            if item.open_identity is not None
+            and _dependency_entity_id(
+                project.id, record.id, index, item
+            ) == payload.entity_id
         ),
         None,
     )
@@ -603,24 +609,52 @@ def _resolve_open_target(
     index, dependency = dependency_match
     if not dependency.exists:
         raise FileNotFoundError(dependency.path)
-    current_entity_id = _dependency_entity_id(
-        project.id,
-        record.id,
-        index,
-        dependency.path,
-        Path(project.canonical_path).parent,
+    if dependency.open_identity is None:
+        raise OSError("dependency has no persisted open identity")
+    return _verified_dependency_folder(
+        dependency,
+        project_folder=Path(project.canonical_path).parent,
     )
-    if current_entity_id != payload.entity_id:
-        raise OSError("dependency target changed after entity id was issued")
+
+
+def _verified_dependency_folder(
+    dependency: DependencyReference,
+    *,
+    project_folder: Path,
+) -> Path:
+    identity = dependency.open_identity
+    if identity is None:
+        raise OSError("dependency has no persisted open identity")
     raw_path = Path(dependency.path).expanduser()
-    dependency_path = (
-        raw_path
-        if raw_path.is_absolute()
-        else Path(project.canonical_path).parent / raw_path
-    )
-    resolved = _existing_path(dependency_path)
-    return resolved if resolved.is_dir() else _existing_path(
-        resolved.parent, expected="directory"
+    candidate = raw_path if raw_path.is_absolute() else project_folder / raw_path
+    if _has_link_or_reparse_component(candidate):
+        raise OSError("dependency path contains a link or reparse point")
+    first = candidate.lstat()
+    if not _matches_dependency_identity(first, identity):
+        raise OSError("dependency target changed")
+    resolved = candidate.resolve(strict=True)
+    if os.path.normcase(str(resolved)) != identity.canonical_path_identity:
+        raise OSError("dependency target path changed")
+    current = resolved.lstat()
+    if not _matches_dependency_identity(current, identity):
+        raise OSError("dependency target changed during verification")
+    parent_details = resolved.parent.lstat()
+    if _is_reparse_point(parent_details) or not stat.S_ISDIR(parent_details.st_mode):
+        raise OSError("dependency parent is unavailable")
+    return resolved.parent
+
+
+def _matches_dependency_identity(
+    details: os.stat_result,
+    identity: DependencyOpenIdentity,
+) -> bool:
+    return (
+        stat.S_ISREG(details.st_mode)
+        and not _is_reparse_point(details)
+        and details.st_dev == identity.file_dev
+        and details.st_ino == identity.file_ino
+        and details.st_size == identity.size
+        and details.st_mtime_ns == identity.modified_ns
     )
 
 
@@ -739,27 +773,23 @@ def _dependency_entity_id(
     project_id: str,
     snapshot_id: str,
     index: int,
-    recorded_path: str,
-    project_folder: Path,
+    dependency: DependencyReference,
 ) -> str:
     base = _entity_id(
-        "dependency", project_id, snapshot_id, index, recorded_path
+        "dependency", project_id, snapshot_id, index, dependency.path
     )
-    raw_path = Path(recorded_path).expanduser()
-    candidate = raw_path if raw_path.is_absolute() else project_folder / raw_path
-    try:
-        resolved = candidate.resolve(strict=True)
-        metadata = resolved.stat()
+    identity = dependency.open_identity
+    if identity is not None:
         version = "\0".join(
             (
-                os.path.normcase(str(resolved)),
-                str(metadata.st_dev),
-                str(metadata.st_ino),
-                str(metadata.st_size),
-                str(metadata.st_mtime_ns),
+                identity.canonical_path_identity,
+                str(identity.file_dev),
+                str(identity.file_ino),
+                str(identity.size),
+                str(identity.modified_ns),
             )
         )
-    except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
+    else:
         version = "unavailable"
     version_hash = hashlib.sha256(
         version.encode("utf-8", errors="surrogatepass")

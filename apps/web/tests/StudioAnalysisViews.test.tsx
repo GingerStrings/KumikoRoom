@@ -9,7 +9,7 @@ import { ArrangementAnalysis } from "../src/components/studio/ArrangementAnalysi
 import { DependencyReport } from "../src/components/studio/DependencyReport";
 import { PatternExplorer } from "../src/components/studio/PatternExplorer";
 import { PluginMixerView } from "../src/components/studio/PluginMixerView";
-import { ProjectReport } from "../src/components/studio/ProjectReport";
+import { buildReportArrangement, ProjectReport } from "../src/components/studio/ProjectReport";
 import { ProjectWorkspace } from "../src/components/studio/ProjectWorkspace";
 
 vi.mock("../src/api/studioClient", async (importOriginal) => {
@@ -598,6 +598,47 @@ describe("safe local actions and editorial report", () => {
     expect(screen.getByRole("button", { name: "查看 legacy.wav 所在位置" }).hasAttribute("disabled")).toBe(true);
   });
 
+  it("clears dependency open state and ignores stale settlement when project changes", async () => {
+    let rejectOpen!: (cause: unknown) => void;
+    let signal: AbortSignal | undefined;
+    vi.mocked(studioApi.openStudioAsset).mockImplementation((_projectId, _action, options) => new Promise((_resolve, reject) => {
+      signal = options.signal;
+      rejectOpen = reject;
+    }));
+    const withEntityIds: StudioAnalysis = {
+      ...signalAnalysis(),
+      dependencies: [{ path: "D:/Music/Audio/kick.wav", kind: "audio", exists: true, entityId: "dependency_safe" }],
+      diagnostics: []
+    };
+    const view = render(<DependencyReport analysis={withEntityIds} projectId="project-a" />);
+    const button = screen.getByRole("button", { name: "查看 kick.wav 所在位置" });
+    fireEvent.click(button);
+    expect(button.hasAttribute("disabled")).toBe(true);
+
+    view.rerender(<DependencyReport analysis={withEntityIds} projectId="project-b" />);
+
+    await waitFor(() => expect(signal?.aborted).toBe(true));
+    expect(screen.getByRole("button", { name: "查看 kick.wav 所在位置" }).hasAttribute("disabled")).toBe(false);
+    await act(async () => rejectOpen(new Error("stale dependency failure")));
+    expect(screen.queryByText("stale dependency failure")).toBeNull();
+  });
+
+  it("clears a dependency open error immediately when project changes", async () => {
+    vi.mocked(studioApi.openStudioAsset).mockRejectedValue(new Error("旧工程定位失败"));
+    const withEntityIds: StudioAnalysis = {
+      ...signalAnalysis(),
+      dependencies: [{ path: "D:/Music/Audio/kick.wav", kind: "audio", exists: true, entityId: "dependency_safe" }],
+      diagnostics: []
+    };
+    const view = render(<DependencyReport analysis={withEntityIds} projectId="project-a" />);
+    fireEvent.click(screen.getByRole("button", { name: "查看 kick.wav 所在位置" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("旧工程定位失败");
+
+    view.rerender(<DependencyReport analysis={withEntityIds} projectId="project-b" />);
+
+    await waitFor(() => expect(screen.queryByText("旧工程定位失败")).toBeNull());
+  });
+
   it("renders a truthful print dossier and calls the browser print action", () => {
     const print = vi.fn();
     vi.stubGlobal("print", print);
@@ -614,6 +655,75 @@ describe("safe local actions and editorial report", () => {
     expect(print).toHaveBeenCalledTimes(1);
   });
 
+  it("precomputes the report track map once for a 50k clip arrangement", () => {
+    let trackIndexReads = 0;
+    const clips: StudioAnalysis["playlistClips"] = Array.from({ length: 50_000 }, (_, index) => ({
+      id: `clip-${index}`,
+      get trackIndex() {
+        trackIndexReads += 1;
+        return index % 64;
+      },
+      start: index * 24,
+      length: 24,
+      clipType: "pattern",
+      sourceId: null
+    }));
+
+    const arrangement = buildReportArrangement(clips);
+
+    expect(arrangement.validClipCount).toBe(50_000);
+    expect(arrangement.trackCount).toBe(64);
+    expect(arrangement.displayed).toHaveLength(120);
+    expect(trackIndexReads).toBe(50_000 + 120);
+  });
+
+  it("uses the dependency view classification for available, missing, and unknown report counts", () => {
+    render(<ProjectReport project={project} analysis={signalAnalysis()} />);
+
+    const inventory = screen.getByRole("region", { name: "插件与依赖统计" });
+    expect(inventory.textContent).toMatch(/可用依赖1/);
+    expect(inventory.textContent).toMatch(/缺失依赖1/);
+    expect(inventory.textContent).toMatch(/未知依赖1/);
+  });
+
+  it.each([
+    ["ready", "当前工程状态：解析完成"],
+    ["partial", "当前可用快照仅部分解析"],
+    ["queued", "工程等待重新解析；本报告展示上次成功快照"],
+    ["failed", "最近解析失败；本报告展示上次成功快照"],
+    ["stale", "工程文件已变化；本报告展示上次成功快照"]
+  ] as const)("keeps the %s report state explicit on screen and print", (status, copy) => {
+    render(<ProjectReport project={{ ...project, status }} analysis={{ ...signalAnalysis(), status: status === "partial" ? "partial" : "ready" }} />);
+
+    const reportStatus = screen.getByRole("status", { name: "报告状态" });
+    expect(reportStatus.textContent).toContain(copy);
+    expect(reportStatus.textContent).toContain(`快照状态：${status === "partial" ? "PARTIAL" : "READY"}`);
+
+    const css = fs.readFileSync(path.resolve(__dirname, "../src/components/studio/Studio.module.css"), "utf8");
+    expect(css).toMatch(/@media print[\s\S]*\.reportStatus[\s\S]*font-size:\s*12pt/);
+  });
+
+  it("keeps every non-disabled report small-text style at WCAG AA on screen and print backgrounds", () => {
+    const css = fs.readFileSync(path.resolve(__dirname, "../src/components/studio/Studio.module.css"), "utf8");
+    const selectors = [
+      ".reportEdition", ".reportSectionLabel", ".reportActions small", ".reportMetadata dt",
+      ".reportKeyMark span", ".reportFingerprint dt", ".reportCounts dt", ".reportCoverage dt",
+      ".reportEvidence", ".reportCounts > p", ".reportCoverage > p", ".reportSectionHeading span",
+      ".reportSectionHeading p", ".reportArrangement > small", ".reportDiagnostics > small",
+      ".reportDiagnostics li > span", ".reportDiagnostics strong", ".reportDiagnostics p",
+      ".reportCoverage code", ".reportEmpty", ".reportStatus"
+    ];
+    for (const selector of selectors) {
+      const rule = styleRule(css, selector);
+      const color = rule.match(/(?:^|[;\s])color:\s*(#[0-9a-f]{6})/i)?.[1];
+      const size = Number(rule.match(/font-size:\s*([0-9.]+)px/i)?.[1]);
+      expect(color, `${selector} explicit color`).toBeDefined();
+      expect(size, `${selector} readable size`).toBeGreaterThanOrEqual(11);
+      expect(wcagContrast(color as string, "#f7f0df"), `${selector} screen contrast`).toBeGreaterThanOrEqual(4.5);
+      expect(wcagContrast(color as string, "#ffffff"), `${selector} print contrast`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
   it("opens the report tab and provides print-only navigation hiding rules", async () => {
     render(<ProjectWorkspace projectId="p-arrangement" />);
     await screen.findByRole("heading", { name: "Rain Memory" });
@@ -626,6 +736,27 @@ describe("safe local actions and editorial report", () => {
     expect(css).toMatch(/@media print[\s\S]*\.reportActions[\s\S]*display:\s*none/);
   });
 });
+
+function styleRule(css: string, selector: string): string {
+  for (const match of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selectors = match[1].split(",").map((value) => value.trim());
+    if (selectors.includes(selector)) return match[2];
+  }
+  throw new Error(`Missing CSS rule for ${selector}`);
+}
+
+function wcagContrast(foreground: string, background: string): number {
+  const luminance = (hex: string) => {
+    const channels = [1, 3, 5].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16) / 255);
+    const linear = channels.map((channel) => channel <= 0.04045
+      ? channel / 12.92
+      : ((channel + 0.055) / 1.055) ** 2.4);
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+  };
+  const first = luminance(foreground);
+  const second = luminance(background);
+  return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
+}
 
 function signalAnalysis(): StudioAnalysis {
   return {
