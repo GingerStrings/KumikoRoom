@@ -7,6 +7,8 @@ import type { StudioAnalysis, StudioProjectDetail } from "../../api/studioTypes"
 import { ArrangementAnalysis } from "./ArrangementAnalysis";
 import { PatternExplorer } from "./PatternExplorer";
 import { ProjectDashboard } from "./ProjectDashboard";
+import { DependencyReport, type DiagnosticNavigation } from "./DependencyReport";
+import { PluginMixerView, type PluginMixerTarget } from "./PluginMixerView";
 import studioCss from "./Studio.module.css";
 
 interface ProjectWorkspaceProps {
@@ -27,8 +29,8 @@ const tabs: Array<{ id: WorkspaceTab; label: string; available: boolean }> = [
   { id: "overview", label: "总览", available: true },
   { id: "arrangement", label: "编曲", available: true },
   { id: "pattern", label: "Pattern", available: true },
-  { id: "plugins", label: "插件与 Mixer", available: false },
-  { id: "dependencies", label: "依赖", available: false },
+  { id: "plugins", label: "插件与 Mixer", available: true },
+  { id: "dependencies", label: "依赖", available: true },
   { id: "versions", label: "版本", available: false }
 ] as const;
 
@@ -37,12 +39,14 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
   const [retryKey, setRetryKey] = useState(0);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("overview");
   const [selectedPatternId, setSelectedPatternId] = useState<string | null>(null);
+  const [selectedPluginTarget, setSelectedPluginTarget] = useState<PluginMixerTarget | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
     setState({ phase: "loading" });
     setActiveTab("overview");
     setSelectedPatternId(null);
+    setSelectedPluginTarget(null);
     void loadWorkspace(projectId, controller.signal).then((next) => {
       if (!controller.signal.aborted) setState(next);
     });
@@ -133,10 +137,35 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
               onSelectPattern={setSelectedPatternId}
             />
           )}
+          {activeTab === "plugins" && (
+            <PluginMixerView analysis={state.analysis} selectedTarget={selectedPluginTarget} onSelectTarget={setSelectedPluginTarget} />
+          )}
+          {activeTab === "dependencies" && (
+            <DependencyReport analysis={state.analysis} onNavigate={(navigation) => navigateDiagnostic(navigation, setActiveTab, setSelectedPatternId, setSelectedPluginTarget)} />
+          )}
         </div>
       </div>
     </WorkspaceShell>
   );
+}
+
+function navigateDiagnostic(
+  navigation: DiagnosticNavigation,
+  setActiveTab: (tab: WorkspaceTab) => void,
+  setSelectedPatternId: (id: string) => void,
+  setSelectedPluginTarget: (target: PluginMixerTarget) => void
+) {
+  if (navigation.tab === "pattern") {
+    setSelectedPatternId(navigation.patternId);
+    setActiveTab("pattern");
+    return;
+  }
+  if (navigation.tab === "plugins") {
+    setSelectedPluginTarget(navigation.target);
+    setActiveTab("plugins");
+    return;
+  }
+  setActiveTab("dependencies");
 }
 
 async function loadWorkspace(projectId: string, signal: AbortSignal): Promise<WorkspaceState> {

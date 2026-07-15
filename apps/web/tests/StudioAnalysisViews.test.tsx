@@ -6,7 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as studioApi from "../src/api/studioClient";
 import type { StudioAnalysis, StudioProjectDetail } from "../src/api/studioTypes";
 import { ArrangementAnalysis } from "../src/components/studio/ArrangementAnalysis";
+import { DependencyReport } from "../src/components/studio/DependencyReport";
 import { PatternExplorer } from "../src/components/studio/PatternExplorer";
+import { PluginMixerView } from "../src/components/studio/PluginMixerView";
 import { ProjectWorkspace } from "../src/components/studio/ProjectWorkspace";
 
 vi.mock("../src/api/studioClient", async (importOriginal) => {
@@ -177,6 +179,180 @@ describe("arrangement and Pattern workspace", () => {
     expect(screen.queryByTitle("长空白：第 3–9 小节")).toBeNull();
   });
 });
+
+describe("plugin, Mixer, and dependency workspace", () => {
+  it("opens the plugin and dependency analysis tabs", async () => {
+    vi.mocked(studioApi.getStudioAnalysis).mockResolvedValue({
+      ...analysis,
+      channels: [{ id: "ch-flex", name: "Keys", pluginName: "FLEX", channelType: "instrument" }],
+      plugins: [{ id: "plugin-flex", name: "FLEX", kind: "native", location: "channel", stateSupported: true }],
+      mixerInserts: [{ id: "insert-4", name: "Insert 4", slotPluginIds: ["plugin-flex"], routeTargetIds: [] }],
+      dependencies: [{ path: "D:/Music/Audio/vocal_take_03.wav", kind: "audio", exists: false }]
+    });
+    render(<ProjectWorkspace projectId="p-arrangement" />);
+
+    await screen.findByRole("heading", { name: "Rain Memory" });
+    fireEvent.click(screen.getByRole("tab", { name: "插件与 Mixer" }));
+    expect(screen.getByRole("heading", { name: "Plugin & Mixer" })).toBeTruthy();
+    expect(screen.getByLabelText("Mixer 路由图")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("tab", { name: "依赖" }));
+    expect(screen.getByText("vocal_take_03.wav")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "查看 vocal_take_03.wav 所在位置" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("filters plugin sources and keeps effect-chain and automation resolution truthful", () => {
+    const detailed = signalAnalysis();
+    render(<PluginMixerView analysis={detailed} />);
+
+    expect(screen.getByText("状态不支持")).toBeTruthy();
+    expect(screen.getByText("Missing FX ID")).toBeTruthy();
+    expect(screen.getByText("插件 ID 未解析")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Insert 4 · 已解析" })).toBeTruthy();
+    expect(screen.getByText("Mystery target · 未解析")).toBeTruthy();
+    const initialChains = screen.getByLabelText("Mixer 效果链");
+    fireEvent.click(within(screen.getByRole("table")).getByRole("button", { name: "Insert 4" }));
+    expect(within(initialChains).getByRole("button", { name: "Insert 4" }).closest("section")?.getAttribute("data-selected")).toBe("true");
+
+    fireEvent.click(screen.getByRole("button", { name: "vst" }));
+    const table = screen.getByRole("table");
+    expect(within(table).getByText("Serum")).toBeTruthy();
+    expect(within(table).queryByText("FLEX")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "全部" }));
+    const chains = screen.getByLabelText("Mixer 效果链");
+    fireEvent.click(within(chains).getByRole("button", { name: "Insert 4", exact: true }));
+    expect(within(chains).getByRole("button", { name: "Insert 4", exact: true }).closest("section")?.getAttribute("data-selected")).toBe("true");
+  });
+
+  it("bounds large cyclic Mixer graphs and reports hidden and unresolved routes in text", () => {
+    const total = 110;
+    const inserts = Array.from({ length: total }, (_, index) => ({
+      id: `insert-${index}`,
+      name: `Insert ${index}`,
+      slotPluginIds: index === total - 1 ? ["missing-plugin"] : [],
+      routeTargetIds: index === total - 1
+        ? ["missing-target", "insert-0"]
+        : index === 0 ? ["insert-1", "empty"] : [`insert-${(index + 1) % total}`]
+    }));
+    const large: StudioAnalysis = { ...signalAnalysis(), plugins: [], mixerInserts: [{ id: "empty", name: "Empty", slotPluginIds: [], routeTargetIds: [] }, ...inserts] };
+    render(<PluginMixerView analysis={large} />);
+
+    const graph = screen.getByLabelText("Mixer 路由图");
+    expect(graph.querySelectorAll('[data-route-node="true"]')).toHaveLength(64);
+    expect(graph.querySelectorAll('[data-route-edge="true"]').length).toBeLessThanOrEqual(128);
+    expect(screen.getAllByText(/110 个有效 Insert，112 条路由；绘制 64 个节点/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/1 条路由目标未解析/)).toBeTruthy();
+    expect(screen.getByText("大型路由图已限量绘制；完整数量保留在文字摘要中。")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Empty" })).toBeNull();
+  });
+
+  it("separates missing and available dependencies while explaining the unknowable group", () => {
+    const detailed = signalAnalysis();
+    render(<DependencyReport analysis={detailed} />);
+
+    const missing = screen.getByRole("region", { name: "缺失" });
+    const available = screen.getByRole("region", { name: "可用" });
+    const unknown = screen.getByRole("region", { name: "未知" });
+    expect(within(missing).getByText("vocal_take_03.wav")).toBeTruthy();
+    expect(within(available).getByText("kick.wav")).toBeTruthy();
+    expect(within(unknown).getByText(/解析器未报告的依赖无法判断/)).toBeTruthy();
+    expect(within(unknown).queryByText("vocal_take_03.wav")).toBeNull();
+    const locate = within(missing).getByRole("button", { name: "查看 vocal_take_03.wav 所在位置" });
+    expect(locate.hasAttribute("disabled")).toBe(true);
+    expect(screen.getAllByText("Task13 本地打开能力接入后可用").length).toBeGreaterThan(0);
+  });
+
+  it("explains empty signal and dependency snapshots without inventing records", () => {
+    const empty: StudioAnalysis = { ...analysis, channels: [], plugins: [], mixerInserts: [], automations: [], dependencies: [], diagnostics: [] };
+    const { rerender } = render(<PluginMixerView analysis={empty} />);
+    expect(screen.getByText("快照没有报告 Channel。")).toBeTruthy();
+    expect(screen.getByText("快照没有报告插件实例。")).toBeTruthy();
+    expect(screen.getByText("没有带插件或路由的 Mixer Insert；空 Insert 已折叠。")).toBeTruthy();
+    expect(screen.getByText("快照没有报告自动化。")).toBeTruthy();
+
+    rerender(<DependencyReport analysis={empty} />);
+    expect(screen.getByRole("region", { name: "未知" }).textContent).toContain("这个快照没有依赖数据");
+    expect(screen.getByText("快照没有报告解析诊断。")).toBeTruthy();
+  });
+
+  it("navigates only diagnostics with targets present in the snapshot", () => {
+    const onNavigate = vi.fn();
+    render(<DependencyReport analysis={signalAnalysis()} onNavigate={onNavigate} />);
+
+    const patternGroup = screen.getByRole("heading", { name: "pattern · pat-verse" }).closest("section")!;
+    fireEvent.click(within(patternGroup).getByRole("button", { name: "查看目标" }));
+    expect(onNavigate).toHaveBeenLastCalledWith({ tab: "pattern", patternId: "pat-verse" });
+
+    const mixerGroup = screen.getByRole("heading", { name: "mixer_insert · insert-4" }).closest("section")!;
+    fireEvent.click(within(mixerGroup).getByRole("button", { name: "查看目标" }));
+    expect(onNavigate).toHaveBeenLastCalledWith({ tab: "plugins", target: { type: "mixer_insert", id: "insert-4" } });
+
+    const missingGroup = screen.getByRole("heading", { name: "plugin · absent-plugin" }).closest("section")!;
+    const disabled = within(missingGroup).getByRole("button", { name: "无法定位" });
+    expect(disabled.hasAttribute("disabled")).toBe(true);
+    expect(disabled.getAttribute("title")).toContain("无法识别");
+  });
+
+  it("switches from diagnostics to a selected Pattern and Mixer insert", async () => {
+    vi.mocked(studioApi.getStudioAnalysis).mockResolvedValue(signalAnalysis());
+    render(<ProjectWorkspace projectId="p-arrangement" />);
+    await screen.findByRole("heading", { name: "Rain Memory" });
+
+    fireEvent.click(screen.getByRole("tab", { name: "依赖" }));
+    const patternGroup = screen.getByRole("heading", { name: "pattern · pat-verse" }).closest("section")!;
+    fireEvent.click(within(patternGroup).getByRole("button", { name: "查看目标" }));
+    expect(screen.getByRole("tab", { name: "Pattern" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("heading", { name: "Verse" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("tab", { name: "依赖" }));
+    const mixerGroup = screen.getByRole("heading", { name: "mixer_insert · insert-4" }).closest("section")!;
+    fireEvent.click(within(mixerGroup).getByRole("button", { name: "查看目标" }));
+    expect(screen.getByRole("tab", { name: "插件与 Mixer" }).getAttribute("aria-selected")).toBe("true");
+    expect(within(screen.getByLabelText("Mixer 效果链")).getByRole("button", { name: "Insert 4", exact: true }).closest("section")?.getAttribute("data-selected")).toBe("true");
+  });
+
+  it("covers responsive and reduced-motion behavior without unbounded SVG styling", () => {
+    const css = fs.readFileSync(path.resolve(__dirname, "../src/components/studio/Studio.module.css"), "utf8");
+    expect(css).toMatch(/@media \(max-width: 660px\)[\s\S]*\.dependencyColumns\s*\{\s*grid-template-columns:\s*1fr/);
+    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.pluginKindFilters button/);
+    expect(css).toMatch(/\.routeGraph\s*\{[^}]*max-height:\s*440px/s);
+  });
+});
+
+function signalAnalysis(): StudioAnalysis {
+  return {
+    ...analysis,
+    channels: [
+      { id: "ch-flex", name: "Keys", pluginName: "FLEX", channelType: "instrument" },
+      { id: "ch-unresolved", name: "Ghost", pluginName: "Missing Synth", channelType: "instrument" }
+    ],
+    plugins: [
+      { id: "plugin-flex", name: "FLEX", kind: "native", location: "ch-flex", stateSupported: true },
+      { id: "plugin-serum", name: "Serum", kind: "vst3", location: "Insert 4", stateSupported: false },
+      { id: "plugin-sample", name: "Audio Clip", kind: "source", location: "channel", stateSupported: true },
+      { id: "plugin-odd", name: "Mystery", kind: "wrapper", location: "nowhere", stateSupported: true }
+    ],
+    mixerInserts: [
+      { id: "insert-4", name: "Insert 4", slotPluginIds: ["plugin-serum", "Missing FX ID"], routeTargetIds: ["master"] },
+      { id: "master", name: "Master", slotPluginIds: ["plugin-flex"], routeTargetIds: [] },
+      { id: "empty-insert", name: "Empty insert", slotPluginIds: [], routeTargetIds: [] }
+    ],
+    automations: [
+      { id: "auto-1", name: "Wet control", targetName: "Insert 4", pointCount: 12 },
+      { id: "auto-2", name: "Unknown control", targetName: "Mystery target", pointCount: 2 }
+    ],
+    dependencies: [
+      { path: "D:/Music/Audio/vocal_take_03.wav", kind: "audio", exists: false },
+      { path: "D:/Music/Audio/kick.wav", kind: "audio", exists: true }
+    ],
+    diagnostics: [
+      { code: "pattern_note_gap", severity: "notice", message: "Pattern includes a long rest.", targetType: "pattern", targetId: "pat-verse" },
+      { code: "mixer_route", severity: "warning", message: "Inspect this route.", targetType: "mixer_insert", targetId: "insert-4" },
+      { code: "plugin_unknown", severity: "error", message: "Plugin target is absent.", targetType: "plugin", targetId: "absent-plugin" }
+    ]
+  };
+}
 
 describe("Pattern Explorer", () => {
   it("searches Patterns and explains notes, channels, similarity, and inferred confidence", () => {
