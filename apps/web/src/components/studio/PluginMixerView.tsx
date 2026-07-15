@@ -21,7 +21,7 @@ interface PluginMixerViewProps {
   onSelectTarget?: (target: PluginMixerTarget) => void;
 }
 
-type PluginKindFilter = "all" | "source" | "native" | "vst" | "unknown";
+type PluginKindFilter = "all" | "generator" | "effect" | "unknown";
 
 const MAX_ROUTE_NODES = 64;
 const MAX_ROUTE_EDGES = 128;
@@ -45,24 +45,25 @@ export function PluginMixerView({ analysis, selectedTarget = null, onSelectTarge
           <h1>Plugin &amp; Mixer</h1>
           <p>按解析快照核对 Channel、插件实例、效果链和可确认的路由关系。</p>
         </div>
-        <div className={studioCss.pluginKindFilters} role="group" aria-label="插件来源筛选">
-          {(["all", "source", "native", "vst", "unknown"] as const).map((kind) => (
+        <div className={studioCss.pluginKindFilters} role="group" aria-label="插件类别筛选">
+          {(["all", "generator", "effect", "unknown"] as const).map((kind) => (
             <button key={kind} type="button" aria-pressed={kindFilter === kind} onClick={() => setKindFilter(kind)}>
-              {kind === "all" ? "全部" : kind}
+              {kindFilterLabel(kind)}
             </button>
           ))}
         </div>
       </header>
+      <p className={studioCss.pluginContractNote}>快照未提供原生/第三方来源，只报告生成器、效果器等功能类别。</p>
 
       <section className={studioCss.signalGrid}>
         <section className={studioCss.signalPanel} aria-labelledby="channel-rack-heading">
           <PanelHeader id="channel-rack-heading" label="CHANNEL RACK" count={analysis.channels.length} />
           {analysis.channels.length > 0 ? (
             <ul className={studioCss.signalRows} aria-label="Channel Rack">
-              {analysis.channels.map((channel) => {
+              {analysis.channels.map((channel, channelIndex) => {
                 const linked = resolveChannelPlugin(channel, analysis.plugins);
                 return (
-                  <li key={channel.id} data-selected={isSelected(currentTarget, "channel", channel.id)}>
+                  <li key={`${channel.id}-${channelIndex}`} data-selected={isSelected(currentTarget, "channel", channel.id)}>
                     <button type="button" onClick={() => selectTarget({ type: "channel", id: channel.id })}>
                       <strong>{channel.name}</strong><small>{channel.channelType || "类型未知"}</small>
                     </button>
@@ -80,14 +81,14 @@ export function PluginMixerView({ analysis, selectedTarget = null, onSelectTarge
           {visiblePlugins.length > 0 ? (
             <div className={studioCss.pluginTableWrap}>
               <table className={studioCss.pluginTable}>
-                <thead><tr><th>插件</th><th>来源</th><th>状态</th><th>位置</th></tr></thead>
+                <thead><tr><th>插件</th><th>类别</th><th>状态</th><th>位置</th></tr></thead>
                 <tbody>
                   {visiblePlugins.map((plugin) => {
                     const location = resolvePluginLocation(plugin, analysis);
                     return (
                       <tr key={plugin.id} data-selected={isSelected(currentTarget, "plugin", plugin.id)}>
                         <th scope="row">{plugin.name}</th>
-                        <td><span className={studioCss.sourceBadge} data-kind={pluginKind(plugin)}>{pluginKind(plugin)}</span></td>
+                        <td><span className={studioCss.sourceBadge} data-kind={pluginKind(plugin)}>{plugin.kind.trim() || "未分类"}</span></td>
                         <td><span className={studioCss.stateBadge} data-supported={plugin.stateSupported}>{plugin.stateSupported ? "状态可读" : "状态不支持"}</span></td>
                         <td>
                           <button
@@ -231,10 +232,16 @@ function AutomationSection({ analysis, automations, onSelect }: {
 
 function pluginKind(plugin: StudioPluginInstance): Exclude<PluginKindFilter, "all"> {
   const kind = plugin.kind.trim().toLowerCase();
-  if (kind === "native") return "native";
-  if (kind === "source") return "source";
-  if (kind.includes("vst")) return "vst";
+  if (kind === "generator") return "generator";
+  if (kind === "effect") return "effect";
   return "unknown";
+}
+
+function kindFilterLabel(kind: PluginKindFilter): string {
+  if (kind === "all") return "全部";
+  if (kind === "generator") return "生成器";
+  if (kind === "effect") return "效果器";
+  return "未分类";
 }
 
 function resolveChannelPlugin(channel: StudioChannelSummary, plugins: StudioPluginInstance[]): StudioPluginInstance | null {
@@ -247,12 +254,15 @@ function resolveChannelPlugin(channel: StudioChannelSummary, plugins: StudioPlug
 }
 
 function resolvePluginLocation(plugin: StudioPluginInstance, analysis: StudioAnalysis): PluginMixerTarget | null {
-  const location = normalize(plugin.location);
-  const channels = analysis.channels.filter((channel) => normalize(channel.id) === location || normalize(channel.name) === location);
-  if (channels.length === 1) return { type: "channel", id: channels[0].id };
-  const inserts = analysis.mixerInserts.filter((insert) => normalize(insert.id) === location || normalize(insert.name) === location);
-  if (inserts.length === 1) return { type: "mixer_insert", id: inserts[0].id };
-  return null;
+  const channelLocation = /^channel:([^:]+)$/.exec(plugin.location.trim());
+  if (channelLocation) {
+    const channels = analysis.channels.filter((channel) => channel.id === channelLocation[1]);
+    return channels.length === 1 ? { type: "channel", id: channels[0].id } : null;
+  }
+  const mixerLocation = /^mixer:([^:]+):slot:(\d+)$/.exec(plugin.location.trim());
+  if (!mixerLocation) return null;
+  const inserts = analysis.mixerInserts.filter((insert) => insert.id === mixerLocation[1]);
+  return inserts.length === 1 ? { type: "mixer_insert", id: inserts[0].id } : null;
 }
 
 function resolveAutomationTarget(automation: StudioAutomationSummary, analysis: StudioAnalysis): PluginMixerTarget | null {

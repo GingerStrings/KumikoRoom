@@ -757,6 +757,7 @@ button.timelineClip:hover { border-color: #4d7e88; background: #c8e0e2; }
 .pluginKindFilters button:last-child { border-right: 0; }
 .pluginKindFilters button:hover { background: #f0f6f3; }
 .pluginKindFilters button[aria-pressed="true"] { background: #dcebed; color: #315d67; }
+.pluginContractNote { margin: -5px 0 0; padding: 0 2px; color: #6c7f7f; font-size: 9px; line-height: 1.55; text-wrap: pretty; }
 
 .signalGrid { min-width: 0; display: grid; grid-template-columns: minmax(220px, .38fr) minmax(0, .62fr); gap: 14px; align-items: start; }
 .signalPanel, .mixerSection, .automationSection, .diagnosticReport { min-width: 0; border: 1px solid #d2ded9; background: #fffefa; }
@@ -784,9 +785,8 @@ button.timelineClip:hover { border-color: #4d7e88; background: #c8e0e2; }
 .pluginTable tbody th { max-width: 180px; overflow: hidden; color: #30494c; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .pluginTable tr[data-selected="true"] { background: #e5f0ef; }
 .sourceBadge, .stateBadge { display: inline-flex; align-items: center; min-height: 21px; border: 1px solid #d3ded9; padding: 0 6px; color: #607577; font-size: 7px; font-weight: 900; text-transform: uppercase; }
-.sourceBadge[data-kind="native"] { border-color: #b9d0c8; color: #476e62; }
-.sourceBadge[data-kind="vst"] { border-color: #b8ced4; color: #426c76; }
-.sourceBadge[data-kind="source"] { border-color: #d7c7ad; color: #765e3e; }
+.sourceBadge[data-kind="generator"] { border-color: #b9d0c8; color: #476e62; }
+.sourceBadge[data-kind="effect"] { border-color: #b8ced4; color: #426c76; }
 .sourceBadge[data-kind="unknown"], .stateBadge[data-supported="false"] { border-style: dashed; color: #806f62; }
 .locationButton { max-width: 180px; min-height: 30px; overflow: hidden; border: 0; border-bottom: 1px solid #b9cbc6; padding: 0; background: transparent; color: #426a71; font-size: 8px; font-weight: 800; text-overflow: ellipsis; white-space: nowrap; }
 .locationButton:hover { border-bottom-color: #426a71; }
@@ -833,7 +833,7 @@ button.timelineClip:hover { border-color: #4d7e88; background: #c8e0e2; }
 .automationSection li > button { min-height: 30px; border: 0; border-bottom: 1px solid #b9cbc6; background: transparent; font-weight: 800; }
 .automationSection li > span { color: #806f62; }
 
-.dependencyTotals { flex: none; display: grid; grid-template-columns: auto auto auto auto; gap: 5px 12px; align-items: baseline; border: 1px solid #cddbd6; padding: 10px 13px; background: #fffefa; }
+.dependencyTotals { flex: none; display: grid; grid-template-columns: repeat(6, auto); gap: 5px 12px; align-items: baseline; border: 1px solid #cddbd6; padding: 10px 13px; background: #fffefa; }
 .dependencyTotals strong { color: #344f52; font-family: var(--font-serif); font-size: 20px; font-weight: 550; }
 .dependencyTotals span { color: #607577; font-size: 8px; font-weight: 850; }
 .dependencyColumns { min-width: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }

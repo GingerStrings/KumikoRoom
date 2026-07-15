@@ -185,7 +185,7 @@ describe("plugin, Mixer, and dependency workspace", () => {
     vi.mocked(studioApi.getStudioAnalysis).mockResolvedValue({
       ...analysis,
       channels: [{ id: "ch-flex", name: "Keys", pluginName: "FLEX", channelType: "instrument" }],
-      plugins: [{ id: "plugin-flex", name: "FLEX", kind: "native", location: "channel", stateSupported: true }],
+      plugins: [{ id: "plugin-flex", name: "FLEX", kind: "generator", location: "channel:ch-flex", stateSupported: true }],
       mixerInserts: [{ id: "insert-4", name: "Insert 4", slotPluginIds: ["plugin-flex"], routeTargetIds: [] }],
       dependencies: [{ path: "D:/Music/Audio/vocal_take_03.wav", kind: "audio", exists: false }]
     });
@@ -210,16 +210,33 @@ describe("plugin, Mixer, and dependency workspace", () => {
     expect(screen.getByText("插件 ID 未解析")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Insert 4 · 已解析" })).toBeTruthy();
     expect(screen.getByText("Mystery target · 未解析")).toBeTruthy();
+    expect(screen.getByText("快照未提供原生/第三方来源，只报告生成器、效果器等功能类别。")).toBeTruthy();
     const initialChains = screen.getByLabelText("Mixer 效果链");
-    fireEvent.click(within(screen.getByRole("table")).getByRole("button", { name: "Insert 4" }));
+    fireEvent.click(within(screen.getByRole("table")).getByRole("button", { name: "mixer:insert-4:slot:0" }));
     expect(within(initialChains).getByRole("button", { name: "Insert 4" }).closest("section")?.getAttribute("data-selected")).toBe("true");
 
-    fireEvent.click(screen.getByRole("button", { name: "vst" }));
+    fireEvent.click(screen.getByRole("button", { name: "效果器" }));
     const table = screen.getByRole("table");
     expect(within(table).getByText("Serum")).toBeTruthy();
+    expect(within(table).getByText("effect")).toBeTruthy();
+    expect(within(table).queryByText("FLEX")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "生成器" }));
+    expect(within(table).getByText("FLEX")).toBeTruthy();
+    expect(within(table).getByText("Audio Clip")).toBeTruthy();
+    expect(within(table).getAllByText("generator")).toHaveLength(2);
+    expect(within(table).queryByText("Serum")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "未分类" }));
+    expect(within(table).getByText("Mystery")).toBeTruthy();
+    expect(within(table).getByText("wrapper")).toBeTruthy();
     expect(within(table).queryByText("FLEX")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "全部" }));
+    fireEvent.click(within(screen.getByRole("table")).getByRole("button", { name: "channel:ch-flex" }));
+    expect(within(screen.getByLabelText("Channel Rack")).getByRole("button", { name: /Keys/ }).closest("li")?.getAttribute("data-selected")).toBe("true");
+    fireEvent.click(within(screen.getByRole("table")).getByRole("button", { name: "mixer:insert-4:slot:x" }));
+    expect(within(screen.getByRole("table")).getByRole("row", { name: /Audio Clip/ }).getAttribute("data-selected")).toBe("true");
     const chains = screen.getByLabelText("Mixer 效果链");
     fireEvent.click(within(chains).getByRole("button", { name: "Insert 4", exact: true }));
     expect(within(chains).getByRole("button", { name: "Insert 4", exact: true }).closest("section")?.getAttribute("data-selected")).toBe("true");
@@ -256,11 +273,67 @@ describe("plugin, Mixer, and dependency workspace", () => {
     const unknown = screen.getByRole("region", { name: "未知" });
     expect(within(missing).getByText("vocal_take_03.wav")).toBeTruthy();
     expect(within(available).getByText("kick.wav")).toBeTruthy();
-    expect(within(unknown).getByText(/解析器未报告的依赖无法判断/)).toBeTruthy();
+    expect(within(unknown).getByText("FactoryData")).toBeTruthy();
+    expect(within(unknown).getByText(/解析器明确标记为未解析/)).toBeTruthy();
     expect(within(unknown).queryByText("vocal_take_03.wav")).toBeNull();
     const locate = within(missing).getByRole("button", { name: "查看 vocal_take_03.wav 所在位置" });
     expect(locate.hasAttribute("disabled")).toBe(true);
     expect(screen.getAllByText("Task13 本地打开能力接入后可用").length).toBeGreaterThan(0);
+  });
+
+  it("classifies only exact unresolved dependency targets as unknown across duplicate paths", () => {
+    const factoryPath = "C:/FL/FactoryData";
+    const boundary: StudioAnalysis = {
+      ...analysis,
+      dependencies: [
+        { path: factoryPath, kind: "factory_data", exists: false },
+        { path: factoryPath, kind: "factory_data", exists: false },
+        { path: factoryPath, kind: "factory_data", exists: true },
+        { path: "C:/Samples/plain-missing.wav", kind: "audio", exists: false },
+        { path: "C:/Samples/no-target.wav", kind: "audio", exists: false },
+        { path: "C:/Samples/mismatch.wav", kind: "audio", exists: false }
+      ],
+      diagnostics: [
+        { code: "unresolved_dependency", severity: "warning", message: "Factory lookup unavailable", targetType: "dependency", targetId: factoryPath },
+        { code: "unresolved_dependency", severity: "warning", message: "No target", targetType: "dependency", targetId: null },
+        { code: "unresolved_dependency", severity: "warning", message: "Different path", targetType: "dependency", targetId: "C:/Samples/other.wav" }
+      ]
+    };
+    render(<DependencyReport analysis={boundary} />);
+
+    const missing = screen.getByRole("region", { name: "缺失" });
+    const available = screen.getByRole("region", { name: "可用" });
+    const unknown = screen.getByRole("region", { name: "未知" });
+    expect(within(unknown).getAllByText("FactoryData")).toHaveLength(2);
+    expect(within(available).getByText("FactoryData")).toBeTruthy();
+    expect(within(missing).getByText("plain-missing.wav")).toBeTruthy();
+    expect(within(missing).getByText("no-target.wav")).toBeTruthy();
+    expect(within(missing).getByText("mismatch.wav")).toBeTruthy();
+    expect(within(unknown).getAllByRole("button", { name: "查看 FactoryData 所在位置" })).toHaveLength(2);
+  });
+
+  it("does not navigate malformed or ambiguous parser locations", () => {
+    const ambiguous: StudioAnalysis = {
+      ...analysis,
+      channels: [
+        { id: "dup", name: "First", pluginName: null, channelType: "instrument" },
+        { id: "dup", name: "Second", pluginName: null, channelType: "instrument" }
+      ],
+      plugins: [
+        { id: "ambiguous", name: "Ambiguous", kind: "generator", location: "channel:dup", stateSupported: true },
+        { id: "malformed", name: "Malformed", kind: "effect", location: "mixer:insert-4:slot:x", stateSupported: true },
+        { id: "unknown-location", name: "Unknown location", kind: "effect", location: "track:12", stateSupported: true }
+      ],
+      mixerInserts: [{ id: "insert-4", name: "Insert 4", slotPluginIds: ["malformed"], routeTargetIds: [] }]
+    };
+    render(<PluginMixerView analysis={ambiguous} />);
+    const table = screen.getByRole("table");
+
+    for (const location of ["channel:dup", "mixer:insert-4:slot:x", "track:12"]) {
+      fireEvent.click(within(table).getByRole("button", { name: location }));
+      expect(within(table).getByRole("button", { name: location }).closest("tr")?.getAttribute("data-selected")).toBe("true");
+    }
+    expect(within(screen.getByLabelText("Mixer 效果链")).getByRole("button", { name: "Insert 4" }).closest("section")?.getAttribute("data-selected")).toBe("false");
   });
 
   it("explains empty signal and dependency snapshots without inventing records", () => {
@@ -328,9 +401,9 @@ function signalAnalysis(): StudioAnalysis {
       { id: "ch-unresolved", name: "Ghost", pluginName: "Missing Synth", channelType: "instrument" }
     ],
     plugins: [
-      { id: "plugin-flex", name: "FLEX", kind: "native", location: "ch-flex", stateSupported: true },
-      { id: "plugin-serum", name: "Serum", kind: "vst3", location: "Insert 4", stateSupported: false },
-      { id: "plugin-sample", name: "Audio Clip", kind: "source", location: "channel", stateSupported: true },
+      { id: "plugin-flex", name: "FLEX", kind: "generator", location: "channel:ch-flex", stateSupported: true },
+      { id: "plugin-serum", name: "Serum", kind: "effect", location: "mixer:insert-4:slot:0", stateSupported: false },
+      { id: "plugin-sample", name: "Audio Clip", kind: "generator", location: "mixer:insert-4:slot:x", stateSupported: true },
       { id: "plugin-odd", name: "Mystery", kind: "wrapper", location: "nowhere", stateSupported: true }
     ],
     mixerInserts: [
@@ -344,12 +417,14 @@ function signalAnalysis(): StudioAnalysis {
     ],
     dependencies: [
       { path: "D:/Music/Audio/vocal_take_03.wav", kind: "audio", exists: false },
-      { path: "D:/Music/Audio/kick.wav", kind: "audio", exists: true }
+      { path: "D:/Music/Audio/kick.wav", kind: "audio", exists: true },
+      { path: "C:/FL/FactoryData", kind: "factory_data", exists: false }
     ],
     diagnostics: [
       { code: "pattern_note_gap", severity: "notice", message: "Pattern includes a long rest.", targetType: "pattern", targetId: "pat-verse" },
       { code: "mixer_route", severity: "warning", message: "Inspect this route.", targetType: "mixer_insert", targetId: "insert-4" },
-      { code: "plugin_unknown", severity: "error", message: "Plugin target is absent.", targetType: "plugin", targetId: "absent-plugin" }
+      { code: "plugin_unknown", severity: "error", message: "Plugin target is absent.", targetType: "plugin", targetId: "absent-plugin" },
+      { code: "unresolved_dependency", severity: "warning", message: "Factory data cannot be verified.", targetType: "dependency", targetId: "C:/FL/FactoryData" }
     ]
   };
 }

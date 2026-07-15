@@ -15,8 +15,12 @@ interface DependencyReportProps {
 }
 
 export function DependencyReport({ analysis, onNavigate }: DependencyReportProps) {
-  const missing = analysis.dependencies.filter((dependency) => dependency.exists === false);
+  const unresolvedTargets = new Set(analysis.diagnostics
+    .filter((diagnostic) => diagnostic.code === "unresolved_dependency" && diagnostic.targetId !== null)
+    .map((diagnostic) => diagnostic.targetId as string));
+  const missing = analysis.dependencies.filter((dependency) => dependency.exists === false && !unresolvedTargets.has(dependency.path));
   const available = analysis.dependencies.filter((dependency) => dependency.exists === true);
+  const unknown = analysis.dependencies.filter((dependency) => dependency.exists === false && unresolvedTargets.has(dependency.path));
   const severities = (["error", "warning", "notice"] as const).map((severity) => ({
     severity,
     diagnostics: analysis.diagnostics.filter((diagnostic) => diagnostic.severity === severity)
@@ -26,16 +30,23 @@ export function DependencyReport({ analysis, onNavigate }: DependencyReportProps
     <article className={studioCss.analysisView} aria-label="依赖与结构诊断">
       <header className={studioCss.analysisViewHeader}>
         <div><p className={studioCss.panelKicker}>PROJECT INTEGRITY</p><h1>依赖与诊断</h1><p>文件状态来自解析快照；诊断跳转只在目标能唯一确认时开放。</p></div>
-        <div className={studioCss.dependencyTotals} aria-label="依赖摘要"><strong>{missing.length}</strong><span>缺失</span><strong>{available.length}</strong><span>可用</span></div>
+        <div className={studioCss.dependencyTotals} aria-label="依赖摘要"><strong>{missing.length}</strong><span>缺失</span><strong>{available.length}</strong><span>可用</span><strong>{unknown.length}</strong><span>未知</span></div>
       </header>
 
       <section className={studioCss.dependencyColumns} aria-label="依赖分组">
         <DependencyGroup title="缺失" tone="missing" dependencies={missing} empty="没有已报告的缺失依赖。" />
         <DependencyGroup title="可用" tone="available" dependencies={available} empty="没有已报告的可用依赖。" />
-        <section className={studioCss.dependencyGroup} data-tone="unknown" aria-labelledby="dependency-unknown-heading">
-          <header><h2 id="dependency-unknown-heading">未知</h2><span>—</span></header>
-          <p className={studioCss.dependencyUnknown}>当前模型只携带已报告依赖的 exists 布尔值；解析器未报告的依赖无法判断。{analysis.dependencies.length === 0 ? " 这个快照没有依赖数据。" : " 缺失项保留在“缺失”组。"}</p>
-        </section>
+        <DependencyGroup
+          title="未知"
+          tone="unknown"
+          dependencies={unknown}
+          empty="没有被 unresolved_dependency 精确标记的未知依赖。"
+          description={unknown.length > 0
+            ? "解析器明确标记为未解析，这些路径的存在性暂时无法确认。"
+            : analysis.dependencies.length === 0
+              ? "当前模型没有可判断的记录；这个快照没有依赖数据。"
+              : "当前模型只会把 unresolved_dependency 精确指向的路径列为未知。"}
+        />
       </section>
 
       <section className={studioCss.diagnosticReport} aria-labelledby="diagnostic-report-heading">
@@ -48,20 +59,22 @@ export function DependencyReport({ analysis, onNavigate }: DependencyReportProps
   );
 }
 
-function DependencyGroup({ title, tone, dependencies, empty }: {
+function DependencyGroup({ title, tone, dependencies, empty, description }: {
   title: string;
-  tone: "missing" | "available";
+  tone: "missing" | "available" | "unknown";
   dependencies: StudioDependencyReference[];
   empty: string;
+  description?: string;
 }) {
   return (
     <section className={studioCss.dependencyGroup} data-tone={tone} aria-labelledby={`dependency-${tone}-heading`}>
       <header><h2 id={`dependency-${tone}-heading`}>{title}</h2><span>{dependencies.length}</span></header>
+      {description && <p className={studioCss.dependencyUnknown}>{description}</p>}
       {dependencies.length > 0 ? <ul>{dependencies.map((dependency, index) => {
         const name = fileName(dependency.path);
-        return <li key={`${dependency.path}-${index}`}><div><strong title={dependency.path}>{name}</strong><small>{dependency.kind || "类型未知"} · {dependency.path}</small></div><button type="button" disabled aria-describedby="locate-capability-note" aria-label={`查看 ${name} 所在位置`}>定位</button></li>;
+        return <li key={`${dependency.path}-${index}`}><div><strong title={dependency.path}>{name}</strong><small>{dependency.kind || "类型未知"} · {dependency.path}</small></div><button type="button" disabled aria-describedby={`locate-capability-${tone}`} aria-label={`查看 ${name} 所在位置`}>定位</button></li>;
       })}</ul> : <p>{empty}</p>}
-      <small id={tone === "missing" ? "locate-capability-note" : undefined} className={studioCss.locateNote}>Task13 本地打开能力接入后可用</small>
+      <small id={`locate-capability-${tone}`} className={studioCss.locateNote}>Task13 本地打开能力接入后可用</small>
     </section>
   );
 }
