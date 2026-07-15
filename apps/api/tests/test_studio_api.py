@@ -1,3 +1,4 @@
+import sqlite3
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier, BrokenBarrierError
@@ -827,6 +828,49 @@ def test_open_backup_requires_a_confirmed_association(
         app.dependency_overrides.pop(studio.local_opener, None)
 
     assert response.status_code == 404
+    assert opener.targets == []
+
+
+@pytest.mark.parametrize("kind", ["project", "folder"])
+def test_open_offline_legacy_project_without_migrated_identity_returns_conflict(
+    client: TestClient,
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    db_path = load_settings().studio_db_path
+    project_folder = tmp_path / "legacy-project"
+    project_folder.mkdir()
+    project_path = project_folder / "offline.flp"
+    project_path.write_bytes(b"FLhd")
+    repository = StudioRepository(db_path)
+    project = repository.upsert_project(project_path, display_name="offline")
+
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("DROP TABLE studio_project_open_identities")
+    project_path.unlink()
+
+    migrated_repository = StudioRepository(db_path)
+    with pytest.raises(KeyError):
+        migrated_repository.get_project_open_identity(project.id)
+
+    class RecordingOpener:
+        def __init__(self) -> None:
+            self.targets: list[Path] = []
+
+        def open(self, target: Path) -> None:
+            self.targets.append(target)
+
+    opener = RecordingOpener()
+    app.dependency_overrides[studio.local_opener] = lambda: opener
+    try:
+        response = client.post(
+            f"/api/studio/projects/{project.id}/open",
+            json={"kind": kind},
+        )
+    finally:
+        app.dependency_overrides.pop(studio.local_opener, None)
+
+    assert response.status_code == 409
     assert opener.targets == []
 
 

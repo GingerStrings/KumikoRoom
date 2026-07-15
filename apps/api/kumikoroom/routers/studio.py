@@ -630,7 +630,10 @@ def _verified_registered_target(
     *,
     open_folder: bool = False,
 ) -> Path:
-    identity = repository.get_project_open_identity(project.id)
+    try:
+        identity = repository.get_project_open_identity(project.id)
+    except KeyError:
+        raise OSError("registered project has no available open identity") from None
     project_path = Path(project.canonical_path).expanduser()
     if _has_link_or_reparse_component(project_path):
         raise OSError("registered project path contains a link or reparse point")
