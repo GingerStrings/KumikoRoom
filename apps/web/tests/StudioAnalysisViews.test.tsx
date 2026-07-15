@@ -677,6 +677,23 @@ describe("safe local actions and editorial report", () => {
     expect(trackIndexReads).toBe(50_000 + 120);
   });
 
+  it("orders report tracks by numeric index regardless of clip discovery order", () => {
+    const clips: StudioAnalysis["playlistClips"] = [
+      { id: "track-10", trackIndex: 10, start: 0, length: 48, clipType: "pattern", sourceId: null },
+      { id: "track-1", trackIndex: 1, start: 48, length: 48, clipType: "audio", sourceId: null },
+      { id: "negative-track", trackIndex: -1, start: 96, length: 48, clipType: "pattern", sourceId: null },
+      { id: "invalid-track", trackIndex: Number.NaN, start: 144, length: 48, clipType: "pattern", sourceId: null }
+    ];
+
+    const arrangement = buildReportArrangement(clips);
+    const tops = Object.fromEntries(arrangement.displayed.map(({ clip, top }) => [clip.id, top]));
+
+    expect(arrangement.validClipCount).toBe(2);
+    expect(arrangement.trackCount).toBe(2);
+    expect(tops["track-1"]).toBe(8);
+    expect(tops["track-10"]).toBe(84);
+  });
+
   it("uses the dependency view classification for available, missing, and unknown report counts", () => {
     render(<ProjectReport project={project} analysis={signalAnalysis()} />);
 
@@ -724,6 +741,30 @@ describe("safe local actions and editorial report", () => {
     }
   });
 
+  it("keeps every Task13 local-open action readable on its visible background", () => {
+    const css = fs.readFileSync(path.resolve(__dirname, "../src/components/studio/Studio.module.css"), "utf8");
+    const reportButtonRule = styleRules(css, ".reportActions button").join(";");
+    const styles = [
+      { label: "project open buttons", rule: styleRule(css, ".localActions button"), backgrounds: ["#fffefa", "#eef5f1"] },
+      { label: "project open scope", rule: styleRule(css, ".localActions > span"), backgrounds: ["#f8faf6"] },
+      { label: "project and dependency open errors", rule: styleRule(css, ".localOpenError"), backgrounds: ["#fff7f0"] },
+      { label: "dependency open button", rule: styleRule(css, ".dependencyGroup li button"), backgrounds: ["#f3f4f0"] },
+      { label: "backup open button", rule: styleRule(css, ".versionCard button"), backgrounds: ["#f5faf6", "#e4f0eb"] },
+      { label: "backup open error", rule: styleRule(css, ".versionCard .versionOpenError"), backgrounds: ["#f8faf6"] },
+      { label: "report print button", rule: reportButtonRule, backgrounds: ["#18344d"] }
+    ];
+
+    for (const { label, rule, backgrounds } of styles) {
+      const color = lastCssProperty(rule, "color");
+      const size = Number(lastCssProperty(rule, "font-size")?.replace("px", ""));
+      expect(color, `${label} explicit color`).toMatch(/^#[0-9a-f]{6}$/i);
+      expect(size, `${label} readable size`).toBeGreaterThanOrEqual(11);
+      for (const background of backgrounds) {
+        expect(wcagContrast(color as string, background), `${label} contrast on ${background}`).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
+
   it("opens the report tab and provides print-only navigation hiding rules", async () => {
     render(<ProjectWorkspace projectId="p-arrangement" />);
     await screen.findByRole("heading", { name: "Rain Memory" });
@@ -738,11 +779,22 @@ describe("safe local actions and editorial report", () => {
 });
 
 function styleRule(css: string, selector: string): string {
+  return styleRules(css, selector)[0];
+}
+
+function styleRules(css: string, selector: string): string[] {
+  const rules: string[] = [];
   for (const match of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     const selectors = match[1].split(",").map((value) => value.trim());
-    if (selectors.includes(selector)) return match[2];
+    if (selectors.includes(selector)) rules.push(match[2]);
   }
+  if (rules.length > 0) return rules;
   throw new Error(`Missing CSS rule for ${selector}`);
+}
+
+function lastCssProperty(rule: string, property: string): string | undefined {
+  const matches = [...rule.matchAll(new RegExp(`(?:^|[;\\s])${property}:\\s*([^;]+)`, "gi"))];
+  return matches.at(-1)?.[1].trim();
 }
 
 function wcagContrast(foreground: string, background: string): number {

@@ -152,7 +152,7 @@ export function buildReportArrangement(
   clips: StudioAnalysis["playlistClips"],
   displayLimit = 120
 ) {
-  const trackOrdinals = new Map<number, number>();
+  const trackIndices = new Set<number>();
   const shown: StudioAnalysis["playlistClips"] = [];
   let validClipCount = 0;
   let end = 0;
@@ -167,10 +167,12 @@ export function buildReportArrangement(
     ) continue;
     validClipCount += 1;
     end = Math.max(end, start + length);
-    if (!trackOrdinals.has(trackIndex)) trackOrdinals.set(trackIndex, trackOrdinals.size);
+    trackIndices.add(trackIndex);
     if (shown.length < displayLimit) shown.push(clip);
   }
-  const trackCount = trackOrdinals.size;
+  const sortedTrackIndices = [...trackIndices].sort((first, second) => first - second);
+  const trackOrdinals = new Map(sortedTrackIndices.map((trackIndex, ordinal) => [trackIndex, ordinal]));
+  const trackCount = sortedTrackIndices.length;
   return {
     end,
     validClipCount,
