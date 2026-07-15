@@ -9,6 +9,7 @@ import { ArrangementAnalysis } from "../src/components/studio/ArrangementAnalysi
 import { DependencyReport } from "../src/components/studio/DependencyReport";
 import { PatternExplorer } from "../src/components/studio/PatternExplorer";
 import { PluginMixerView } from "../src/components/studio/PluginMixerView";
+import { ProjectReport } from "../src/components/studio/ProjectReport";
 import { ProjectWorkspace } from "../src/components/studio/ProjectWorkspace";
 
 vi.mock("../src/api/studioClient", async (importOriginal) => {
@@ -16,7 +17,8 @@ vi.mock("../src/api/studioClient", async (importOriginal) => {
   return {
     ...actual,
     getStudioAnalysis: vi.fn(),
-    getStudioProject: vi.fn()
+    getStudioProject: vi.fn(),
+    openStudioAsset: vi.fn()
   };
 });
 
@@ -105,6 +107,8 @@ const analysis: StudioAnalysis = {
 beforeEach(() => {
   vi.mocked(studioApi.getStudioProject).mockResolvedValue(project);
   vi.mocked(studioApi.getStudioAnalysis).mockResolvedValue(analysis);
+  vi.mocked(studioApi.openStudioAsset).mockReset();
+  vi.mocked(studioApi.openStudioAsset).mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -431,7 +435,7 @@ describe("plugin, Mixer, and dependency workspace", () => {
     expect(within(unknown).queryByText("vocal_take_03.wav")).toBeNull();
     const locate = within(missing).getByRole("button", { name: "查看 vocal_take_03.wav 所在位置" });
     expect(locate.hasAttribute("disabled")).toBe(true);
-    expect(screen.getAllByText("Task13 本地打开能力接入后可用").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("请从工程详情页使用本地定位").length).toBeGreaterThan(0);
   });
 
   it("classifies only exact unresolved dependency targets as unknown across duplicate paths", () => {
@@ -546,6 +550,80 @@ describe("plugin, Mixer, and dependency workspace", () => {
     expect(css).toMatch(/@media \(max-width: 660px\)[\s\S]*\.dependencyColumns\s*\{\s*grid-template-columns:\s*1fr/);
     expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.pluginKindFilters button/);
     expect(css).toMatch(/\.routeGraph\s*\{[^}]*max-height:\s*440px/s);
+  });
+});
+
+describe("safe local actions and editorial report", () => {
+  it("opens only registered project actions and reports asynchronous errors", async () => {
+    vi.mocked(studioApi.openStudioAsset)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("本地目标已不存在"));
+    render(<ProjectWorkspace projectId="p-arrangement" />);
+    await screen.findByRole("heading", { name: "Rain Memory" });
+
+    fireEvent.click(screen.getByRole("button", { name: "打开 FLP" }));
+    await waitFor(() => expect(studioApi.openStudioAsset).toHaveBeenCalledWith(
+      "p-arrangement",
+      { kind: "project" },
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    ));
+
+    fireEvent.click(screen.getByRole("button", { name: "打开所在文件夹" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("本地目标已不存在");
+    expect(studioApi.openStudioAsset).toHaveBeenLastCalledWith(
+      "p-arrangement",
+      { kind: "folder" },
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+  });
+
+  it("opens a dependency by opaque entity id and keeps missing ids disabled", async () => {
+    vi.mocked(studioApi.openStudioAsset).mockResolvedValue(undefined);
+    const withEntityIds: StudioAnalysis = {
+      ...signalAnalysis(),
+      dependencies: [
+        { path: "D:/Music/Audio/kick.wav", kind: "audio", exists: true, entityId: "dependency_safe" },
+        { path: "D:/Music/Audio/legacy.wav", kind: "audio", exists: true }
+      ],
+      diagnostics: []
+    };
+    render(<DependencyReport analysis={withEntityIds} projectId="p-arrangement" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "查看 kick.wav 所在位置" }));
+    await waitFor(() => expect(studioApi.openStudioAsset).toHaveBeenCalledWith(
+      "p-arrangement",
+      { kind: "dependency", entityId: "dependency_safe" },
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    ));
+    expect(screen.getByRole("button", { name: "查看 legacy.wav 所在位置" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("renders a truthful print dossier and calls the browser print action", () => {
+    const print = vi.fn();
+    vi.stubGlobal("print", print);
+    render(<ProjectReport project={project} analysis={signalAnalysis()} />);
+
+    expect(screen.getByRole("heading", { name: "Rain Memory" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "音乐指纹摘要" }).textContent).toContain("D minor");
+    expect(screen.getByRole("img", { name: "编曲结构缩略图" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "插件与依赖统计" }).textContent).toContain("4");
+    expect(screen.getByRole("region", { name: "解析覆盖" }).textContent).toContain("未知事件");
+    expect(screen.getByRole("region", { name: "诊断摘录" }).textContent).toContain("pattern_note_gap");
+
+    fireEvent.click(screen.getByRole("button", { name: "打印报告" }));
+    expect(print).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens the report tab and provides print-only navigation hiding rules", async () => {
+    render(<ProjectWorkspace projectId="p-arrangement" />);
+    await screen.findByRole("heading", { name: "Rain Memory" });
+    fireEvent.click(screen.getByRole("tab", { name: "报告" }));
+
+    expect(screen.getByRole("button", { name: "打印报告" })).toBeTruthy();
+    const css = fs.readFileSync(path.resolve(__dirname, "../src/components/studio/Studio.module.css"), "utf8");
+    expect(css).toMatch(/@media print[\s\S]*\.workspaceShelf[\s\S]*display:\s*none/);
+    expect(css).toMatch(/@media print[\s\S]*\.workspaceTabs[\s\S]*display:\s*none/);
+    expect(css).toMatch(/@media print[\s\S]*\.reportActions[\s\S]*display:\s*none/);
   });
 });
 

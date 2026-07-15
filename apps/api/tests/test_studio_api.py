@@ -12,6 +12,7 @@ from kumikoroom.routers import studio
 from kumikoroom.studio.models import (
     AnalysisDiagnostic,
     AnalysisStatus,
+    DependencyReference,
     FlpAnalysisSnapshot,
     MusicalFingerprint,
     NoteSummary,
@@ -504,6 +505,284 @@ def test_corrupt_latest_analysis_returns_stable_409_without_payload_details(
         "detail": "Stored analysis is invalid; rescan the project."
     }
     assert "malformed-secret-payload" not in analysis_response.text
+
+
+def test_open_project_and_folder_use_registered_project_path(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    project_path = tmp_path / "songs" / "Safe Project.flp"
+    project_path.parent.mkdir()
+    project_path.write_bytes(b"FLhd")
+    repository = StudioRepository(load_settings().studio_db_path)
+    project = repository.upsert_project(project_path, display_name="Safe Project")
+
+    class RecordingOpener:
+        def __init__(self) -> None:
+            self.targets: list[Path] = []
+
+        def open(self, target: Path) -> None:
+            self.targets.append(target)
+
+    opener = RecordingOpener()
+    app.dependency_overrides[studio.local_opener] = lambda: opener
+    try:
+        project_response = client.post(
+            f"/api/studio/projects/{project.id}/open",
+            json={"kind": "project"},
+        )
+        folder_response = client.post(
+            f"/api/studio/projects/{project.id}/open",
+            json={"kind": "folder"},
+        )
+    finally:
+        app.dependency_overrides.pop(studio.local_opener, None)
+
+    assert project_response.status_code == 204
+    assert folder_response.status_code == 204
+    assert opener.targets == [project_path.resolve(), project_path.parent.resolve()]
+
+
+def test_open_dependency_uses_opaque_id_from_current_snapshot(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    project_path = tmp_path / "songs" / "Safe Project.flp"
+    dependency_path = tmp_path / "samples" / "kick.wav"
+    project_path.parent.mkdir()
+    dependency_path.parent.mkdir()
+    project_path.write_bytes(b"FLhd")
+    dependency_path.write_bytes(b"RIFF")
+    repository = StudioRepository(load_settings().studio_db_path)
+    project = repository.upsert_project(project_path, display_name="Safe Project")
+    snapshot = analysis_snapshot(project_path)
+    repository.save_snapshot(
+        project.id,
+        FlpAnalysisSnapshot(
+            **{
+                **snapshot.__dict__,
+                "dependencies": [
+                    DependencyReference(
+                        path=str(dependency_path), kind="audio", exists=True
+                    )
+                ],
+            }
+        ),
+    )
+    dependency = client.get(
+        f"/api/studio/projects/{project.id}/analysis"
+    ).json()["dependencies"][0]
+
+    class RecordingOpener:
+        def __init__(self) -> None:
+            self.targets: list[Path] = []
+
+        def open(self, target: Path) -> None:
+            self.targets.append(target)
+
+    opener = RecordingOpener()
+    app.dependency_overrides[studio.local_opener] = lambda: opener
+    try:
+        response = client.post(
+            f"/api/studio/projects/{project.id}/open",
+            json={"kind": "dependency", "entity_id": dependency["entity_id"]},
+        )
+    finally:
+        app.dependency_overrides.pop(studio.local_opener, None)
+
+    assert dependency["entity_id"].startswith("dependency_")
+    assert str(dependency_path) not in dependency["entity_id"]
+    assert response.status_code == 204
+    assert opener.targets == [dependency_path.parent.resolve()]
+
+
+def test_open_action_rejects_paths_unknown_entities_and_cross_project_ids(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    repository = StudioRepository(load_settings().studio_db_path)
+    project_ids: list[str] = []
+    entity_ids: list[str] = []
+    for name in ("first", "second"):
+        project_path = tmp_path / name / f"{name}.flp"
+        dependency_path = project_path.parent / f"{name}.wav"
+        project_path.parent.mkdir()
+        project_path.write_bytes(b"FLhd")
+        dependency_path.write_bytes(b"RIFF")
+        project = repository.upsert_project(project_path, display_name=name)
+        snapshot = analysis_snapshot(project_path, source_hash=f"hash-{name}")
+        repository.save_snapshot(
+            project.id,
+            FlpAnalysisSnapshot(
+                **{
+                    **snapshot.__dict__,
+                    "dependencies": [
+                        DependencyReference(
+                            path=str(dependency_path), kind="audio", exists=True
+                        )
+                    ],
+                }
+            ),
+        )
+        project_ids.append(project.id)
+        entity_ids.append(
+            client.get(f"/api/studio/projects/{project.id}/analysis").json()[
+                "dependencies"
+            ][0]["entity_id"]
+        )
+
+    arbitrary_path = client.post(
+        f"/api/studio/projects/{project_ids[0]}/open",
+        json={"kind": "dependency", "target": str(tmp_path / "outside.exe")},
+    )
+    unknown = client.post(
+        f"/api/studio/projects/{project_ids[0]}/open",
+        json={"kind": "dependency", "entity_id": "dependency_unknown"},
+    )
+    cross_project = client.post(
+        f"/api/studio/projects/{project_ids[0]}/open",
+        json={"kind": "dependency", "entity_id": entity_ids[1]},
+    )
+
+    assert arbitrary_path.status_code == 422
+    assert unknown.status_code == 404
+    assert cross_project.status_code == 404
+
+
+def test_open_missing_dependency_returns_409_without_calling_opener(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    project_path = tmp_path / "missing-dependency.flp"
+    project_path.write_bytes(b"FLhd")
+    missing_path = tmp_path / "gone.wav"
+    repository = StudioRepository(load_settings().studio_db_path)
+    project = repository.upsert_project(project_path, display_name=project_path.stem)
+    snapshot = analysis_snapshot(project_path)
+    repository.save_snapshot(
+        project.id,
+        FlpAnalysisSnapshot(
+            **{
+                **snapshot.__dict__,
+                "dependencies": [
+                    DependencyReference(
+                        path=str(missing_path), kind="audio", exists=False
+                    )
+                ],
+            }
+        ),
+    )
+    entity_id = client.get(
+        f"/api/studio/projects/{project.id}/analysis"
+    ).json()["dependencies"][0]["entity_id"]
+
+    class ForbiddenOpener:
+        def open(self, target: Path) -> None:
+            raise AssertionError(f"must not open missing target: {target}")
+
+    app.dependency_overrides[studio.local_opener] = lambda: ForbiddenOpener()
+    try:
+        response = client.post(
+            f"/api/studio/projects/{project.id}/open",
+            json={"kind": "dependency", "entity_id": entity_id},
+        )
+    finally:
+        app.dependency_overrides.pop(studio.local_opener, None)
+
+    assert response.status_code == 409
+
+
+def test_open_dependency_rejects_a_target_replaced_after_entity_id_was_issued(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    project_path = tmp_path / "identity.flp"
+    dependency_path = tmp_path / "identity.wav"
+    project_path.write_bytes(b"FLhd")
+    dependency_path.write_bytes(b"first-version")
+    repository = StudioRepository(load_settings().studio_db_path)
+    project = repository.upsert_project(project_path, display_name="identity")
+    snapshot = analysis_snapshot(project_path)
+    repository.save_snapshot(
+        project.id,
+        FlpAnalysisSnapshot(
+            **{
+                **snapshot.__dict__,
+                "dependencies": [
+                    DependencyReference(
+                        path=str(dependency_path), kind="audio", exists=True
+                    )
+                ],
+            }
+        ),
+    )
+    entity_id = client.get(
+        f"/api/studio/projects/{project.id}/analysis"
+    ).json()["dependencies"][0]["entity_id"]
+    dependency_path.unlink()
+    dependency_path.write_bytes(b"replacement-with-new-identity")
+
+    class ForbiddenOpener:
+        def open(self, target: Path) -> None:
+            raise AssertionError(f"must not open replaced target: {target}")
+
+    app.dependency_overrides[studio.local_opener] = lambda: ForbiddenOpener()
+    try:
+        response = client.post(
+            f"/api/studio/projects/{project.id}/open",
+            json={"kind": "dependency", "entity_id": entity_id},
+        )
+    finally:
+        app.dependency_overrides.pop(studio.local_opener, None)
+
+    assert response.status_code == 409
+
+
+def test_open_backup_requires_project_owned_association(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    repository = StudioRepository(load_settings().studio_db_path)
+    main_path = tmp_path / "song.flp"
+    other_path = tmp_path / "other.flp"
+    backup_path = tmp_path / "Backups" / "song_2026.flp"
+    backup_path.parent.mkdir()
+    for path in (main_path, other_path, backup_path):
+        path.write_bytes(b"FLhd")
+    main = repository.upsert_project(main_path, display_name="song")
+    other = repository.upsert_project(other_path, display_name="other")
+    backup = repository.upsert_project(backup_path, display_name="song_2026")
+    backup_snapshot = repository.save_snapshot(
+        backup.id, analysis_snapshot(backup_path, source_hash="backup-hash")
+    )
+    association = repository.save_backup_association(
+        main.id, backup.id, backup_snapshot.id, score=0.9, confirmed=True
+    )
+
+    class RecordingOpener:
+        def __init__(self) -> None:
+            self.targets: list[Path] = []
+
+        def open(self, target: Path) -> None:
+            self.targets.append(target)
+
+    opener = RecordingOpener()
+    app.dependency_overrides[studio.local_opener] = lambda: opener
+    try:
+        owned = client.post(
+            f"/api/studio/projects/{main.id}/open",
+            json={"kind": "backup", "entity_id": association.id},
+        )
+        cross_project = client.post(
+            f"/api/studio/projects/{other.id}/open",
+            json={"kind": "backup", "entity_id": association.id},
+        )
+    finally:
+        app.dependency_overrides.pop(studio.local_opener, None)
+
+    assert owned.status_code == 204
+    assert opener.targets == [backup_path.parent.resolve()]
+    assert cross_project.status_code == 404
 
 
 def test_default_service_reuses_db_and_replaces_it_when_path_changes(

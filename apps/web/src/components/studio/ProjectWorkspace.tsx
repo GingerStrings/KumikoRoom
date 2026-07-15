@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../../api/client";
-import { getStudioAnalysis, getStudioProject } from "../../api/studioClient";
+import { getStudioAnalysis, getStudioProject, openStudioAsset } from "../../api/studioClient";
 import type { StudioAnalysis, StudioProjectDetail } from "../../api/studioTypes";
 import { ArrangementAnalysis } from "./ArrangementAnalysis";
 import { PatternExplorer } from "./PatternExplorer";
 import { ProjectDashboard } from "./ProjectDashboard";
+import { ProjectReport } from "./ProjectReport";
 import { DependencyReport, type DiagnosticNavigation } from "./DependencyReport";
 import { PluginMixerView, type PluginMixerTarget } from "./PluginMixerView";
 import { VersionTimeline } from "./VersionTimeline";
@@ -24,7 +25,7 @@ type WorkspaceState =
   | { phase: "not-found" }
   | { phase: "error"; message: string };
 
-type WorkspaceTab = "overview" | "arrangement" | "pattern" | "plugins" | "dependencies" | "versions";
+type WorkspaceTab = "overview" | "arrangement" | "pattern" | "plugins" | "dependencies" | "versions" | "report";
 
 const tabs: Array<{ id: WorkspaceTab; label: string; available: boolean }> = [
   { id: "overview", label: "总览", available: true },
@@ -32,7 +33,8 @@ const tabs: Array<{ id: WorkspaceTab; label: string; available: boolean }> = [
   { id: "pattern", label: "Pattern", available: true },
   { id: "plugins", label: "插件与 Mixer", available: true },
   { id: "dependencies", label: "依赖", available: true },
-  { id: "versions", label: "版本", available: true }
+  { id: "versions", label: "版本", available: true },
+  { id: "report", label: "报告", available: true }
 ] as const;
 
 export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
@@ -41,6 +43,9 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("overview");
   const [selectedPatternId, setSelectedPatternId] = useState<string | null>(null);
   const [selectedPluginTarget, setSelectedPluginTarget] = useState<PluginMixerTarget | null>(null);
+  const localOpenSequence = useRef(0);
+  const localOpenController = useRef<AbortController | null>(null);
+  const [localOpenState, setLocalOpenState] = useState<{ phase: "idle" | "pending" | "error"; message?: string }>({ phase: "idle" });
 
   useEffect(() => {
     const controller = new AbortController();
@@ -48,11 +53,36 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
     setActiveTab("overview");
     setSelectedPatternId(null);
     setSelectedPluginTarget(null);
+    localOpenSequence.current += 1;
+    localOpenController.current?.abort();
+    setLocalOpenState({ phase: "idle" });
     void loadWorkspace(projectId, controller.signal).then((next) => {
       if (!controller.signal.aborted) setState(next);
     });
     return () => controller.abort();
   }, [projectId, retryKey]);
+
+  useEffect(() => () => {
+    localOpenSequence.current += 1;
+    localOpenController.current?.abort();
+  }, []);
+
+  async function openRegisteredTarget(kind: "project" | "folder") {
+    localOpenController.current?.abort();
+    const controller = new AbortController();
+    const sequence = localOpenSequence.current + 1;
+    localOpenSequence.current = sequence;
+    localOpenController.current = controller;
+    setLocalOpenState({ phase: "pending" });
+    try {
+      await openStudioAsset(projectId, { kind }, { signal: controller.signal });
+      if (localOpenSequence.current === sequence) setLocalOpenState({ phase: "idle" });
+    } catch (cause) {
+      if (!controller.signal.aborted && localOpenSequence.current === sequence) {
+        setLocalOpenState({ phase: "error", message: errorMessage(cause) });
+      }
+    }
+  }
 
   if (state.phase === "loading") {
     return <WorkspaceShell><StatePanel role="status" title="正在读取工程分析…" body="正在核对快照、解析说明与依赖状态。" loading /></WorkspaceShell>;
@@ -104,6 +134,12 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
             </button>
           ))}
         </nav>
+        <div className={studioCss.localActions} aria-label="本地工程操作">
+          <button type="button" disabled={localOpenState.phase === "pending"} aria-busy={localOpenState.phase === "pending" || undefined} onClick={() => void openRegisteredTarget("project")}>打开 FLP</button>
+          <button type="button" disabled={localOpenState.phase === "pending"} aria-busy={localOpenState.phase === "pending" || undefined} onClick={() => void openRegisteredTarget("folder")}>打开所在文件夹</button>
+          <span>仅打开资料室已登记的位置</span>
+        </div>
+        {localOpenState.phase === "error" && <p className={studioCss.localOpenError} role="alert">{localOpenState.message}</p>}
         {state.snapshotNotice && (
           <aside className={studioCss.snapshotNotice} role="status" aria-label="快照状态">
             {state.snapshotNotice}
@@ -142,9 +178,10 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
             <PluginMixerView analysis={state.analysis} selectedTarget={selectedPluginTarget} onSelectTarget={setSelectedPluginTarget} />
           )}
           {activeTab === "dependencies" && (
-            <DependencyReport analysis={state.analysis} onNavigate={(navigation) => navigateDiagnostic(navigation, setActiveTab, setSelectedPatternId, setSelectedPluginTarget)} />
+            <DependencyReport projectId={projectId} analysis={state.analysis} onNavigate={(navigation) => navigateDiagnostic(navigation, setActiveTab, setSelectedPatternId, setSelectedPluginTarget)} />
           )}
           {activeTab === "versions" && <VersionTimeline projectId={projectId} />}
+          {activeTab === "report" && <ProjectReport project={state.project} analysis={state.analysis} />}
         </div>
       </div>
     </WorkspaceShell>

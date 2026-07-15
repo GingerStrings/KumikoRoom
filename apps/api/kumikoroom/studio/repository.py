@@ -531,6 +531,32 @@ class StudioRepository:
             connection.close()
         return [self._association_from_row(row) for row in rows]
 
+    def get_backup_association(
+        self,
+        project_id: str,
+        association_id: str,
+    ) -> BackupAssociation:
+        connection = self._connect()
+        try:
+            if connection.execute(
+                "SELECT id FROM studio_projects WHERE id = ?", (project_id,)
+            ).fetchone() is None:
+                raise KeyError(project_id)
+            row = connection.execute(
+                """
+                SELECT id, project_id, candidate_project_id, snapshot_id,
+                       score, confirmed, created_at, updated_at
+                FROM studio_backup_associations
+                WHERE id = ? AND project_id = ?
+                """,
+                (association_id, project_id),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise KeyError(association_id)
+        return self._association_from_row(row)
+
     def list_project_versions(
         self,
         project_id: str,

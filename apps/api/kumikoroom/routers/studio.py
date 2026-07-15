@@ -1,7 +1,8 @@
+import hashlib
 import os
 from pathlib import Path
 from threading import RLock
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Protocol
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict
@@ -12,7 +13,6 @@ from kumikoroom.studio.models import (
     AnalysisStatus,
     AutomationSummary,
     ChannelSummary,
-    DependencyReference,
     FlpAnalysisSnapshot,
     MixerInsertSummary,
     MusicalFingerprint,
@@ -85,6 +85,13 @@ class ProjectDetail(ProjectSummary):
     latest_snapshot_analyzed_at: str | None = None
 
 
+class DependencyOut(StudioModel):
+    entity_id: str
+    path: str
+    kind: str
+    exists: bool
+
+
 class AnalysisOut(StudioModel):
     source_path: str
     source_hash: str
@@ -97,7 +104,7 @@ class AnalysisOut(StudioModel):
     mixer_inserts: list[MixerInsertSummary]
     automations: list[AutomationSummary]
     related_assets: list[ProjectAsset]
-    dependencies: list[DependencyReference]
+    dependencies: list[DependencyOut]
     fingerprint: MusicalFingerprint
     diagnostics: list[AnalysisDiagnostic]
     unknown_event_count: int
@@ -135,6 +142,32 @@ class ConfirmVersionOut(StudioModel):
     confirmed: bool
     created_at: str
     updated_at: str
+
+
+class OpenProjectIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["project", "folder", "dependency", "backup"]
+    entity_id: str | None = None
+
+
+class LocalOpener(Protocol):
+    def open(self, target: Path) -> None: ...
+
+
+class WindowsLocalOpener:
+    def open(self, target: Path) -> None:
+        startfile = getattr(os, "startfile", None)
+        if startfile is None:
+            raise OSError("Local open actions require Windows")
+        startfile(str(target))
+
+
+def local_opener() -> LocalOpener:
+    return WindowsLocalOpener()
+
+
+LocalOpenerDependency = Annotated[LocalOpener, Depends(local_opener)]
 
 
 def studio_repository() -> StudioRepository:
@@ -297,12 +330,65 @@ def get_project_analysis(
             detail="Studio project analysis not found",
         ) from None
     try:
-        return AnalysisOut.model_validate_json(record.payload_json)
+        snapshot = record.snapshot
     except (TypeError, ValueError):
         raise HTTPException(
             status_code=409,
             detail="Stored analysis is invalid; rescan the project.",
         ) from None
+    return AnalysisOut.model_validate(
+        {
+            **snapshot.__dict__,
+            "dependencies": [
+                DependencyOut(
+                    entity_id=_dependency_entity_id(
+                        project_id,
+                        record.id,
+                        index,
+                        dependency.path,
+                        Path(snapshot.source_path).parent,
+                    ),
+                    path=dependency.path,
+                    kind=dependency.kind,
+                    exists=dependency.exists,
+                )
+                for index, dependency in enumerate(snapshot.dependencies)
+            ],
+        }
+    )
+
+
+@router.post(
+    "/projects/{project_id}/open",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def open_project_target(
+    project_id: str,
+    payload: OpenProjectIn,
+    repository: StudioRepositoryDependency,
+    opener: LocalOpenerDependency,
+) -> Response:
+    try:
+        project = repository.get_project(project_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Studio project not found") from None
+
+    try:
+        target = _resolve_open_target(repository, project, payload)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Local target not found") from None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Local target is invalid") from None
+    except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
+        raise HTTPException(
+            status_code=409, detail="Local target no longer exists or is unavailable"
+        ) from None
+
+    try:
+        opener.open(target)
+    except OSError:
+        raise HTTPException(status_code=409, detail="Local target could not be opened") from None
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/projects/{project_id}/versions", response_model=VersionPageOut)
@@ -453,3 +539,128 @@ def _is_backup_candidate_path(path: str) -> bool:
         part.casefold() in {"backup", "backups"}
         for part in Path(path).parts[:-1]
     )
+
+
+def _entity_id(
+    kind: str,
+    project_id: str,
+    snapshot_id: str,
+    index: int,
+    recorded_path: str,
+) -> str:
+    identity = "\0".join(
+        (kind, project_id, snapshot_id, str(index), recorded_path)
+    ).encode("utf-8", errors="surrogatepass")
+    return f"{kind}_{hashlib.sha256(identity).hexdigest()}"
+
+
+def _resolve_open_target(
+    repository: StudioRepository,
+    project: StudioProject,
+    payload: OpenProjectIn,
+) -> Path:
+    project_path = Path(project.canonical_path)
+    if payload.kind == "project":
+        if payload.entity_id is not None:
+            raise ValueError("project actions do not accept entity ids")
+        return _existing_path(project_path, expected="file")
+    if payload.kind == "folder":
+        if payload.entity_id is not None:
+            raise ValueError("folder actions do not accept entity ids")
+        return _existing_path(project_path.parent, expected="directory")
+    if not payload.entity_id:
+        raise ValueError("entity id is required")
+
+    if payload.kind == "backup":
+        association = repository.get_backup_association(
+            project.id, payload.entity_id
+        )
+        candidate = repository.get_project(association.candidate_project_id)
+        backup_path = _existing_path(Path(candidate.canonical_path), expected="file")
+        return _existing_path(backup_path.parent, expected="directory")
+
+    try:
+        record = repository.get_latest_snapshot(project.id)
+        snapshot = record.snapshot
+    except KeyError:
+        raise KeyError(payload.entity_id) from None
+    except (TypeError, ValueError):
+        raise OSError("stored analysis is invalid") from None
+    dependency_match = next(
+        (
+            (index, item)
+            for index, item in enumerate(snapshot.dependencies)
+            if payload.entity_id.startswith(
+                f"{_entity_id('dependency', project.id, record.id, index, item.path)}_"
+            )
+        ),
+        None,
+    )
+    if dependency_match is None:
+        raise KeyError(payload.entity_id)
+    index, dependency = dependency_match
+    if not dependency.exists:
+        raise FileNotFoundError(dependency.path)
+    current_entity_id = _dependency_entity_id(
+        project.id,
+        record.id,
+        index,
+        dependency.path,
+        Path(project.canonical_path).parent,
+    )
+    if current_entity_id != payload.entity_id:
+        raise OSError("dependency target changed after entity id was issued")
+    raw_path = Path(dependency.path).expanduser()
+    dependency_path = (
+        raw_path
+        if raw_path.is_absolute()
+        else Path(project.canonical_path).parent / raw_path
+    )
+    resolved = _existing_path(dependency_path)
+    return resolved if resolved.is_dir() else _existing_path(
+        resolved.parent, expected="directory"
+    )
+
+
+def _existing_path(path: Path, *, expected: str | None = None) -> Path:
+    resolved = path.resolve(strict=True)
+    # Refresh metadata immediately before dispatch; startfile itself remains an
+    # OS-level operation, so no shell interpolation or user-controlled command exists.
+    resolved.stat()
+    if expected == "file" and not resolved.is_file():
+        raise FileNotFoundError(str(resolved))
+    if expected == "directory" and not resolved.is_dir():
+        raise NotADirectoryError(str(resolved))
+    return resolved
+
+
+def _dependency_entity_id(
+    project_id: str,
+    snapshot_id: str,
+    index: int,
+    recorded_path: str,
+    project_folder: Path,
+) -> str:
+    base = _entity_id(
+        "dependency", project_id, snapshot_id, index, recorded_path
+    )
+    raw_path = Path(recorded_path).expanduser()
+    candidate = raw_path if raw_path.is_absolute() else project_folder / raw_path
+    try:
+        resolved = candidate.resolve(strict=True)
+        metadata = resolved.stat()
+        version = "\0".join(
+            (
+                os.path.normcase(str(resolved)),
+                str(metadata.st_dev),
+                str(metadata.st_ino),
+                str(metadata.st_size),
+                str(metadata.st_mtime_ns),
+            )
+        )
+    except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
+        version = "unavailable"
+    version_hash = hashlib.sha256(
+        version.encode("utf-8", errors="surrogatepass")
+    ).hexdigest()
+    return f"{base}_{version_hash}"

@@ -1,6 +1,7 @@
 "use client";
 
-import { useId } from "react";
+import { useEffect, useId, useRef, useState } from "react";
+import { openStudioAsset } from "../../api/studioClient";
 import type { StudioAnalysis, StudioAnalysisDiagnostic, StudioDependencyReference } from "../../api/studioTypes";
 import type { PluginMixerTarget } from "./PluginMixerView";
 import studioCss from "./Studio.module.css";
@@ -12,11 +13,16 @@ export type DiagnosticNavigation =
 
 interface DependencyReportProps {
   analysis: StudioAnalysis;
+  projectId?: string;
   onNavigate?: (navigation: DiagnosticNavigation) => void;
 }
 
-export function DependencyReport({ analysis, onNavigate }: DependencyReportProps) {
+export function DependencyReport({ analysis, projectId, onNavigate }: DependencyReportProps) {
   const instanceId = useId();
+  const requestSequence = useRef(0);
+  const controller = useRef<AbortController | null>(null);
+  const [openingEntityId, setOpeningEntityId] = useState<string | null>(null);
+  const [openError, setOpenError] = useState<string | null>(null);
   const diagnosticReportHeadingId = `${instanceId}-diagnostic-report-heading`;
   const unresolvedTargets = new Set(analysis.diagnostics
     .filter((diagnostic) => (
@@ -34,6 +40,31 @@ export function DependencyReport({ analysis, onNavigate }: DependencyReportProps
     diagnostics: analysis.diagnostics.filter((diagnostic) => diagnostic.severity === severity)
   }));
 
+  useEffect(() => () => {
+    requestSequence.current += 1;
+    controller.current?.abort();
+  }, [projectId]);
+
+  async function openDependency(entityId: string) {
+    if (!projectId) return;
+    controller.current?.abort();
+    const currentController = new AbortController();
+    const sequence = requestSequence.current + 1;
+    requestSequence.current = sequence;
+    controller.current = currentController;
+    setOpeningEntityId(entityId);
+    setOpenError(null);
+    try {
+      await openStudioAsset(projectId, { kind: "dependency", entityId }, { signal: currentController.signal });
+    } catch (cause) {
+      if (!currentController.signal.aborted && requestSequence.current === sequence) {
+        setOpenError(localOpenError(cause));
+      }
+    } finally {
+      if (requestSequence.current === sequence) setOpeningEntityId(null);
+    }
+  }
+
   return (
     <article className={studioCss.analysisView} aria-label="依赖与结构诊断">
       <header className={studioCss.analysisViewHeader}>
@@ -42,8 +73,8 @@ export function DependencyReport({ analysis, onNavigate }: DependencyReportProps
       </header>
 
       <section className={studioCss.dependencyColumns} aria-label="依赖分组">
-        <DependencyGroup idPrefix={instanceId} title="缺失" tone="missing" dependencies={missing} empty="没有已报告的缺失依赖。" />
-        <DependencyGroup idPrefix={instanceId} title="可用" tone="available" dependencies={available} empty="没有已报告的可用依赖。" />
+        <DependencyGroup idPrefix={instanceId} title="缺失" tone="missing" dependencies={missing} empty="没有已报告的缺失依赖。" projectId={projectId} openingEntityId={openingEntityId} onOpen={openDependency} />
+        <DependencyGroup idPrefix={instanceId} title="可用" tone="available" dependencies={available} empty="没有已报告的可用依赖。" projectId={projectId} openingEntityId={openingEntityId} onOpen={openDependency} />
         <DependencyGroup
           idPrefix={instanceId}
           title="未知"
@@ -55,8 +86,13 @@ export function DependencyReport({ analysis, onNavigate }: DependencyReportProps
             : analysis.dependencies.length === 0
               ? "当前模型没有可判断的记录；这个快照没有依赖数据。"
               : "当前模型只会把 unresolved_dependency 精确指向的路径列为未知。"}
+          projectId={projectId}
+          openingEntityId={openingEntityId}
+          onOpen={openDependency}
         />
       </section>
+
+      {openError && <p className={studioCss.localOpenError} role="alert">{openError}</p>}
 
       <section className={studioCss.diagnosticReport} aria-labelledby={diagnosticReportHeadingId}>
         <header><div><p className={studioCss.panelKicker}>PARSER NOTES</p><h2 id={diagnosticReportHeadingId}>解析说明</h2></div><span>{analysis.diagnostics.length}</span></header>
@@ -68,13 +104,16 @@ export function DependencyReport({ analysis, onNavigate }: DependencyReportProps
   );
 }
 
-function DependencyGroup({ idPrefix, title, tone, dependencies, empty, description }: {
+function DependencyGroup({ idPrefix, title, tone, dependencies, empty, description, projectId, openingEntityId, onOpen }: {
   idPrefix: string;
   title: string;
   tone: "missing" | "available" | "unknown";
   dependencies: StudioDependencyReference[];
   empty: string;
   description?: string;
+  projectId?: string;
+  openingEntityId: string | null;
+  onOpen: (entityId: string) => void;
 }) {
   const headingId = `${idPrefix}-dependency-${tone}-heading`;
   const locateCapabilityId = `${idPrefix}-locate-capability-${tone}`;
@@ -84,9 +123,11 @@ function DependencyGroup({ idPrefix, title, tone, dependencies, empty, descripti
       {description && <p className={studioCss.dependencyUnknown}>{description}</p>}
       {dependencies.length > 0 ? <ul>{dependencies.map((dependency, index) => {
         const name = fileName(dependency.path);
-        return <li key={`${dependency.path}-${index}`}><div><strong title={dependency.path}>{name}</strong><small>{dependency.kind || "类型未知"} · {dependency.path}</small></div><button type="button" disabled aria-describedby={locateCapabilityId} aria-label={`查看 ${name} 所在位置`}>定位</button></li>;
+        const entityId = dependency.entityId;
+        const opening = Boolean(entityId && openingEntityId === entityId);
+        return <li key={`${dependency.path}-${index}`}><div><strong title={dependency.path}>{name}</strong><small>{dependency.kind || "类型未知"} · {dependency.path}</small></div><button type="button" disabled={!projectId || !entityId || opening} aria-busy={opening || undefined} aria-describedby={locateCapabilityId} aria-label={`查看 ${name} 所在位置`} onClick={() => entityId && onOpen(entityId)}>{opening ? "定位中…" : "定位"}</button></li>;
       })}</ul> : <p>{empty}</p>}
-      <small id={locateCapabilityId} className={studioCss.locateNote}>Task13 本地打开能力接入后可用</small>
+      <small id={locateCapabilityId} className={studioCss.locateNote}>{projectId ? "路径由资料室记录安全定位" : "请从工程详情页使用本地定位"}</small>
     </section>
   );
 }
@@ -153,4 +194,8 @@ function severityLabel(severity: StudioAnalysisDiagnostic["severity"]): string {
 function fileName(value: string): string {
   const segments = value.replace(/\\/g, "/").split("/").filter(Boolean);
   return segments[segments.length - 1] || value || "未命名依赖";
+}
+
+function localOpenError(cause: unknown): string {
+  return cause instanceof Error && cause.message ? cause.message : "暂时无法打开本地位置";
 }

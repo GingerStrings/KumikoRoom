@@ -7,6 +7,7 @@ import type {
   StudioDependencyReference,
   StudioMixerInsertSummary,
   StudioMusicalFingerprint,
+  StudioOpenAction,
   StudioPatternSummary,
   StudioPlaylistClipSummary,
   StudioPluginInstance,
@@ -71,7 +72,7 @@ type AnalysisApi = {
   mixer_inserts: Array<{ id: string; name: string; slot_plugin_ids: string[]; route_target_ids: string[] }>;
   automations: Array<{ id: string; name: string; target_name: string | null; point_count: number }>;
   related_assets: Array<{ path: string; kind: StudioProjectAsset["kind"]; modified_at: string | null; size: number | null }>;
-  dependencies: Array<{ path: string; kind: string; exists: boolean }>;
+  dependencies: Array<{ entity_id?: string; path: string; kind: string; exists: boolean }>;
   fingerprint: {
     note_min: number | null; note_max: number | null; note_density: number; velocity_mean: number | null;
     pattern_reuse: number; inferred_key: string | null; inferred_key_confidence: number; inferred_key_evidence: string[];
@@ -136,6 +137,23 @@ export function getStudioAnalysis(projectId: string, options: { signal?: AbortSi
   return request<AnalysisApi>(`/api/studio/projects/${encodeURIComponent(projectId)}/analysis`, {
     signal: options.signal
   }).then(mapAnalysis);
+}
+
+export function openStudioAsset(
+  projectId: string,
+  action: StudioOpenAction,
+  options: { signal?: AbortSignal } = {}
+): Promise<void> {
+  return request<void>(`/api/studio/projects/${encodeURIComponent(projectId)}/open`, {
+    method: "POST",
+    body: JSON.stringify({
+      kind: action.kind,
+      ...(action.kind === "dependency" || action.kind === "backup"
+        ? { entity_id: action.entityId }
+        : {})
+    }),
+    signal: options.signal
+  });
 }
 
 export function getStudioVersions(
@@ -264,7 +282,7 @@ function mapAnalysis(value: AnalysisApi): StudioAnalysis {
   const mixerInserts: StudioMixerInsertSummary[] = value.mixer_inserts.map((insert) => ({ id: insert.id, name: insert.name, slotPluginIds: insert.slot_plugin_ids, routeTargetIds: insert.route_target_ids }));
   const automations: StudioAutomationSummary[] = value.automations.map((automation) => ({ id: automation.id, name: automation.name, targetName: automation.target_name, pointCount: automation.point_count }));
   const relatedAssets: StudioProjectAsset[] = value.related_assets.map((asset) => ({ path: asset.path, kind: asset.kind, modifiedAt: asset.modified_at, size: asset.size }));
-  const dependencies: StudioDependencyReference[] = value.dependencies.map((dependency) => ({ ...dependency }));
+  const dependencies: StudioDependencyReference[] = value.dependencies.map((dependency) => ({ entityId: dependency.entity_id, path: dependency.path, kind: dependency.kind, exists: dependency.exists }));
   const fingerprint: StudioMusicalFingerprint = {
     noteMin: value.fingerprint.note_min, noteMax: value.fingerprint.note_max, noteDensity: value.fingerprint.note_density,
     velocityMean: value.fingerprint.velocity_mean, patternReuse: value.fingerprint.pattern_reuse,

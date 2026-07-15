@@ -8,6 +8,7 @@ import {
   getStudioProjects,
   getStudioRoots,
   getStudioVersions,
+  openStudioAsset,
   removeStudioRoot,
   startStudioScan
 } from "../src/api/studioClient";
@@ -27,6 +28,27 @@ function response(body: unknown, status = 200) {
 }
 
 describe("Studio API client", () => {
+  it("posts allowlisted local actions without accepting a target path", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(response(undefined, 204));
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+
+    await openStudioAsset(
+      "project/1",
+      { kind: "dependency", entityId: "dependency_safe" },
+      { signal: controller.signal }
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/studio/projects/project%2F1/open",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ kind: "dependency", entity_id: "dependency_safe" }),
+        signal: controller.signal
+      })
+    );
+  });
+
   it("maps versions and semantic diffs and sends confirmation", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(response({ items: [{ snapshot_id: "s1", source_path: "D:/Song.flp", source_hash: "h1", analyzed_at: "2026-07-14T10:00:00Z", kind: "current", association_id: null, score: null, confirmed: true, title: "Song", tempo: 128, pattern_count: 4 }], next_cursor: "cursor-2" }))
@@ -146,7 +168,7 @@ describe("Studio API client", () => {
           mixer_inserts: [{ id: "mix-1", name: "Master", slot_plugin_ids: ["plug-2"], route_target_ids: [] }],
           automations: [{ id: "auto-1", name: "Cutoff", target_name: "FLEX cutoff", point_count: 4 }],
           related_assets: [{ path: "D:/Music/Blue Hour.wav", kind: "render", modified_at: null, size: 1024 }],
-          dependencies: [{ path: "D:/Samples/kick.wav", kind: "sample", exists: false }],
+          dependencies: [{ entity_id: "dependency_kick", path: "D:/Samples/kick.wav", kind: "sample", exists: false }],
           fingerprint: {
             note_min: 48,
             note_max: 84,
@@ -175,7 +197,7 @@ describe("Studio API client", () => {
       patterns: [{ usedInPlaylist: true }],
       plugins: [{ stateSupported: true }],
       mixerInserts: [{ slotPluginIds: ["plug-2"], routeTargetIds: [] }],
-      dependencies: [{ exists: false }],
+      dependencies: [{ entityId: "dependency_kick", exists: false }],
       fingerprint: { inferredKeyConfidence: 0.72 },
       diagnostics: [{ targetType: "dependency" }],
       unknownEventCount: 2

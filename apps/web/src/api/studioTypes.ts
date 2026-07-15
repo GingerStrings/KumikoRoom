@@ -121,10 +121,15 @@ export interface StudioProjectAsset {
 }
 
 export interface StudioDependencyReference {
+  entityId?: string;
   path: string;
   kind: string;
   exists: boolean;
 }
+
+export type StudioOpenAction =
+  | { kind: "project" | "folder" }
+  | { kind: "dependency" | "backup"; entityId: string };
 
 export interface StudioMusicalFingerprint {
   noteMin: number | null;
