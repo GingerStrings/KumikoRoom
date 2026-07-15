@@ -107,6 +107,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("arrangement and Pattern workspace", () => {
@@ -349,6 +350,66 @@ describe("Pattern Explorer", () => {
       const selected = within(list).getByRole("option", { name: /Pattern 149/ }) as HTMLElement;
       expect(Number.parseInt(selected.style.top, 10) + 52).toBeLessThanOrEqual(list.scrollTop + 260);
       expect(list.scrollTop).toBe(149 * 52 + 52 - 260);
+    });
+  });
+
+  it("rebinds measurement when filtering unmounts and remounts the listbox", async () => {
+    const observers: Array<{ element: Element | null; disconnected: boolean }> = [];
+    class ResizeObserverMock {
+      private record = { element: null as Element | null, disconnected: false };
+      constructor() { observers.push(this.record); }
+      observe(element: Element) { this.record.element = element; }
+      unobserve() {}
+      disconnect() { this.record.disconnected = true; }
+    }
+    vi.stubGlobal("ResizeObserver", ResizeObserverMock);
+    let measuredHeight = 364;
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(() => measuredHeight);
+    const manyPatterns: StudioAnalysis = {
+      ...analysis,
+      patterns: Array.from({ length: 150 }, (_, index) => ({
+        id: `pat-${index}`,
+        name: `Pattern ${String(index).padStart(3, "0")}`,
+        usedInPlaylist: false,
+        notes: []
+      }))
+    };
+    function Harness() {
+      const [selected, setSelected] = useState("pat-0");
+      return <>
+        <button type="button" onClick={() => setSelected("pat-149")}>Select remounted last Pattern</button>
+        <PatternExplorer analysis={manyPatterns} selectedPatternId={selected} onSelectPattern={setSelected} />
+      </>;
+    }
+    render(<Harness />);
+    const search = screen.getByRole("searchbox", { name: "搜索 Pattern" });
+    const firstList = screen.getByRole("listbox", { name: "Pattern 列表" }) as HTMLElement;
+    expect(observers[0]?.element).toBe(firstList);
+
+    fireEvent.change(search, { target: { value: "no matches here" } });
+    expect(screen.queryByRole("listbox", { name: "Pattern 列表" })).toBeNull();
+    measuredHeight = 260;
+    fireEvent.change(search, { target: { value: "" } });
+    const remountedList = await screen.findByRole("listbox", { name: "Pattern 列表" }) as HTMLElement;
+
+    expect(remountedList).not.toBe(firstList);
+    expect(observers[0]?.disconnected).toBe(true);
+    expect(observers).toHaveLength(2);
+    expect(observers[1]?.element).toBe(remountedList);
+
+    fireEvent.keyDown(remountedList, { key: "PageDown" });
+    await waitFor(() => {
+      const active = document.getElementById(remountedList.getAttribute("aria-activedescendant") as string) as HTMLElement;
+      expect(active.textContent).toContain("Pattern 005");
+      expect(active.getAttribute("aria-selected")).toBe("true");
+      expect(Number.parseInt(active.style.top, 10) + 52).toBeLessThanOrEqual(remountedList.scrollTop + 260);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Select remounted last Pattern" }));
+    await waitFor(() => {
+      const selected = within(remountedList).getByRole("option", { name: /Pattern 149/ }) as HTMLElement;
+      expect(Number.parseInt(selected.style.top, 10)).toBeGreaterThanOrEqual(remountedList.scrollTop);
+      expect(Number.parseInt(selected.style.top, 10) + 52).toBeLessThanOrEqual(remountedList.scrollTop + 260);
     });
   });
 

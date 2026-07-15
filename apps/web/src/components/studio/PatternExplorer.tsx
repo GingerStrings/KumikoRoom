@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { StudioAnalysis, StudioNoteSummary, StudioPatternSummary } from "../../api/studioTypes";
 import studioCss from "./Studio.module.css";
@@ -98,7 +98,7 @@ function PatternList({
   scrollTop: number;
   onScroll: (value: number) => void;
   onSelectPattern: (patternId: string) => void;
-  listRef: React.RefObject<HTMLDivElement>;
+  listRef: React.MutableRefObject<HTMLDivElement | null>;
 }) {
   const virtualized = patterns.length > 100;
   const listId = useId();
@@ -107,6 +107,7 @@ function PatternList({
     selectedIndex >= 0 ? patterns[selectedIndex].id : patterns[0]?.id ?? null
   );
   const [viewportHeight, setViewportHeight] = useState(LIST_HEIGHT);
+  const [listElement, setListElement] = useState<HTMLDivElement | null>(null);
   const activeIndex = Math.max(0, patterns.findIndex((pattern) => pattern.id === activePatternId));
   const start = virtualized ? Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN) : 0;
   const end = virtualized
@@ -114,11 +115,15 @@ function PatternList({
     : patterns.length;
   const visible = patterns.slice(start, end);
 
+  const bindList = useCallback((element: HTMLDivElement | null) => {
+    listRef.current = element;
+    setListElement(element);
+  }, [listRef]);
+
   useLayoutEffect(() => {
-    const list = listRef.current;
-    if (!list) return;
+    if (!listElement) return;
     const measure = () => {
-      const measured = list.clientHeight;
+      const measured = listElement.clientHeight;
       if (Number.isFinite(measured) && measured > 0) {
         setViewportHeight((current) => current === measured ? current : measured);
       }
@@ -126,12 +131,12 @@ function PatternList({
     measure();
     if (typeof ResizeObserver !== "undefined") {
       const observer = new ResizeObserver(measure);
-      observer.observe(list);
+      observer.observe(listElement);
       return () => observer.disconnect();
     }
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
-  }, [listRef]);
+  }, [listElement]);
 
   function optionId(patternId: string): string {
     return `${listId}-pattern-${encodeURIComponent(patternId)}`;
@@ -161,7 +166,7 @@ function PatternList({
       return;
     }
     ensureIndexVisible(nextIndex);
-  }, [patterns, selectedPatternId, viewportHeight]);
+  }, [patterns, selectedPatternId, viewportHeight, listElement]);
 
   function selectIndex(index: number) {
     const next = patterns[Math.max(0, Math.min(patterns.length - 1, index))];
@@ -194,7 +199,7 @@ function PatternList({
       </div>
       {patterns.length === 0 ? <p className={studioCss.patternNoResults}>没有匹配的 Pattern。</p> : (
         <div
-          ref={listRef}
+          ref={bindList}
           className={studioCss.patternList}
           role="listbox"
           aria-label="Pattern 列表"
