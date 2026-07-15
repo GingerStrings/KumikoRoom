@@ -1,4 +1,8 @@
+import pytest
+from pydantic import ValidationError
+
 from kumikoroom.persona import build_persona_prompt
+from kumikoroom.schemas import ListeningContextIn
 
 
 def test_medium_persona_is_music_centered_and_restrained() -> None:
@@ -37,4 +41,35 @@ def test_runtime_prompt_stays_core_sized_and_excludes_source_archive() -> None:
 
     assert "https://" not in prompt
     assert "资料库" not in prompt
-    assert len(prompt) < 1400
+    assert len(prompt) < 1800
+
+
+@pytest.mark.parametrize("strength", ["medium", "strong"])
+def test_persona_includes_speaking_logic_card(strength: str) -> None:
+    prompt = build_persona_prompt(strength)
+
+    assert "说话逻辑" in prompt
+    assert "先回答用户当前真正的问题" in prompt
+    assert "先听懂，再表达" in prompt
+    assert "轻微吐槽" in prompt
+    assert "不要突然变成热血演讲" in prompt
+    assert "技术、文件、工具问题" in prompt
+
+
+def test_persona_does_not_claim_unconfirmed_playback() -> None:
+    prompt = build_persona_prompt("medium")
+
+    assert "不能声称已经播放" in prompt
+    assert "工具结果" in prompt
+    assert "播放器状态" in prompt
+    assert "请用户给网易云或 B站 链接" in prompt
+
+
+def test_listening_context_schema_rejects_local_source() -> None:
+    with pytest.raises(ValidationError):
+        ListeningContextIn(
+            source="local",
+            title="demo",
+            creator="Kumiko",
+            is_playing=False,
+        )

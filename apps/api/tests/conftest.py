@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from kumikoroom.main import app
+from kumikoroom.studio import service as studio_service_module
 
 
 @pytest.fixture(autouse=True)
@@ -12,17 +13,38 @@ def isolate_api_settings(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setattr(
+        studio_service_module,
+        "default_fl_studio_backup_root",
+        lambda: None,
+    )
     for env_name in (
         "KUMIKOROOM_LLM_PROVIDER",
         "DEEPSEEK_API_KEY",
         "DEEPSEEK_MODEL",
         "DEEPSEEK_BASE_URL",
+        "KUMIKOROOM_NOVEL_CORPUS_DIR",
+        "KUMIKOROOM_NOVEL_RAG_DB_PATH",
+        "KUMIKOROOM_NOVEL_RAG_ENABLED",
+        "KUMIKOROOM_STUDIO_DB_PATH",
     ):
         monkeypatch.delenv(env_name, raising=False)
 
     monkeypatch.setenv(
         "KUMIKOROOM_MEMORY_DB_PATH",
         str(tmp_path / "memory.sqlite3"),
+    )
+    monkeypatch.setenv(
+        "KUMIKOROOM_NOVEL_CORPUS_DIR",
+        str(tmp_path / "jc"),
+    )
+    monkeypatch.setenv(
+        "KUMIKOROOM_NOVEL_RAG_DB_PATH",
+        str(tmp_path / "rag.sqlite3"),
+    )
+    monkeypatch.setenv(
+        "KUMIKOROOM_STUDIO_DB_PATH",
+        str(tmp_path / "studio.sqlite3"),
     )
 
 

@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatSession, StoredChatMessage } from "../src/api/types";
 import { RoomShell } from "../src/components/RoomShell";
 import { getConnectionStatus } from "../src/lib/connectionStatus";
+import { buildListeningContext, makeBilibiliMusicItem, makeNeteaseMusicItem } from "../src/lib/musicItems";
+import { createInitialMusicQueue } from "../src/lib/musicQueue";
 import { DEFAULT_ROOM_STATE, getIdleLine } from "../src/lib/roomState";
 
 const apiMocks = vi.hoisted(() => ({
@@ -12,7 +14,10 @@ const apiMocks = vi.hoisted(() => ({
   getSessionMessages: vi.fn(),
   getSessions: vi.fn(),
   renameSession: vi.fn(),
-  postChat: vi.fn()
+  postChat: vi.fn(),
+  recommendAutoDj: vi.fn(),
+  searchMusic: vi.fn(),
+  testLLMConnection: vi.fn()
 }));
 
 vi.mock("../src/api/client", () => ({
@@ -21,7 +26,10 @@ vi.mock("../src/api/client", () => ({
   getSessionMessages: apiMocks.getSessionMessages,
   getSessions: apiMocks.getSessions,
   renameSession: apiMocks.renameSession,
-  postChat: apiMocks.postChat
+  postChat: apiMocks.postChat,
+  recommendAutoDj: apiMocks.recommendAutoDj,
+  searchMusic: apiMocks.searchMusic,
+  testLLMConnection: apiMocks.testLLMConnection
 }));
 
 const connectionStatus = getConnectionStatus("http://127.0.0.1:8000");
@@ -36,12 +44,67 @@ const defaultCreatedSession = makeSession({
   latestMessagePreview: null
 });
 
+const mediaPlayMock = vi.fn(() => Promise.resolve());
+const mediaPauseMock = vi.fn();
+const PLAYER_TRACKS = [
+  makeNeteaseMusicItem({
+    id: "test-default-north-uji-warmup",
+    title: "North Uji Warmup",
+    creator: "North Uji Ensemble",
+    durationMs: 215866,
+    url: "https://music.163.com/song?id=186016",
+    tags: ["netease", "test-default"]
+  }),
+  makeBilibiliMusicItem({
+    id: "test-default-rehearsal-video",
+    title: "Rehearsal Video",
+    creator: "Rehearsal Archive",
+    durationMs: 2055000,
+    url: "https://www.bilibili.com/video/BV1xx411c7mD",
+    tags: ["bilibili", "test-default"]
+  })
+];
+const TEST_MUSIC_QUEUE_STORAGE_KEY = "kumikoroom.musicQueue";
+const TEST_MUSIC_LIBRARY_STORAGE_KEY = "kumikoroom.musicLibrary";
+const REMOVED_RED_HORSE_TITLE = "\u7ea2\u9a6c (\u4f34\u594f)";
+const REMOVED_BILIBILI_TITLE = "\u5b57\u5e55\u541b\u4ea4\u6d41\u573a\u6240";
+const REMOVED_RED_HORSE_ITEM = makeNeteaseMusicItem({
+  id: "netease-red-horse-instrumental",
+  title: REMOVED_RED_HORSE_TITLE,
+  creator: "\u95eb\u6770\u6668",
+  durationMs: 215866,
+  url: "https://music.163.com/song?id=1822942870",
+  tags: ["netease", "instrumental"]
+});
+const REMOVED_BILIBILI_ITEM = makeBilibiliMusicItem({
+  id: "bilibili-blue-bird-rehearsal",
+  title: REMOVED_BILIBILI_TITLE,
+  creator: "\u78a7\u8bd7",
+  durationMs: 2055000,
+  url: "https://www.bilibili.com/video/BV1xx411c7mD",
+  tags: ["bilibili"]
+});
+
 describe("RoomShell", () => {
   beforeEach(() => {
     for (const mock of Object.values(apiMocks)) {
       mock.mockReset();
     }
+    mediaPlayMock.mockClear();
+    mediaPauseMock.mockClear();
+    Object.defineProperty(HTMLMediaElement.prototype, "play", {
+      configurable: true,
+      value: mediaPlayMock
+    });
+    Object.defineProperty(HTMLMediaElement.prototype, "pause", {
+      configurable: true,
+      value: mediaPauseMock
+    });
     localStorage.clear();
+    localStorage.setItem(
+      TEST_MUSIC_QUEUE_STORAGE_KEY,
+      JSON.stringify(createInitialMusicQueue(PLAYER_TRACKS, "2026-06-29T00:00:00.000Z"))
+    );
     apiMocks.getSessions.mockResolvedValue([defaultSession]);
     apiMocks.getSessionMessages.mockResolvedValue([]);
     apiMocks.createSession.mockResolvedValue(defaultCreatedSession);
@@ -56,6 +119,109 @@ describe("RoomShell", () => {
       )
     );
     apiMocks.postChat.mockResolvedValue(makeChatResponse({ session: null }));
+    apiMocks.recommendAutoDj.mockResolvedValue({
+      ok: true,
+      refillId: "auto-dj-test",
+      notice: "Auto DJ added 1 track and kept close to the current mood.",
+      clientActions: [
+        {
+          type: "add_music_to_queue",
+          item: {
+            id: "netease-auto-a",
+            source: "netease",
+            title: "Auto DJ Song",
+            creator: "Auto Artist",
+            durationMs: 180000,
+            pageUrl: "https://music.163.com/#/song?id=100",
+            platformAudioUrl: "https://music.163.com/song/media/outer/url?id=100.mp3",
+            tags: ["netease", "agent-selected"],
+            canOpenVideo: false,
+            sourceQuery: "current mellow theme",
+            selectedReason: "close to the current listening context",
+            selectionEvidence: ["playable candidate"],
+            selectionScore: 120
+          }
+        }
+      ],
+      recommendations: [
+        {
+          item: {
+            id: "netease-auto-a",
+            source: "netease",
+            title: "Auto DJ Song",
+            creator: "Auto Artist",
+            durationMs: 180000,
+            pageUrl: "https://music.163.com/#/song?id=100",
+            platformAudioUrl: "https://music.163.com/song/media/outer/url?id=100.mp3",
+            tags: ["netease", "agent-selected"],
+            canOpenVideo: false,
+            sourceQuery: "current mellow theme",
+            selectedReason: "close to the current listening context",
+            selectionEvidence: ["playable candidate"],
+            selectionScore: 120
+          },
+          score: 120,
+          intent: "similar_theme",
+          reason: "close to the current listening context",
+          evidence: ["playable candidate"]
+        }
+      ],
+      profilePatch: {
+        recommendedItems: [
+          {
+            itemId: "netease-auto-a",
+            title: "Auto DJ Song",
+            creator: "Auto Artist",
+            source: "netease",
+            recommendedAt: "2026-06-18T00:00:00.000Z",
+            played: false,
+            disliked: false,
+            reason: "close to the current listening context"
+          }
+        ],
+        cooldowns: [],
+        refillHistory: [
+          {
+            refillId: "auto-dj-test",
+            createdAt: "2026-06-18T00:00:00.000Z",
+            selectedItemIds: ["netease-auto-a"],
+            dominantThemes: ["netease"],
+            explorationCount: 0
+          }
+        ]
+      },
+      error: null,
+      sourceErrors: [],
+      trace: {
+        plannerQueries: [
+          {
+            query: "current mellow theme",
+            intent: "similar_theme",
+            themes: ["mellow", "brass"]
+          }
+        ],
+        candidateCount: 4,
+        scoredCount: 3,
+        selectedItemIds: ["netease-auto-a"],
+        candidates: [
+          {
+            itemId: "netease-auto-a",
+            title: "Auto DJ Song",
+            creator: "Auto Artist",
+            source: "netease",
+            query: "current mellow theme",
+            intent: "similar_theme",
+            score: 120,
+            reason: "close to the current listening context",
+            evidence: ["playable candidate"],
+            selected: true
+          }
+        ],
+        sourceErrors: [],
+        error: null
+      }
+    });
+    apiMocks.searchMusic.mockResolvedValue([]);
   });
 
   it("renders a chat-first workspace without the character placeholder", async () => {
@@ -98,6 +264,1363 @@ describe("RoomShell", () => {
     const createButton = screen.getByRole("button", { name: "新建会话" });
     expect(createButton.classList.contains("tool")).toBe(true);
     expect(createButton.textContent).toBe("+");
+  });
+
+  it("renders the default Netease platform track before video is opened", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    expect(screen.getByLabelText("氛围播放器")).toBeTruthy();
+    expect(screen.getByText(PLAYER_TRACKS[0].title)).toBeTruthy();
+    expect(screen.getByText(PLAYER_TRACKS[0].creator)).toBeTruthy();
+    const playerControls = getPlayerControls();
+    const sourceBadge = document.querySelector<HTMLElement>(".source-badge");
+    const audio = getPlatformAudio();
+
+    expect(playerControls.getAttribute("data-has-video")).not.toBe("true");
+    expect(sourceBadge?.getAttribute("data-source")).toBe("netease");
+    expect(audio.getAttribute("src")).toBe(PLAYER_TRACKS[0].platformAudioUrl);
+    expect(audio.getAttribute("src")).not.toContain("/assets/");
+    expect(screen.queryByRole("button", { name: "打开视频小窗" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "B站视频小窗" })).toBeNull();
+    expect(screen.queryByTitle(/视频播放/)).toBeNull();
+  });
+
+  it("starts with an idle player when no queue is stored", async () => {
+    localStorage.removeItem(TEST_MUSIC_QUEUE_STORAGE_KEY);
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe("暂无播放");
+    expect(document.querySelector<HTMLElement>(".track-title span")?.textContent).toBe("可以让久美子继续帮你找歌");
+    expect(document.querySelector("audio.platform-audio-host")).toBeNull();
+    expect(document.querySelector(".source-badge")).toBeNull();
+  });
+
+  it("removes deleted sticky default tracks from stored queue and playlists", async () => {
+    const keptTrack = PLAYER_TRACKS[0];
+    localStorage.setItem(
+      TEST_MUSIC_QUEUE_STORAGE_KEY,
+      JSON.stringify({
+        entries: [
+          {
+            id: REMOVED_RED_HORSE_ITEM.id,
+            item: REMOVED_RED_HORSE_ITEM,
+            status: "current",
+            addedBy: "default",
+            addedAt: "2026-06-29T00:00:00.000Z",
+            playCount: 1,
+            lastPlayedAt: "2026-06-29T00:00:00.000Z"
+          },
+          {
+            id: keptTrack.id,
+            item: keptTrack,
+            status: "queued",
+            addedBy: "user",
+            addedAt: "2026-06-29T00:00:00.000Z",
+            playCount: 0
+          },
+          {
+            id: REMOVED_BILIBILI_ITEM.id,
+            item: REMOVED_BILIBILI_ITEM,
+            status: "queued",
+            addedBy: "default",
+            addedAt: "2026-06-29T00:00:00.000Z",
+            playCount: 0
+          }
+        ],
+        currentId: REMOVED_RED_HORSE_ITEM.id,
+        recentLimit: 30
+      })
+    );
+    localStorage.setItem(
+      TEST_MUSIC_LIBRARY_STORAGE_KEY,
+      JSON.stringify({
+        playlists: [
+          {
+            id: "playlist-legacy",
+            name: "Legacy",
+            items: [
+              {
+                id: REMOVED_RED_HORSE_ITEM.id,
+                item: REMOVED_RED_HORSE_ITEM,
+                addedAt: "2026-06-29T00:00:00.000Z",
+                addedBy: "default"
+              },
+              {
+                id: keptTrack.id,
+                item: keptTrack,
+                addedAt: "2026-06-29T00:00:00.000Z",
+                addedBy: "user"
+              }
+            ],
+            createdAt: "2026-06-29T00:00:00.000Z",
+            updatedAt: "2026-06-29T00:00:00.000Z"
+          }
+        ]
+      })
+    );
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    expect(screen.queryByText(REMOVED_RED_HORSE_TITLE)).toBeNull();
+    expect(screen.queryByText(REMOVED_BILIBILI_TITLE)).toBeNull();
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe(keptTrack.title);
+
+    fireEvent.click(getQueueManageButton());
+    const panel = getMusicQueuePanel();
+    expect(within(panel).queryByText(REMOVED_RED_HORSE_TITLE)).toBeNull();
+    expect(within(panel).queryByText(REMOVED_BILIBILI_TITLE)).toBeNull();
+    expect(within(panel).getByText(keptTrack.title)).toBeTruthy();
+
+    fireEvent.click(within(panel).getByRole("tab", { name: "我的歌单" }));
+    expect(within(panel).queryByText(REMOVED_RED_HORSE_TITLE)).toBeNull();
+    expect(within(panel).getByText(keptTrack.title)).toBeTruthy();
+  });
+
+  it("switches the right-side standee between playing and idle art", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    const standee = document.querySelector<HTMLImageElement>(".standee-img");
+    expect(standee?.getAttribute("src")).toBe("/assets/kumiko-euphonium-playing-v1.png");
+
+    fireEvent.click(screen.getByRole("button", { name: "暂停" }));
+    expect(standee?.getAttribute("src")).toBe("/assets/kumiko-standee-v1.png");
+
+    fireEvent.click(screen.getByRole("button", { name: "播放" }));
+    expect(standee?.getAttribute("src")).toBe("/assets/kumiko-euphonium-playing-v1.png");
+  });
+
+  it("updates Netease progress from media events and controls the platform audio element", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    const audio = getPlatformAudio();
+    Object.defineProperty(audio, "duration", {
+      configurable: true,
+      value: PLAYER_TRACKS[0].durationMs / 1000
+    });
+    audio.currentTime = 42;
+    fireEvent.loadedMetadata(audio);
+    fireEvent.timeUpdate(audio);
+
+    const progress = document.querySelector<HTMLElement>(".progress");
+    const fill = document.querySelector<HTMLElement>(".bar span");
+    expect(progress?.textContent).toContain("00:42");
+    expect(progress?.textContent).toContain("03:35");
+    expect(fill?.style.width).toBe("19.5%");
+
+    fireEvent.click(screen.getByRole("button", { name: "暂停" }));
+    expect(mediaPauseMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "播放" }));
+    expect(mediaPlayMock).toHaveBeenCalled();
+  });
+
+  it("advances to the next queued audio track on ended without removing played tracks", async () => {
+    const firstTrack = {
+      id: "netease-ended-first",
+      source: "netease" as const,
+      title: "自动播放第一首",
+      creator: "Queue Test",
+      durationMs: 180000,
+      pageUrl: "https://music.163.com/#/song?id=180",
+      platformAudioUrl: "https://music.163.com/song/media/outer/url?id=180.mp3",
+      tags: ["netease", "queue-test"],
+      canOpenVideo: false
+    };
+    const secondTrack = {
+      id: "netease-ended-second",
+      source: "netease" as const,
+      title: "自动播放第二首",
+      creator: "Queue Test",
+      durationMs: 181000,
+      pageUrl: "https://music.163.com/#/song?id=181",
+      platformAudioUrl: "https://music.163.com/song/media/outer/url?id=181.mp3",
+      tags: ["netease", "queue-test"],
+      canOpenVideo: false
+    };
+    apiMocks.postChat.mockResolvedValueOnce(
+      makeChatResponse({
+        reply: { id: "reply-auto-next", role: "kumiko", content: "我排好队列并开始播放了。" },
+        clientActions: [
+          { type: "play_music_item", item: firstTrack },
+          { type: "add_music_to_queue", item: secondTrack }
+        ]
+      })
+    );
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), { target: { value: "播放并排下一首" } });
+    fireEvent.click(getComposerSubmit());
+
+    expect(await within(getTimeline()).findByText("我排好队列并开始播放了。")).toBeTruthy();
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe(firstTrack.title);
+    const audio = getPlatformAudio();
+    audio.currentTime = firstTrack.durationMs / 1000;
+    fireEvent.ended(audio);
+
+    await waitFor(() =>
+      expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe(secondTrack.title)
+    );
+    fireEvent.click(getQueueManageButton());
+    const panel = getMusicQueuePanel();
+    const firstRow = within(panel).getByText(firstTrack.title).closest(".music-queue-row");
+    const secondRow = within(panel).getByText(secondTrack.title).closest(".music-queue-row");
+    expect(firstRow).toBeTruthy();
+    expect(secondRow?.getAttribute("data-active")).toBe("true");
+  });
+
+  it("cycles playback modes from the player controls", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "播放模式：顺序播放" }));
+    expect(screen.getByRole("button", { name: "播放模式：随机播放" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "播放模式：随机播放" }));
+    expect(screen.getByRole("button", { name: "播放模式：单曲循环" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "播放模式：单曲循环" }));
+    expect(screen.getByRole("button", { name: "播放模式：顺序播放" })).toBeTruthy();
+  });
+
+  it("wraps from the last track to the first track when pressing next in sequence mode", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(getQueuePreviewMain());
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe(PLAYER_TRACKS[1].title);
+
+    fireEvent.click(screen.getByRole("button", { name: "下一首" }));
+
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe(PLAYER_TRACKS[0].title);
+  });
+
+  it("opens and closes the Bilibili mini-window from the music player", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(getQueuePreviewMain());
+    const sourceBadge = document.querySelector<HTMLElement>(".source-badge");
+
+    expect(sourceBadge?.getAttribute("data-source")).toBe("bilibili");
+    expect(getPlayerControls().getAttribute("data-has-video")).toBe("true");
+    expect(screen.getByRole("button", { name: "打开视频小窗" })).toBeTruthy();
+    expect(document.querySelector("audio.platform-audio-host")).toBeNull();
+    expect(document.querySelector(".progress")?.textContent).not.toContain("00:42");
+    expect(document.querySelector(".progress")?.textContent).not.toContain("02:18");
+    fireEvent.click(screen.getByRole("button", { name: "打开视频小窗" }));
+
+    expect(screen.getByRole("dialog", { name: "B站视频小窗" })).toBeTruthy();
+    expect(screen.getByTitle(new RegExp(PLAYER_TRACKS[1].title))).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭视频小窗" }));
+    expect(screen.queryByRole("dialog", { name: "B站视频小窗" })).toBeNull();
+  });
+
+  it("sends active listening context with chat messages", async () => {
+    const bilibiliTrack = PLAYER_TRACKS.find((track) => track.source === "bilibili");
+    if (!bilibiliTrack) {
+      throw new Error("Bilibili player track not found");
+    }
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(getQueuePreviewMain());
+    fireEvent.change(getComposerInput(), {
+      target: { value: "这首现在是什么感觉？" }
+    });
+    fireEvent.click(getComposerSubmit());
+
+    await waitFor(() => expect(apiMocks.postChat).toHaveBeenCalledTimes(1));
+    expect(apiMocks.postChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        listeningContext: buildListeningContext(bilibiliTrack, true),
+        musicState: expect.objectContaining({
+          isPlaying: true,
+          current: expect.objectContaining({
+            id: bilibiliTrack.id,
+            title: bilibiliTrack.title,
+            creator: bilibiliTrack.creator,
+            saved: false
+          }),
+          previous: expect.objectContaining({
+            id: PLAYER_TRACKS[0].id
+          }),
+          next: expect.any(Object),
+          upcoming: expect.any(Array),
+          recent: expect.arrayContaining([
+            expect.objectContaining({
+              id: PLAYER_TRACKS[0].id
+            })
+          ]),
+          saved: []
+        })
+      })
+    );
+  });
+
+  it("sends stored music library playlists with chat messages", async () => {
+    localStorage.setItem(
+      "kumikoroom.musicLibrary",
+      JSON.stringify({
+        playlists: [
+          {
+            id: "playlist-night-writing",
+            name: "Night Writing",
+            description: "quiet songs",
+            createdAt: "2026-06-15T00:00:00.000Z",
+            updatedAt: "2026-06-15T00:01:00.000Z",
+            items: [
+              {
+                id: PLAYER_TRACKS[0].id,
+                item: PLAYER_TRACKS[0],
+                addedAt: "2026-06-15T00:01:00.000Z",
+                addedBy: "user"
+              }
+            ]
+          }
+        ]
+      })
+    );
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), { target: { value: "What is in my playlists?" } });
+    fireEvent.click(getComposerSubmit());
+
+    await waitFor(() => expect(apiMocks.postChat).toHaveBeenCalledTimes(1));
+    expect(apiMocks.postChat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        musicState: expect.objectContaining({
+          playlists: [
+            expect.objectContaining({
+              id: "playlist-night-writing",
+              name: "Night Writing",
+              description: "quiet songs",
+              itemCount: 1,
+              updatedAt: "2026-06-15T00:01:00.000Z",
+              items: [
+                expect.objectContaining({
+                  id: PLAYER_TRACKS[0].id,
+                  title: PLAYER_TRACKS[0].title,
+                  tags: PLAYER_TRACKS[0].tags
+                })
+              ]
+            })
+          ]
+        })
+      })
+    );
+  });
+
+  it("persists Auto DJ and refills the queue when depth reaches the trigger", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("switch", { name: "Auto DJ" }));
+
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+    expect(localStorage.getItem("kumikoroom.autoDjEnabled")).toBe("true");
+    expect(apiMocks.recommendAutoDj).toHaveBeenCalledWith(
+      expect.objectContaining({
+        settings: {
+          count: 3,
+          queueDepthTrigger: 2,
+          similarCount: 2,
+          explorationCount: 1
+        },
+        recommendationProfile: expect.objectContaining({
+          version: 1
+        })
+      })
+    );
+    expect(await within(getTimeline()).findByText("Auto DJ added 1 track and kept close to the current mood.")).toBeTruthy();
+    fireEvent.click(getQueueManageButton());
+    expect(within(getMusicQueuePanel()).getByText("Auto DJ Song")).toBeTruthy();
+    expect(localStorage.getItem("kumikoroom.musicRecommendationProfile")).toContain("netease-auto-a");
+    const storedQueue = JSON.parse(localStorage.getItem("kumikoroom.musicQueue") ?? "{}") as {
+      entries?: Array<{ id?: string; recommendationIntent?: string; recommendationRefillId?: string }>;
+    };
+    expect(storedQueue.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "netease-auto-a",
+        recommendationIntent: "similar_theme",
+        recommendationRefillId: "auto-dj-test"
+      })
+    ]));
+  });
+
+  it("shows the latest Auto DJ trace in the queue panel", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("switch", { name: "Auto DJ" }));
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(getQueueManageButton());
+    const panel = getMusicQueuePanel();
+    expect(within(panel).getByText("Auto DJ Trace")).toBeTruthy();
+    expect(within(panel).getByText("current mellow theme")).toBeTruthy();
+    expect(within(panel).getByText("candidates 4 / scored 3")).toBeTruthy();
+    expect(within(panel).getByText("selected Auto DJ Song")).toBeTruthy();
+  });
+
+  it("shows the Auto DJ trace error in the queue panel", async () => {
+    apiMocks.recommendAutoDj.mockReset();
+    apiMocks.recommendAutoDj.mockResolvedValue({
+      ok: false,
+      refillId: null,
+      notice: "Auto DJ 暂时没找到合适的歌",
+      clientActions: [],
+      recommendations: [],
+      profilePatch: { recommendedItems: [], cooldowns: [], refillHistory: [] },
+      error: "query_planning_failed",
+      sourceErrors: [],
+      trace: {
+        plannerQueries: [],
+        candidateCount: 0,
+        scoredCount: 0,
+        selectedItemIds: [],
+        candidates: [],
+        sourceErrors: [],
+        error: "LLM call failed: DeepSeek request failed"
+      }
+    });
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("switch", { name: "Auto DJ" }));
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(getQueueManageButton());
+    const panel = getMusicQueuePanel();
+    expect(within(panel).getByText("Auto DJ Trace")).toBeTruthy();
+    expect(within(panel).getByText("LLM call failed: DeepSeek request failed")).toBeTruthy();
+  });
+
+  it("shows a local Auto DJ trace when the request rejects", async () => {
+    apiMocks.recommendAutoDj.mockReset();
+    apiMocks.recommendAutoDj.mockRejectedValue(new Error("Network timeout"));
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("switch", { name: "Auto DJ" }));
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(getQueueManageButton());
+    const panel = getMusicQueuePanel();
+    expect(within(panel).getByText("Auto DJ Trace")).toBeTruthy();
+    expect(panel.textContent).toContain("request_failed");
+    expect(panel.textContent).toContain("Network timeout");
+  });
+
+  it("learns from an Auto DJ recommendation when it starts playing only once", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    const autoDjSwitch = screen.getByRole("switch", { name: "Auto DJ" });
+    fireEvent.click(autoDjSwitch);
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+    fireEvent.click(autoDjSwitch);
+
+    fireEvent.click(getQueueManageButton());
+    const panel = getMusicQueuePanel();
+    const row = within(panel).getByText("Auto DJ Song").closest(".music-queue-row");
+    if (!row) {
+      throw new Error("Auto DJ queue row not found");
+    }
+
+    fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "播放" }));
+    await waitFor(() => {
+      const profile = JSON.parse(
+        localStorage.getItem("kumikoroom.musicRecommendationProfile") ?? "{}"
+      );
+      expect(profile.recommendedItems).toEqual(expect.arrayContaining([
+        expect.objectContaining({ itemId: "netease-auto-a", played: true })
+      ]));
+      expect(profile.artistWeights["auto artist"]).toBe(1);
+      expect(profile.sourceWeights.netease).toBe(0.5);
+      expect(profile.queryWeights["current mellow theme"]).toBe(0.5);
+    });
+
+    fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "播放" }));
+    await waitFor(() => {
+      const profile = JSON.parse(
+        localStorage.getItem("kumikoroom.musicRecommendationProfile") ?? "{}"
+      );
+      expect(profile.artistWeights["auto artist"]).toBe(1);
+      expect(profile.sourceWeights.netease).toBe(0.5);
+      expect(profile.queryWeights["current mellow theme"]).toBe(0.5);
+    });
+  });
+
+  it("learns a skip when an unplayed Auto DJ recommendation is removed", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    const autoDjSwitch = screen.getByRole("switch", { name: "Auto DJ" });
+    fireEvent.click(autoDjSwitch);
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+    fireEvent.click(autoDjSwitch);
+
+    fireEvent.click(getQueueManageButton());
+    const panel = getMusicQueuePanel();
+    const row = within(panel).getByText("Auto DJ Song").closest(".music-queue-row");
+    if (!row) {
+      throw new Error("Auto DJ queue row not found");
+    }
+
+    fireEvent.click(within(row as HTMLElement).getByRole("button", { name: "移除" }));
+    await waitFor(() => {
+      const profile = JSON.parse(
+        localStorage.getItem("kumikoroom.musicRecommendationProfile") ?? "{}"
+      );
+      expect(profile.recommendedItems).toEqual(expect.arrayContaining([
+        expect.objectContaining({ itemId: "netease-auto-a", played: false, disliked: false })
+      ]));
+      expect(profile.artistWeights["auto artist"]).toBe(-0.15);
+      expect(profile.sourceWeights.netease).toBe(-0.1);
+      expect(profile.queryWeights["current mellow theme"]).toBe(-0.1);
+    });
+    expect(within(panel).queryByText("Auto DJ Song")).toBeNull();
+  });
+
+  it("sends the configured llmConfig with the Auto DJ refill", async () => {
+    localStorage.setItem(
+      "kumikoroom.llmConfig",
+      JSON.stringify({
+        provider: "openai_compatible",
+        baseUrl: "https://example.invalid",
+        apiKey: "test",
+        model: "planner-model"
+      })
+    );
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("switch", { name: "Auto DJ" }));
+
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+    expect(apiMocks.recommendAutoDj.mock.calls[0][0].llmConfig).toMatchObject({
+      provider: "openai_compatible",
+      apiKey: "test"
+    });
+  });
+
+  it("includes the full chat history on the Auto DJ refill", async () => {
+    const stored: StoredChatMessage[] = Array.from({ length: 250 }, (_, index) => ({
+      id: `seed-${index}`,
+      sessionId: defaultSession.id,
+      role: index % 2 === 0 ? "user" : "kumiko",
+      content: `seed message ${index}`
+    }));
+    apiMocks.getSessionMessages.mockResolvedValueOnce(stored);
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    await waitFor(() => expect(screen.getByText("seed message 249")).toBeTruthy());
+    fireEvent.click(screen.getByRole("switch", { name: "Auto DJ" }));
+
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+    expect(apiMocks.recommendAutoDj.mock.calls[0][0].recentMessages).toHaveLength(250);
+    expect(apiMocks.recommendAutoDj.mock.calls[0][0].recentMessages[0]).toMatchObject({
+      id: "seed-0",
+      content: "seed message 0"
+    });
+    expect(apiMocks.recommendAutoDj.mock.calls[0][0].recentMessages[249]).toMatchObject({
+      id: "seed-249",
+      content: "seed message 249"
+    });
+  });
+
+  it("manual recommendation sends full chat history and playlist context without enabling Auto DJ", async () => {
+    const stored: StoredChatMessage[] = Array.from({ length: 250 }, (_, index) => ({
+      id: `manual-seed-${index}`,
+      sessionId: defaultSession.id,
+      role: index % 2 === 0 ? "user" : "kumiko",
+      content: `manual seed message ${index}`
+    }));
+    apiMocks.getSessionMessages.mockResolvedValueOnce(stored);
+    localStorage.setItem(
+      "kumikoroom.musicLibrary",
+      JSON.stringify({
+        playlists: [
+          {
+            id: "playlist-manual-context",
+            name: "Manual Context",
+            description: "full playlist context",
+            createdAt: "2026-06-15T00:00:00.000Z",
+            updatedAt: "2026-06-15T00:01:00.000Z",
+            items: [
+              {
+                id: PLAYER_TRACKS[0].id,
+                item: PLAYER_TRACKS[0],
+                addedAt: "2026-06-15T00:01:00.000Z",
+                addedBy: "user"
+              }
+            ]
+          }
+        ]
+      })
+    );
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    await waitFor(() => expect(screen.getByText("manual seed message 249")).toBeTruthy());
+    expect((screen.getByRole("switch", { name: "Auto DJ" }) as HTMLInputElement).checked).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "手动触发推荐" }));
+
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+    const payload = apiMocks.recommendAutoDj.mock.calls[0][0];
+    expect(payload.recentMessages).toHaveLength(250);
+    expect(payload.recentMessages[0]).toMatchObject({
+      id: "manual-seed-0",
+      content: "manual seed message 0"
+    });
+    expect(payload.recentMessages[249]).toMatchObject({
+      id: "manual-seed-249",
+      content: "manual seed message 249"
+    });
+    expect(payload.musicState).toEqual(
+      expect.objectContaining({
+        playlists: [
+          expect.objectContaining({
+            id: "playlist-manual-context",
+            name: "Manual Context",
+            description: "full playlist context",
+            itemCount: 1,
+            items: [
+              expect.objectContaining({
+                id: PLAYER_TRACKS[0].id,
+                title: PLAYER_TRACKS[0].title,
+                tags: PLAYER_TRACKS[0].tags
+              })
+            ]
+          })
+        ]
+      })
+    );
+    expect((screen.getByRole("switch", { name: "Auto DJ" }) as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("shows an inline status and no chat notice when the planner fails", async () => {
+    apiMocks.recommendAutoDj.mockReset();
+    apiMocks.recommendAutoDj.mockResolvedValue({
+      ok: false,
+      refillId: null,
+      notice: "Auto DJ 暂时没找到合适的歌",
+      clientActions: [],
+      recommendations: [],
+      profilePatch: { recommendedItems: [], cooldowns: [], refillHistory: [] },
+      error: "query_planning_failed",
+      sourceErrors: []
+    });
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("switch", { name: "Auto DJ" }));
+
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("暂时没找到合适的歌")).toBeTruthy();
+    expect(within(getTimeline()).queryByText(/Auto DJ added/i)).toBeNull();
+    expect(screen.queryByText("消息没送出去，检查本地 API 后可以重试。")).toBeNull();
+  });
+
+  it("retries the same queue after toggling Auto DJ off then on", async () => {
+    apiMocks.recommendAutoDj.mockReset();
+    apiMocks.recommendAutoDj
+      .mockResolvedValueOnce({
+        ok: false,
+        refillId: null,
+        notice: "Auto DJ 暂时没找到合适的歌",
+        clientActions: [],
+        recommendations: [],
+        profilePatch: { recommendedItems: [], cooldowns: [], refillHistory: [] },
+        error: "query_planning_failed",
+        sourceErrors: []
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        refillId: null,
+        notice: "Auto DJ 暂时没找到合适的歌",
+        clientActions: [],
+        recommendations: [],
+        profilePatch: { recommendedItems: [], cooldowns: [], refillHistory: [] },
+        error: "query_planning_failed",
+        sourceErrors: []
+      });
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    const autoDjSwitch = screen.getByRole("switch", { name: "Auto DJ" });
+    fireEvent.click(autoDjSwitch);
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+    fireEvent.click(autoDjSwitch);
+    fireEvent.click(autoDjSwitch);
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(2));
+  });
+
+  it("creates and persists a manual playlist from the management panel", async () => {
+    const firstRender = render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(getQueueManageButton());
+    let panel = getMusicQueuePanel();
+    fireEvent.click(within(panel).getByRole("tab", { name: "我的歌单" }));
+    fireEvent.change(within(panel).getByLabelText("歌单名称"), { target: { value: "夜晚写作" } });
+    fireEvent.click(within(panel).getByRole("button", { name: "新建歌单" }));
+
+    expect(within(panel).getByText("夜晚写作")).toBeTruthy();
+    expect(localStorage.getItem("kumikoroom.musicLibrary")).toContain("夜晚写作");
+
+    firstRender.unmount();
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(getQueueManageButton());
+    panel = getMusicQueuePanel();
+    fireEvent.click(within(panel).getByRole("tab", { name: "我的歌单" }));
+    expect(within(panel).getByText("夜晚写作")).toBeTruthy();
+  });
+
+  it("applies agent playlist client actions and plays the playlist", async () => {
+    apiMocks.postChat.mockResolvedValueOnce(
+      makeChatResponse({
+        reply: { id: "reply-playlist", role: "kumiko", content: "我建好歌单并开始播放了。" },
+        clientActions: [
+          {
+            type: "create_music_playlist",
+            playlistId: "playlist-agent-list",
+            playlistName: "Agent List",
+            description: "from agent"
+          },
+          {
+            type: "add_music_to_playlist",
+            playlistId: "playlist-agent-list",
+            item: {
+              id: "netease-agent-playlist-song",
+              source: "netease",
+              title: "Agent Playlist Song",
+              creator: "Agent Curator",
+              durationMs: 201000,
+              pageUrl: "https://music.163.com/#/song?id=201",
+              platformAudioUrl: "https://music.163.com/song/media/outer/url?id=201.mp3",
+              tags: ["netease", "agent-selected"],
+              canOpenVideo: false
+            }
+          },
+          { type: "play_music_playlist", playlistId: "playlist-agent-list" }
+        ]
+      })
+    );
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), { target: { value: "建一个歌单然后播放" } });
+    fireEvent.click(getComposerSubmit());
+
+    expect(await within(getTimeline()).findByText("我建好歌单并开始播放了。")).toBeTruthy();
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe("Agent Playlist Song");
+    fireEvent.click(getQueueManageButton());
+    const panel = getMusicQueuePanel();
+    fireEvent.click(within(panel).getByRole("tab", { name: "我的歌单" }));
+    expect(within(panel).getByText("Agent List")).toBeTruthy();
+    expect(within(panel).getByText("Agent Playlist Song")).toBeTruthy();
+  });
+
+  it("uses the backend playlist id when delayed agent playlist actions race with a same-name manual playlist", async () => {
+    const pendingChat = deferred<Awaited<ReturnType<typeof apiMocks.postChat>>>();
+    const agentPlaylistTrack = {
+      id: "netease-agent-race-song",
+      source: "netease" as const,
+      title: "Agent Race Song",
+      creator: "Agent Curator",
+      durationMs: 201000,
+      pageUrl: "https://music.163.com/#/song?id=301",
+      platformAudioUrl: "https://music.163.com/song/media/outer/url?id=301.mp3",
+      tags: ["netease", "agent-selected"],
+      canOpenVideo: false
+    };
+    apiMocks.postChat.mockReturnValueOnce(pendingChat.promise);
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), { target: { value: "Build the focus playlist" } });
+    fireEvent.click(getComposerSubmit());
+
+    await waitFor(() => expect(apiMocks.postChat).toHaveBeenCalledTimes(1));
+    fireEvent.click(getQueueManageButton());
+    let panel = getMusicQueuePanel();
+    fireEvent.click(within(panel).getByRole("tab", { name: "我的歌单" }));
+    fireEvent.change(within(panel).getByLabelText("歌单名称"), { target: { value: "Agent Focus" } });
+    fireEvent.click(within(panel).getByRole("button", { name: "新建歌单" }));
+    expect(within(panel).getByText("Agent Focus")).toBeTruthy();
+
+    pendingChat.resolve(
+      makeChatResponse({
+        reply: { id: "reply-race-playlist", role: "kumiko", content: "I used the playlist I created." },
+        clientActions: [
+          {
+            type: "create_music_playlist",
+            playlistId: "playlist-agent-focus",
+            playlistName: "Agent Focus",
+            description: "from agent"
+          },
+          {
+            type: "add_music_to_playlist",
+            playlistId: "playlist-agent-focus",
+            item: agentPlaylistTrack
+          },
+          { type: "play_music_playlist", playlistId: "playlist-agent-focus" }
+        ]
+      })
+    );
+
+    expect(await within(getTimeline()).findByText("I used the playlist I created.")).toBeTruthy();
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe("Agent Race Song");
+
+    panel = getMusicQueuePanel();
+    expect(within(panel).getAllByText("Agent Focus")).toHaveLength(2);
+    const storedLibrary = JSON.parse(localStorage.getItem("kumikoroom.musicLibrary") ?? "{\"playlists\":[]}") as {
+      playlists: Array<{
+        id: string;
+        name: string;
+        items: Array<{ item: { title: string } }>;
+      }>;
+    };
+    const matchingPlaylists = storedLibrary.playlists.filter((playlist) => playlist.name === "Agent Focus");
+    expect(matchingPlaylists.map((playlist) => playlist.id).sort()).toEqual([
+      "playlist-agent-focus",
+      "playlist-agent-focus-2"
+    ]);
+    expect(matchingPlaylists.find((playlist) => playlist.id === "playlist-agent-focus")?.items).toEqual([]);
+    expect(
+      matchingPlaylists
+        .find((playlist) => playlist.id === "playlist-agent-focus-2")
+        ?.items.map((entry) => entry.item.title)
+    ).toEqual(["Agent Race Song"]);
+  });
+
+  it("appends a stored playlist to the queue without interrupting playback", async () => {
+    const queuedPlaylistTrack = {
+      id: "netease-night-queue-song",
+      source: "netease" as const,
+      title: "Night Queue Song",
+      creator: "Queue Curator",
+      durationMs: 203000,
+      pageUrl: "https://music.163.com/#/song?id=203",
+      platformAudioUrl: "https://music.163.com/song/media/outer/url?id=203.mp3",
+      tags: ["netease"],
+      canOpenVideo: false
+    };
+    localStorage.setItem(
+      "kumikoroom.musicLibrary",
+      JSON.stringify({
+        playlists: [
+          {
+            id: "playlist-night-queue",
+            name: "Night Queue",
+            description: "queued by agent",
+            createdAt: "2026-06-15T00:00:00.000Z",
+            updatedAt: "2026-06-15T00:01:00.000Z",
+            items: [
+              {
+                id: queuedPlaylistTrack.id,
+                item: queuedPlaylistTrack,
+                addedAt: "2026-06-15T00:01:00.000Z",
+                addedBy: "user"
+              }
+            ]
+          }
+        ]
+      })
+    );
+    apiMocks.postChat.mockResolvedValueOnce(
+      makeChatResponse({
+        reply: { id: "reply-enqueue-playlist", role: "kumiko", content: "我把这张歌单排到后面了。" },
+        clientActions: [{ type: "add_playlist_to_queue", playlistId: "playlist-night-queue" }]
+      })
+    );
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), { target: { value: "把 Night Queue 加到接下来" } });
+    fireEvent.click(getComposerSubmit());
+
+    expect(await within(getTimeline()).findByText("我把这张歌单排到后面了。")).toBeTruthy();
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe(PLAYER_TRACKS[0].title);
+    fireEvent.click(getQueueManageButton());
+    const panel = getMusicQueuePanel();
+    expect(within(panel).getByText(queuedPlaylistTrack.title)).toBeTruthy();
+  });
+
+  it("adds an agent-selected track to upcoming without interrupting the current track", async () => {
+    apiMocks.postChat.mockResolvedValueOnce(
+      makeChatResponse({
+        reply: { id: "reply-add", role: "kumiko", content: "我先放进接下来。" },
+        clientActions: [
+          {
+            type: "add_music_to_queue",
+            item: {
+              id: "netease-agent-upcoming",
+              source: "netease",
+              title: "接下来测试曲",
+              creator: "Agent Queue",
+              durationMs: 188000,
+              pageUrl: "https://music.163.com/#/song?id=188",
+              platformAudioUrl: "https://music.163.com/song/media/outer/url?id=188.mp3",
+              tags: ["netease", "agent-selected"],
+              canOpenVideo: false,
+              sourceQuery: "加到队列",
+              selectedReason: "综合热度和评论更稳"
+            }
+          }
+        ]
+      })
+    );
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), { target: { value: "先把这首放后面" } });
+    fireEvent.click(getComposerSubmit());
+
+    expect(await within(getTimeline()).findByText("我先放进接下来。")).toBeTruthy();
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe(PLAYER_TRACKS[0].title);
+    fireEvent.click(getQueueManageButton());
+
+    const panel = getMusicQueuePanel();
+    expect(within(panel).getByRole("tab", { name: "接下来" }).getAttribute("aria-selected")).toBe("true");
+    expect(within(panel).getByText("播放队列")).toBeTruthy();
+    const currentRow = within(panel).getByText(PLAYER_TRACKS[0].title).closest(".music-queue-row");
+    expect(currentRow?.getAttribute("data-active")).toBe("true");
+    expect(within(panel).getByText("接下来测试曲")).toBeTruthy();
+    expect(within(panel).getByText("来自: 加到队列")).toBeTruthy();
+    expect(within(panel).getByText("综合热度和评论更稳")).toBeTruthy();
+  });
+
+  it("folds agent queue management actions into one persisted queue state", async () => {
+    apiMocks.postChat.mockResolvedValueOnce(
+      makeChatResponse({
+        reply: { id: "reply-manage", role: "kumiko", content: "我整理好了。" },
+        clientActions: [
+          {
+            type: "add_music_to_queue",
+            item: {
+              id: "netease-agent-saved",
+              source: "netease",
+              title: "收藏测试曲",
+              creator: "Agent Save",
+              durationMs: 199000,
+              pageUrl: "https://music.163.com/#/song?id=199",
+              platformAudioUrl: "https://music.163.com/song/media/outer/url?id=199.mp3",
+              tags: ["netease", "agent-selected"],
+              canOpenVideo: false
+            }
+          },
+          {
+            type: "save_music_item",
+            item: {
+              id: "netease-agent-saved",
+              source: "netease",
+              title: "收藏测试曲",
+              creator: "Agent Save",
+              durationMs: 199000,
+              pageUrl: "https://music.163.com/#/song?id=199",
+              platformAudioUrl: "https://music.163.com/song/media/outer/url?id=199.mp3",
+              tags: ["netease", "agent-selected"],
+              canOpenVideo: false
+            }
+          },
+          {
+            type: "remove_music_from_queue",
+            itemId: PLAYER_TRACKS[1].id
+          }
+        ]
+      })
+    );
+    const firstRender = render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), { target: { value: "整理一下队列" } });
+    fireEvent.click(getComposerSubmit());
+
+    expect(await within(getTimeline()).findByText("我整理好了。")).toBeTruthy();
+    fireEvent.click(getQueueManageButton());
+    let panel = getMusicQueuePanel();
+    expect(within(panel).queryByText(PLAYER_TRACKS[1].title)).toBeNull();
+    expect(within(panel).getByText("收藏测试曲")).toBeTruthy();
+    fireEvent.click(within(panel).getByRole("tab", { name: "收藏" }));
+    expect(within(panel).getByText("收藏测试曲")).toBeTruthy();
+
+    firstRender.unmount();
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(getQueueManageButton());
+    panel = getMusicQueuePanel();
+    expect(within(panel).queryByText(PLAYER_TRACKS[1].title)).toBeNull();
+    fireEvent.click(within(panel).getByRole("tab", { name: "收藏" }));
+    expect(within(panel).getByText("收藏测试曲")).toBeTruthy();
+  });
+
+  it("lets agent unsave an item and clear only upcoming queue entries", async () => {
+    apiMocks.postChat.mockResolvedValueOnce(
+      makeChatResponse({
+        reply: { id: "reply-save", role: "kumiko", content: "先收藏。" },
+        clientActions: [
+          {
+            type: "save_music_item",
+            item: {
+              id: "netease-agent-cleared",
+              source: "netease",
+              title: "待清空测试曲",
+              creator: "Agent Clear",
+              durationMs: 177000,
+              pageUrl: "https://music.163.com/#/song?id=177",
+              platformAudioUrl: "https://music.163.com/song/media/outer/url?id=177.mp3",
+              tags: ["netease", "agent-selected"],
+              canOpenVideo: false
+            }
+          }
+        ]
+      })
+    );
+    apiMocks.postChat.mockResolvedValueOnce(
+      makeChatResponse({
+        reply: { id: "reply-clear", role: "kumiko", content: "接下来清空了。" },
+        clientActions: [
+          { type: "unsave_music_item", itemId: "netease-agent-cleared" },
+          { type: "clear_music_queue" }
+        ]
+      })
+    );
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), { target: { value: "收藏这首" } });
+    fireEvent.click(getComposerSubmit());
+    expect(await within(getTimeline()).findByText("先收藏。")).toBeTruthy();
+
+    fireEvent.change(getComposerInput(), { target: { value: "取消收藏并清空接下来" } });
+    fireEvent.click(getComposerSubmit());
+    expect(await within(getTimeline()).findByText("接下来清空了。")).toBeTruthy();
+
+    fireEvent.click(getQueueManageButton());
+    const panel = getMusicQueuePanel();
+    expect(within(panel).getByText("播放队列")).toBeTruthy();
+    const currentRow = within(panel).getByText(PLAYER_TRACKS[0].title).closest(".music-queue-row");
+    expect(currentRow?.getAttribute("data-active")).toBe("true");
+    expect(within(panel).queryByText("待清空测试曲")).toBeNull();
+    fireEvent.click(within(panel).getByRole("tab", { name: "收藏" }));
+    expect(within(panel).queryByText("待清空测试曲")).toBeNull();
+  });
+
+  it("applies delayed agent queue actions on top of the latest local player state", async () => {
+    const pendingChat = deferred<Awaited<ReturnType<typeof apiMocks.postChat>>>();
+    apiMocks.postChat.mockReturnValueOnce(pendingChat.promise);
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), { target: { value: "先帮我找一首放后面" } });
+    fireEvent.click(getComposerSubmit());
+
+    await waitFor(() => expect(apiMocks.postChat).toHaveBeenCalledTimes(1));
+    fireEvent.click(getQueuePreviewMain());
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe(PLAYER_TRACKS[1].title);
+
+    pendingChat.resolve(
+      makeChatResponse({
+        reply: { id: "reply-late-add", role: "kumiko", content: "我把它排到后面了。" },
+        clientActions: [
+          {
+            type: "add_music_to_queue",
+            item: {
+              id: "netease-agent-late",
+              source: "netease",
+              title: "延迟加入测试曲",
+              creator: "Agent Late",
+              durationMs: 190000,
+              pageUrl: "https://music.163.com/#/song?id=190",
+              platformAudioUrl: "https://music.163.com/song/media/outer/url?id=190.mp3",
+              tags: ["netease", "agent-selected"],
+              canOpenVideo: false
+            }
+          }
+        ]
+      })
+    );
+
+    expect(await within(getTimeline()).findByText("我把它排到后面了。")).toBeTruthy();
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe(PLAYER_TRACKS[1].title);
+    fireEvent.click(getQueueManageButton());
+
+    const panel = getMusicQueuePanel();
+    expect(within(panel).getByText("延迟加入测试曲")).toBeTruthy();
+  });
+
+  it("sends named play requests through chat and applies the returned music action", async () => {
+    const command = "播放 晴天";
+    apiMocks.postChat.mockResolvedValueOnce(
+      makeChatResponse({
+        reply: { id: "reply-agent", role: "kumiko", content: "我找了一下，选了证据最稳的《晴天》。" },
+        clientActions: [
+          {
+            type: "play_music_item",
+            item: {
+              id: "netease-song-186016",
+              source: "netease",
+              title: "晴天",
+              creator: "周杰伦",
+              durationMs: 269000,
+              pageUrl: "https://music.163.com/#/song?id=186016",
+              platformAudioUrl: "https://music.163.com/song/media/outer/url?id=186016.mp3",
+              tags: ["netease", "search", "agent-selected"],
+              canOpenVideo: false
+            }
+          }
+        ],
+        agentTrace: {
+          toolCalls: [
+            { id: "call-search", name: "search_music", ok: true },
+            { id: "call-play", name: "play_music_item", ok: true }
+          ]
+        }
+      })
+    );
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), {
+      target: { value: command }
+    });
+    fireEvent.click(getComposerSubmit());
+
+    await waitFor(() => expect(apiMocks.postChat).toHaveBeenCalledTimes(1));
+    expect(apiMocks.searchMusic).not.toHaveBeenCalled();
+    expect(document.querySelector<HTMLElement>(".source-badge")?.getAttribute("data-source")).toBe("netease");
+    expect(getPlatformAudio().getAttribute("src")).toBe("https://music.163.com/song/media/outer/url?id=186016.mp3");
+    expect(document.querySelector(".queue-preview")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /管理播放队列/ })).toBeTruthy();
+    fireEvent.click(getQueueManageButton());
+    expect(within(getMusicQueuePanel()).getByText(PLAYER_TRACKS[1].title)).toBeTruthy();
+    expect(within(getTimeline()).getByText(command)).toBeTruthy();
+    expect(await within(getTimeline()).findByText("我找了一下，选了证据最稳的《晴天》。")).toBeTruthy();
+    expect(within(getTimeline()).queryByText("已切到《晴天》。")).toBeNull();
+  });
+
+  it("records agent-selected tracks in the queue panel", async () => {
+    apiMocks.postChat.mockResolvedValueOnce(
+      makeChatResponse({
+        reply: { id: "reply-agent", role: "kumiko", content: "我选了这版。" },
+        clientActions: [
+          {
+            type: "play_music_item",
+            item: {
+              id: "netease-song-2",
+              source: "netease",
+              title: "Sunny",
+              creator: "Composer",
+              durationMs: 200000,
+              pageUrl: "https://music.163.com/#/song?id=2",
+              platformAudioUrl: "https://music.163.com/song/media/outer/url?id=2.mp3",
+              tags: ["netease", "search", "agent-selected"],
+              canOpenVideo: false,
+              sourceQuery: "play Sunny",
+              selectedReason: "ranked score 120",
+              selectionEvidence: ["title exact match", "comment_count=10"],
+              selectionScore: 120
+            }
+          }
+        ]
+      })
+    );
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), { target: { value: "play Sunny" } });
+    fireEvent.click(getComposerSubmit());
+
+    await waitFor(() => expect(apiMocks.postChat).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: /管理播放队列/ }));
+
+    const panel = screen.getByRole("dialog", { name: /音乐记录/ });
+    expect(within(panel).getByText("Sunny")).toBeTruthy();
+    expect(within(panel).getByText("来自: play Sunny")).toBeTruthy();
+    expect(within(panel).getByText("ranked score 120")).toBeTruthy();
+  });
+
+  it("saves the current track from the queue panel", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /管理播放队列/ }));
+    const panel = screen.getByRole("dialog", { name: /音乐记录/ });
+    fireEvent.click(within(panel).getByRole("button", { name: `收藏 ${PLAYER_TRACKS[0].title}` }));
+    fireEvent.click(within(panel).getByRole("tab", { name: "收藏" }));
+
+    expect(within(panel).getByText(PLAYER_TRACKS[0].title)).toBeTruthy();
+  });
+
+  it("keeps removed queue entries removed after the room reloads", async () => {
+    const removedTrack = PLAYER_TRACKS[1];
+    const firstRender = render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(getQueueManageButton());
+    let panel = getMusicQueuePanel();
+    const rowToRemove = within(panel).getByText(removedTrack.title).closest(".music-queue-row");
+    if (!rowToRemove) {
+      throw new Error("Queue row to remove not found");
+    }
+    const removeButton = Array.from(rowToRemove.querySelectorAll("button")).at(-1);
+    if (!removeButton) {
+      throw new Error("Queue remove button not found");
+    }
+    fireEvent.click(removeButton);
+
+    expect(within(panel).queryByText(removedTrack.title)).toBeNull();
+    firstRender.unmount();
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(getQueueManageButton());
+    panel = getMusicQueuePanel();
+    expect(within(panel).queryByText(removedTrack.title)).toBeNull();
+  });
+
+  it("opens the video mini-window from a backend client action after chat", async () => {
+    const command = "打开这个 B站 视频小窗";
+    apiMocks.postChat.mockResolvedValueOnce(
+      makeChatResponse({
+        reply: { id: "reply-video", role: "kumiko", content: "我把视频小窗打开了。" },
+        clientActions: [
+          {
+            type: "open_video_window",
+            item: {
+              id: "bilibili-video-BV1xx411c7mD",
+              source: "bilibili",
+              title: "B站视频 BV1xx411c7mD",
+              creator: "Bilibili",
+              durationMs: 0,
+              pageUrl: "https://www.bilibili.com/video/BV1xx411c7mD",
+              platformAudioUrl: null,
+              tags: ["bilibili", "agent-selected"],
+              canOpenVideo: true
+            }
+          }
+        ]
+      })
+    );
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), {
+      target: { value: command }
+    });
+    fireEvent.click(getComposerSubmit());
+
+    expect(await screen.findByRole("dialog", { name: "B站视频小窗" })).toBeTruthy();
+    expect(document.querySelector<HTMLElement>(".source-badge")?.getAttribute("data-source")).toBe("bilibili");
+    expect(document.querySelector<HTMLElement>(".track-title strong")?.textContent).toBe("B站视频 BV1xx411c7mD");
+    expect(within(getTimeline()).getByText(command)).toBeTruthy();
+    expect(await within(getTimeline()).findByText("我把视频小窗打开了。")).toBeTruthy();
+    expect(apiMocks.postChat).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks Kumiko replies that used novel RAG references", async () => {
+    apiMocks.postChat.mockResolvedValueOnce(
+      makeChatResponse({
+        reply: {
+          id: "reply-rag",
+          role: "kumiko",
+          content: "那次全国大赛的 soli 是丽奈和真由。"
+        },
+        novelRag: {
+          used: true,
+          query: "久美子 三年级 全国大赛 soli",
+          sources: ["决意的最终乐章 / 全国大赛"],
+          reason: "source question"
+        }
+      })
+    );
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.change(getComposerInput(), {
+      target: { value: "你三年级的时候全国大赛的soli是谁和谁吹的" }
+    });
+    fireEvent.click(getComposerSubmit());
+
+    const timeline = getTimeline();
+    expect(await within(timeline).findByText("那次全国大赛的 soli 是丽奈和真由。")).toBeTruthy();
+    const badge = await within(timeline).findByText("参考原作 · 1 段");
+    expect(badge.getAttribute("title")).toContain("久美子 三年级 全国大赛 soli");
+  });
+
+  it("sends confirmation text through chat and applies the returned play action", async () => {
+    const confirmationTrack = PLAYER_TRACKS[0];
+    apiMocks.postChat
+      .mockResolvedValueOnce(
+        makeChatResponse({
+          reply: { id: "reply-recommend", role: "kumiko", content: `那我会选《${confirmationTrack.title}》。` },
+          session: null
+        })
+      )
+      .mockResolvedValueOnce(
+        makeChatResponse({
+          reply: { id: "reply-confirm", role: "kumiko", content: "好，我现在放这首。" },
+          clientActions: [
+            {
+              type: "play_music_item",
+              item: {
+                id: confirmationTrack.id,
+                source: confirmationTrack.source,
+                title: confirmationTrack.title,
+                creator: confirmationTrack.creator,
+                durationMs: confirmationTrack.durationMs,
+                pageUrl: confirmationTrack.pageUrl ?? null,
+                platformAudioUrl: confirmationTrack.platformAudioUrl ?? null,
+                tags: [...confirmationTrack.tags, "agent-selected"],
+                canOpenVideo: confirmationTrack.canOpenVideo
+              }
+            }
+          ],
+          session: null
+        })
+      );
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(getQueuePreviewMain());
+    fireEvent.change(getComposerInput(), {
+      target: { value: "你今天想听什么" }
+    });
+    fireEvent.click(getComposerSubmit());
+
+    expect(await within(getTimeline()).findByText(`那我会选《${confirmationTrack.title}》。`)).toBeTruthy();
+
+    fireEvent.change(getComposerInput(), {
+      target: { value: "可以" }
+    });
+    fireEvent.click(getComposerSubmit());
+
+    expect(await within(getTimeline()).findByText("好，我现在放这首。")).toBeTruthy();
+    expect(document.querySelector<HTMLElement>(".source-badge")?.getAttribute("data-source")).toBe("netease");
+    expect(getPlatformAudio().getAttribute("src")).toBe(confirmationTrack.platformAudioUrl);
+    expect(within(getTimeline()).getByText("可以")).toBeTruthy();
+    expect(within(getTimeline()).queryByText(`已切到《${confirmationTrack.title}》。`)).toBeNull();
+    expect(apiMocks.postChat).toHaveBeenCalledTimes(2);
   });
 
   it("exposes compact session controls from the chat header", async () => {
@@ -200,6 +1723,34 @@ describe("RoomShell", () => {
     expect(await timeline.findByText("保存过的消息")).toBeTruthy();
     expect(apiMocks.getSessionMessages).toHaveBeenCalledWith("session-1");
     expect(apiMocks.createSession).not.toHaveBeenCalled();
+  });
+
+  it("renders markdown formatting inside chat bubbles", async () => {
+    const session = makeSession({
+      id: "session-markdown",
+      title: "Markdown session",
+      latestMessagePreview: "Markdown preview"
+    });
+    apiMocks.getSessions.mockResolvedValueOnce([session]);
+    apiMocks.getSessionMessages.mockResolvedValueOnce([
+      makeStoredMessage({
+        id: "message-markdown",
+        sessionId: "session-markdown",
+        role: "kumiko",
+        content: "**Strong theme**\n\n- First cue\n- Second cue"
+      })
+    ]);
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: "Markdown session" })).toBeTruthy();
+    const timelineElement = document.querySelector<HTMLElement>(".chat-timeline");
+    expect(timelineElement).toBeTruthy();
+    const timeline = within(timelineElement as HTMLElement);
+    const strong = await timeline.findByText("Strong theme");
+    expect(strong.tagName).toBe("STRONG");
+    expect(within(timeline.getByRole("list")).getAllByRole("listitem")).toHaveLength(2);
+    expect(timeline.queryByText(/\*\*Strong theme\*\*/)).toBeNull();
   });
 
   it("creates a session and switches to its empty timeline", async () => {
@@ -500,6 +2051,7 @@ describe("RoomShell", () => {
     const shortMessage = within(timeline).getByText("你好").closest("article");
     expect(shortMessage?.classList.contains("message--short")).toBe(true);
     expect(shortMessage?.classList.contains("me")).toBe(true);
+    expect(shortMessage?.querySelector(".avatar.small.user-avatar")).toBeTruthy();
   });
 
   it("restores the last session while keeping the v6 sidebar expanded", async () => {
@@ -520,7 +2072,7 @@ describe("RoomShell", () => {
 
     render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
 
-    expect(await screen.findByText("Saved two")).toBeTruthy();
+    expect(await within(getTimeline()).findByText("Saved two")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Session Two" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "展开会话列表" })).toBeNull();
     expect(apiMocks.getSessionMessages).toHaveBeenCalledWith("session-2");
@@ -600,9 +2152,39 @@ describe("RoomShell", () => {
     expect(screen.queryByLabelText("最近记住的内容")).toBeNull();
     expect(screen.queryByText("用户喜欢安静的钢琴。")).toBeNull();
     expect(screen.queryByText("思考")).toBeNull();
+    const currentRoomState = {
+      ...DEFAULT_ROOM_STATE,
+      music: {
+        currentTrackTitle: PLAYER_TRACKS[0].title,
+        currentArtist: PLAYER_TRACKS[0].creator,
+        listeningMood: "playing"
+      }
+    };
+
     expect(apiMocks.postChat).toHaveBeenNthCalledWith(1, {
       message: "晚上好",
-      roomState: DEFAULT_ROOM_STATE,
+      roomState: currentRoomState,
+      listeningContext: buildListeningContext(PLAYER_TRACKS[0], true),
+      musicState: expect.objectContaining({
+        isPlaying: true,
+        currentTimeMs: 0,
+        durationMs: PLAYER_TRACKS[0].durationMs,
+        current: expect.objectContaining({
+          id: PLAYER_TRACKS[0].id,
+          title: PLAYER_TRACKS[0].title,
+          saved: false
+        }),
+        next: expect.objectContaining({
+          id: PLAYER_TRACKS[1].id
+        }),
+        upcoming: [
+          expect.objectContaining({
+            id: PLAYER_TRACKS[1].id
+          })
+        ],
+        recent: [],
+        saved: []
+      }),
       recentMessages: [],
       personaStrength: "strong",
       memoryEnabled: false,
@@ -617,7 +2199,22 @@ describe("RoomShell", () => {
     expect(await screen.findByText("我们继续慢慢听。")).toBeTruthy();
     expect(apiMocks.postChat).toHaveBeenNthCalledWith(2, {
       message: "想继续聊这首",
-      roomState: DEFAULT_ROOM_STATE,
+      roomState: currentRoomState,
+      listeningContext: buildListeningContext(PLAYER_TRACKS[0], true),
+      musicState: expect.objectContaining({
+        isPlaying: true,
+        current: expect.objectContaining({
+          id: PLAYER_TRACKS[0].id
+        }),
+        next: expect.objectContaining({
+          id: PLAYER_TRACKS[1].id
+        }),
+        upcoming: [
+          expect.objectContaining({
+            id: PLAYER_TRACKS[1].id
+          })
+        ]
+      }),
       recentMessages: [
         {
           id: expect.stringMatching(/^user-\d+$/),
@@ -750,6 +2347,95 @@ describe("RoomShell", () => {
     expect(within(settings).getByRole("button", { name: "中" }).getAttribute("aria-pressed")).toBe("true");
     expect(within(settings).getByRole("button", { name: "强" }).getAttribute("aria-pressed")).toBe("false");
   });
+
+  it("persists llmConfig to localStorage when a preset is applied", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: "默认会话" })).toBeTruthy();
+    const settings = openModelPreferences();
+    fireEvent.click(within(settings).getByText("Moonshot Kimi"));
+
+    expect(localStorage.getItem("kumikoroom.llmConfig")).toContain("moonshot.cn");
+    expect(localStorage.getItem("kumikoroom.llmConfig")).toContain("moonshot-v1-8k");
+  });
+
+  it("clears llmConfig from localStorage on restore default", async () => {
+    localStorage.setItem(
+      "kumikoroom.llmConfig",
+      JSON.stringify({
+        provider: "openai_compatible",
+        baseUrl: "https://api.openai.com/v1",
+        apiKey: "sk-test",
+        model: "gpt-4o-mini"
+      })
+    );
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: "默认会话" })).toBeTruthy();
+    const settings = openModelPreferences();
+    fireEvent.click(within(settings).getByText("恢复默认"));
+
+    expect(localStorage.getItem("kumikoroom.llmConfig")).toBeNull();
+  });
+
+  it("hydrates llmConfig from localStorage and passes it to postChat", async () => {
+    const storedConfig = {
+      provider: "openai_compatible" as const,
+      baseUrl: "https://api.openai.com/v1",
+      apiKey: "sk-hydrated",
+      model: "gpt-4o-mini"
+    };
+    localStorage.setItem("kumikoroom.llmConfig", JSON.stringify(storedConfig));
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: "默认会话" })).toBeTruthy();
+    fireEvent.change(getComposerInput(), { target: { value: "hello" } });
+    fireEvent.click(getComposerSubmit());
+
+    await waitFor(() => expect(apiMocks.postChat).toHaveBeenCalled());
+    const callArgs = apiMocks.postChat.mock.calls[0][0];
+    expect(callArgs.llmConfig).toEqual(storedConfig);
+  });
+
+  it("shows recommendation reasons and lets the user dislike a recommended track", async () => {
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: defaultSession.title })).toBeTruthy();
+    fireEvent.click(screen.getByRole("switch", { name: "Auto DJ" }));
+    await waitFor(() => expect(apiMocks.recommendAutoDj).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(getQueueManageButton());
+    const panel = getMusicQueuePanel();
+    expect(within(panel).getByText("close to the current listening context")).toBeTruthy();
+    fireEvent.click(within(panel).getByRole("button", { name: "不喜欢 Auto DJ Song" }));
+
+    const storedProfile = localStorage.getItem("kumikoroom.musicRecommendationProfile") ?? "";
+    expect(storedProfile).toContain("\"disliked\":true");
+    expect(storedProfile).toContain("\"kind\":\"item\"");
+  });
+
+  it("calls testLLMConnection when test button is clicked", async () => {
+    apiMocks.testLLMConnection.mockResolvedValue({
+      ok: true,
+      error: null,
+      model: "moonshot-v1-8k",
+      latencyMs: 200
+    });
+
+    render(<RoomShell initialState={DEFAULT_ROOM_STATE} connectionStatus={connectionStatus} />);
+
+    expect(await screen.findByRole("button", { name: "默认会话" })).toBeTruthy();
+    const settings = openModelPreferences();
+    fireEvent.click(within(settings).getByText("Moonshot Kimi"));
+    fireEvent.click(within(settings).getByText("测试连接"));
+
+    await waitFor(() => expect(apiMocks.testLLMConnection).toHaveBeenCalled());
+    const config = apiMocks.testLLMConnection.mock.calls[0][0];
+    expect(config.baseUrl).toBe("https://api.moonshot.cn/v1");
+    expect(config.model).toBe("moonshot-v1-8k");
+  });
 });
 
 function makeSession(overrides: Partial<ChatSession> = {}): ChatSession {
@@ -791,6 +2477,8 @@ function makeChatResponse(overrides: Partial<Awaited<ReturnType<typeof apiMocks.
     },
     memoryEvents: [],
     session: null,
+    clientActions: [],
+    agentTrace: { toolCalls: [] },
     ...overrides
   };
 }
@@ -847,6 +2535,51 @@ function getTimeline(): HTMLElement {
   }
 
   return timeline;
+}
+
+function getPlayerControls(): HTMLElement {
+  const controls = document.querySelector<HTMLElement>(".player-controls");
+  if (!controls) {
+    throw new Error("Player controls not found");
+  }
+
+  return controls;
+}
+
+function getQueuePreviewMain(): HTMLButtonElement {
+  const button = document.querySelector<HTMLButtonElement>(".queue-preview-main");
+  if (!button) {
+    throw new Error("Queue preview button not found");
+  }
+
+  return button;
+}
+
+function getQueueManageButton(): HTMLButtonElement {
+  const button = document.querySelector<HTMLButtonElement>(".queue-manage");
+  if (!button) {
+    throw new Error("Queue manage button not found");
+  }
+
+  return button;
+}
+
+function getMusicQueuePanel(): HTMLElement {
+  const panel = document.querySelector<HTMLElement>(".music-queue-panel");
+  if (!panel) {
+    throw new Error("Music queue panel not found");
+  }
+
+  return panel;
+}
+
+function getPlatformAudio(): HTMLAudioElement {
+  const audio = document.querySelector<HTMLAudioElement>("audio.platform-audio-host");
+  if (!audio) {
+    throw new Error("Platform audio host not found");
+  }
+
+  return audio;
 }
 
 function queryDeleteButtonFor(title: string): HTMLButtonElement | null {

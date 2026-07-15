@@ -1,0 +1,426 @@
+from __future__ import annotations
+
+from concurrent.futures import Executor, Future, ThreadPoolExecutor
+from dataclasses import replace
+from datetime import datetime, timezone
+from pathlib import Path
+from threading import RLock
+
+from .analyzer import analyze_snapshot
+from .diff import AUTO_CONFIRM_SCORE, score_backup_association
+from .models import AnalysisStatus
+from .parsers.base import FlpParseError, FlpParser
+from .repository import StudioProject, StudioRepository, StudioScanJob
+from .scanner import (
+    FileChangedDuringRead,
+    FileObservation,
+    discover_flp_files,
+    discover_project_assets,
+    default_fl_studio_backup_root,
+    is_stable,
+    observe_file,
+    sha256_file,
+)
+
+
+class StudioService:
+    def __init__(
+        self,
+        repository: StudioRepository,
+        parser: FlpParser,
+        executor: Executor | None = None,
+    ) -> None:
+        self._repository = repository
+        self._parser = parser
+        self._executor = (
+            executor
+            if executor is not None
+            else ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="studio-scan",
+            )
+        )
+        self._lock = RLock()
+        self._active_job_id: str | None = None
+        self._active_future: Future[object] | None = None
+        self._closed = False
+
+    def start_scan(self) -> StudioScanJob:
+        with self._lock:
+            self._ensure_open()
+            active = self._active_job()
+            if active is not None:
+                return active
+            job = self._repository.create_scan_job(status="queued")
+            self._active_job_id = job.id
+
+        try:
+            future = self._executor.submit(self._run_job, job.id)
+        except Exception as exc:
+            self._update_job(
+                job.id,
+                status="failed",
+                error=_error_text(exc),
+            )
+            with self._lock:
+                if self._active_job_id == job.id:
+                    self._active_job_id = None
+                    self._active_future = None
+            raise
+        with self._lock:
+            if self._active_job_id == job.id:
+                self._active_future = future
+        future.add_done_callback(
+            lambda completed, job_id=job.id: self._scan_future_done(
+                job_id,
+                completed,
+            )
+        )
+        return job
+
+    def run_scan_now(self) -> StudioScanJob:
+        with self._lock:
+            self._ensure_open()
+            active = self._active_job()
+            if active is not None:
+                return active
+            job = self._repository.create_scan_job(status="queued")
+            self._active_job_id = job.id
+            self._active_future = None
+
+        self._run_job(job.id)
+        return self.get_scan_job(job.id)
+
+    def get_scan_job(self, job_id: str) -> StudioScanJob:
+        return self._repository.get_scan_job(job_id)
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            active_future = self._active_future
+        if active_future is not None:
+            active_future.cancel()
+        self._executor.shutdown(wait=False, cancel_futures=True)
+
+    def _run_job(self, job_id: str) -> None:
+        counts = {
+            "discovered_count": 0,
+            "parsed_count": 0,
+            "cached_count": 0,
+            "failed_count": 0,
+        }
+        try:
+            self._update_job(job_id, status="running")
+            roots = [Path(root.path) for root in self._repository.list_roots()]
+            global_backup_root = default_fl_studio_backup_root()
+            if global_backup_root is not None:
+                global_identity = str(global_backup_root.resolve()).casefold()
+                if all(str(root.resolve()).casefold() != global_identity for root in roots):
+                    roots.append(global_backup_root)
+            discovered_files = discover_flp_files(roots)
+            counts["discovered_count"] = len(discovered_files)
+            self._update_job(job_id, **counts)
+
+            for discovered in discovered_files:
+                modified_at = _modified_ns_to_utc_iso(discovered.modified_ns)
+                project = self._repository.upsert_project(
+                    discovered.path,
+                    display_name=discovered.path.stem,
+                    status=AnalysisStatus.DISCOVERED,
+                    modified_at=modified_at,
+                )
+                first_observation = FileObservation(
+                    path=discovered.path,
+                    size=discovered.size,
+                    modified_ns=discovered.modified_ns,
+                )
+                try:
+                    second_observation = observe_file(discovered.path)
+                    if not is_stable(first_observation, second_observation):
+                        raise FileChangedDuringRead(
+                            f"{discovered.path} changed after discovery"
+                        )
+                    source_hash = sha256_file(
+                        discovered.path,
+                        expected=second_observation,
+                    )
+                except (OSError, ValueError, FileChangedDuringRead):
+                    self._record_stale_file(
+                        job_id,
+                        discovered.path,
+                        modified_at,
+                        counts,
+                    )
+                    continue
+
+                try:
+                    cached = self._repository.find_snapshot_by_hash(
+                        project.id,
+                        source_hash,
+                    )
+                except KeyError:
+                    cached = None
+
+                if cached is not None:
+                    self._repository.activate_snapshot(
+                        project.id,
+                        cached.id,
+                        modified_at=modified_at,
+                    )
+                    counts["cached_count"] += 1
+                    self._update_job(job_id, **counts)
+                    continue
+
+                try:
+                    self._repository.upsert_project(
+                        discovered.path,
+                        display_name=discovered.path.stem,
+                        status=AnalysisStatus.PARSING,
+                        modified_at=modified_at,
+                    )
+                    parsed = self._parser.parse(
+                        discovered.path,
+                        source_hash=source_hash,
+                    )
+                except FlpParseError:
+                    self._repository.upsert_project(
+                        discovered.path,
+                        display_name=discovered.path.stem,
+                        status=AnalysisStatus.FAILED,
+                        modified_at=modified_at,
+                    )
+                    counts["failed_count"] += 1
+                    self._update_job(job_id, **counts)
+                    continue
+                except Exception:
+                    counts["failed_count"] += 1
+                    self._try_mark_project_failed(discovered.path, modified_at)
+                    self._update_job(job_id, **counts)
+                    raise
+
+                try:
+                    _verify_source_hash(
+                        discovered.path,
+                        second_observation,
+                        source_hash,
+                    )
+                except (OSError, ValueError, FileChangedDuringRead):
+                    self._record_stale_file(
+                        job_id,
+                        discovered.path,
+                        modified_at,
+                        counts,
+                    )
+                    continue
+
+                try:
+                    related_assets = discover_project_assets(discovered.path)
+                except (OSError, ValueError, FileChangedDuringRead):
+                    self._record_stale_file(
+                        job_id,
+                        discovered.path,
+                        modified_at,
+                        counts,
+                    )
+                    continue
+
+                try:
+                    with_assets = replace(
+                        parsed,
+                        related_assets=related_assets,
+                    )
+                    analyzed = analyze_snapshot(with_assets)
+                except Exception:
+                    counts["failed_count"] += 1
+                    self._try_mark_project_failed(discovered.path, modified_at)
+                    self._update_job(job_id, **counts)
+                    raise
+
+                try:
+                    _verify_source_hash(
+                        discovered.path,
+                        second_observation,
+                        source_hash,
+                    )
+                except (OSError, ValueError, FileChangedDuringRead):
+                    self._record_stale_file(
+                        job_id,
+                        discovered.path,
+                        modified_at,
+                        counts,
+                    )
+                    continue
+
+                try:
+                    self._repository.save_snapshot(project.id, analyzed)
+                except Exception:
+                    counts["failed_count"] += 1
+                    self._try_mark_project_failed(discovered.path, modified_at)
+                    self._update_job(job_id, **counts)
+                    raise
+
+                counts["parsed_count"] += 1
+                self._update_job(job_id, **counts)
+
+            self._associate_backup_snapshots()
+            self._update_job(job_id, status="completed", **counts)
+        except Exception as exc:
+            self._update_job(
+                job_id,
+                status="failed",
+                error=_error_text(exc),
+                **counts,
+            )
+        finally:
+            with self._lock:
+                if self._active_job_id == job_id:
+                    self._active_job_id = None
+                    self._active_future = None
+
+    def _try_mark_project_failed(self, path: Path, modified_at: str) -> None:
+        try:
+            self._repository.upsert_project(
+                path,
+                display_name=path.stem,
+                status=AnalysisStatus.FAILED,
+                modified_at=modified_at,
+            )
+        except Exception:
+            pass
+
+    def _associate_backup_snapshots(self) -> None:
+        rows = self._repository.list_projects_with_latest_snapshots()
+        mains = [
+            (project, record)
+            for project, record in rows
+            if record is not None and not _is_backup_path(Path(project.canonical_path))
+        ]
+        candidates = [
+            (project, record)
+            for project, record in rows
+            if record is not None and _is_backup_path(Path(project.canonical_path))
+        ]
+        for candidate_project, candidate_record in candidates:
+            assert candidate_record is not None
+            try:
+                candidate_snapshot = candidate_record.snapshot
+            except (TypeError, ValueError):
+                continue
+            scored: list[tuple[float, str, StudioProject]] = []
+            for main_project, main_record in mains:
+                assert main_record is not None
+                try:
+                    main_snapshot = main_record.snapshot
+                except (TypeError, ValueError):
+                    continue
+                score = score_backup_association(
+                    main_snapshot,
+                    candidate_snapshot,
+                    main_modified_at=main_project.modified_at,
+                    candidate_modified_at=candidate_project.modified_at,
+                )
+                scored.append((score, main_project.id, main_project))
+            if not scored:
+                continue
+            score, _, main_project = max(scored, key=lambda item: (item[0], item[1]))
+            try:
+                self._repository.save_backup_association(
+                    main_project.id,
+                    candidate_project.id,
+                    candidate_record.id,
+                    score=score,
+                    confirmed=score >= AUTO_CONFIRM_SCORE,
+                )
+            except ValueError:
+                continue
+
+    def _record_stale_file(
+        self,
+        job_id: str,
+        path: Path,
+        modified_at: str,
+        counts: dict[str, int],
+    ) -> None:
+        self._repository.upsert_project(
+            path,
+            display_name=path.stem,
+            status=AnalysisStatus.STALE,
+            modified_at=modified_at,
+        )
+        counts["failed_count"] += 1
+        self._update_job(job_id, **counts)
+
+    def _update_job(self, job_id: str, **updates: object) -> StudioScanJob:
+        return self._repository.update_scan_job(job_id, **updates)
+
+    def _scan_future_done(
+        self,
+        job_id: str,
+        future: Future[object],
+    ) -> None:
+        failure: str | None = None
+        if future.cancelled():
+            failure = "Studio scan cancelled before execution"
+        else:
+            exception = future.exception()
+            if exception is not None:
+                failure = _error_text(exception)
+
+        if failure is not None:
+            try:
+                current = self._repository.get_scan_job(job_id)
+                if current.status in {"queued", "running"}:
+                    self._repository.update_scan_job(
+                        job_id,
+                        status="failed",
+                        error=failure,
+                    )
+            except Exception:
+                pass
+
+        with self._lock:
+            if self._active_job_id == job_id:
+                self._active_job_id = None
+                if self._active_future is future:
+                    self._active_future = None
+
+    def _active_job(self) -> StudioScanJob | None:
+        if self._active_job_id is None:
+            return None
+        active = self._repository.get_scan_job(self._active_job_id)
+        if active.status in {"queued", "running"}:
+            return active
+        self._active_job_id = None
+        self._active_future = None
+        return None
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("StudioService is closed")
+
+
+def _modified_ns_to_utc_iso(modified_ns: int) -> str:
+    seconds, nanoseconds = divmod(modified_ns, 1_000_000_000)
+    return datetime.fromtimestamp(seconds, timezone.utc).replace(
+        microsecond=nanoseconds // 1_000
+    ).isoformat()
+
+
+def _is_backup_path(path: Path) -> bool:
+    return any(part.casefold() in {"backup", "backups"} for part in path.parts[:-1])
+
+
+def _verify_source_hash(
+    path: Path,
+    observation: FileObservation,
+    source_hash: str,
+) -> None:
+    verified_hash = sha256_file(path, expected=observation)
+    if verified_hash != source_hash:
+        raise FileChangedDuringRead(f"{path} changed after hashing")
+
+
+def _error_text(exc: BaseException) -> str:
+    return str(exc) or type(exc).__name__

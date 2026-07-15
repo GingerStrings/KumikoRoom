@@ -7,16 +7,20 @@ const homeHeroAssetPath = path.resolve(__dirname, "../public/assets/home-rehears
 const chatAvatarAssetPath = path.resolve(__dirname, "../public/assets/kumiko-avatar-v1.png");
 
 function expectRuleToContain(css: string, selector: string, declarations: string[]) {
+  const body = ruleBody(css, selector);
+
+  for (const declaration of declarations) {
+    expect(body).toContain(declaration);
+  }
+}
+
+function ruleBody(css: string, selector: string): string {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const match = css.match(new RegExp(`${escapedSelector}\\s*\\{(?<body>[^}]*)\\}`));
 
   expect(match, `Expected ${selector} rule to exist`).not.toBeNull();
 
-  const body = match?.groups?.body ?? "";
-
-  for (const declaration of declarations) {
-    expect(body).toContain(declaration);
-  }
+  return match?.groups?.body ?? "";
 }
 
 describe("Liz Bluebird room visual tokens", () => {
@@ -89,6 +93,8 @@ describe("Liz Bluebird room visual tokens", () => {
       ".chat-head",
       ".profile",
       ".media-player",
+      ".track-actions",
+      ".source-badge",
       ".settings-trigger",
       ".settings-popover {",
       ".settings-popover__header",
@@ -99,11 +105,128 @@ describe("Liz Bluebird room visual tokens", () => {
     });
   });
 
+  it("keeps the settings popover scrollable inside the visible viewport", () => {
+    const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
+
+    expectRuleToContain(css, ".room-workspace", ["overflow: hidden;"]);
+    expectRuleToContain(css, ".settings-popover", [
+      "position: fixed;",
+      "max-height: calc(100dvh - 112px);",
+      "overflow-y: auto;",
+      "scrollbar-gutter: stable;",
+    ]);
+  });
+
+  it("defines the platform player and video mini-window selectors", () => {
+    const css = fs.readFileSync(cssPath, "utf8");
+
+    [
+      ".track-actions",
+      ".source-badge",
+      ".source-badge[data-source=\"bilibili\"]",
+      ".source-badge[data-source=\"netease\"]",
+      ".control.video",
+      ".video-mini-window",
+      ".video-mini-window--compact",
+      ".video-mini-window--large",
+      ".video-mini-window__frame",
+      ".video-mini-window__button",
+      ".video-mini-window__link",
+    ].forEach((selector) => {
+      expect(css).toContain(selector);
+    });
+  });
+
+  it("keeps platform player controls and mini-window viewport constraints aligned", () => {
+    const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
+
+    expectRuleToContain(css, ".player-controls", [
+      "grid-template-columns: clamp(28px, 10vw, 34px) clamp(38px, 12vw, 42px) clamp(28px, 10vw, 34px) minmax(44px, 1fr) minmax(64px, max-content);",
+    ]);
+    expectRuleToContain(css, ".player-controls[data-has-video=\"true\"]", [
+      "grid-template-columns: clamp(28px, 9vw, 34px) clamp(38px, 12vw, 42px) clamp(28px, 9vw, 34px) minmax(36px, 1fr) clamp(28px, 9vw, 34px) minmax(64px, max-content);",
+    ]);
+    expect(css).toContain("@media (max-height: 520px)");
+    expect(css).toContain("max-height: calc(100vh - 24px);");
+  });
+
+  it("keeps the right rail media player from overflowing narrow player widths", () => {
+    const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
+
+    expectRuleToContain(css, ".media-player", [
+      "min-width: 0;",
+      "overflow: hidden;",
+    ]);
+    expectRuleToContain(css, ".player-controls", [
+      "grid-template-columns: clamp(28px, 10vw, 34px) clamp(38px, 12vw, 42px) clamp(28px, 10vw, 34px) minmax(44px, 1fr) minmax(64px, max-content);",
+    ]);
+    expectRuleToContain(css, ".queue-preview", [
+      "display: grid;",
+      "grid-template-columns: minmax(0, 1fr) auto;",
+      "overflow: hidden;",
+    ]);
+    expectRuleToContain(css, ".queue-preview-main", [
+      "min-width: 0;",
+      "overflow: hidden;",
+    ]);
+    expectRuleToContain(css, ".music-queue-panel", [
+      "position: fixed;",
+      "max-width: calc(100vw - 32px);",
+    ]);
+    expect(css).not.toContain(".playlist {");
+  });
+
+  it("keeps Auto DJ trace content inside the music queue panel", () => {
+    const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
+
+    expectRuleToContain(css, ".music-queue-panel", [
+      "grid-template-rows: auto auto auto minmax(0, 1fr);",
+    ]);
+    expectRuleToContain(css, ".auto-dj-trace", [
+      "grid-row: 3;",
+      "min-width: 0;",
+      "max-height: min(180px, 34vh);",
+      "overflow-x: hidden;",
+      "overflow-y: auto;",
+      "overscroll-behavior: contain;",
+    ]);
+    expectRuleToContain(css, ".auto-dj-trace-head", ["min-width: 0;"]);
+    expectRuleToContain(css, ".auto-dj-trace-head span", [
+      "min-width: 0;",
+      "overflow: hidden;",
+      "text-overflow: ellipsis;",
+      "white-space: nowrap;",
+    ]);
+    expectRuleToContain(css, ".auto-dj-trace-queries,\n.auto-dj-trace-candidates", [
+      "min-width: 0;",
+      "overflow: hidden;",
+    ]);
+    expectRuleToContain(css, ".auto-dj-trace-error", [
+      "display: block;",
+      "max-height: 76px;",
+      "overflow-y: auto;",
+      "overflow-wrap: anywhere;",
+    ]);
+    expectRuleToContain(css, ".music-queue-list", [
+      "grid-row: 4;",
+      "display: grid;",
+      "align-content: start;",
+    ]);
+  });
+
   it("uses the soft Kumiko chat avatar asset in message chrome", () => {
     const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
 
     expect(fs.existsSync(chatAvatarAssetPath)).toBe(true);
     expectRuleToContain(css, ".avatar", ['url("/assets/kumiko-avatar-v1.png")']);
+  });
+
+  it("keeps the user chat avatar visually distinct from Kumiko", () => {
+    const css = fs.readFileSync(cssPath, "utf8").replace(/\r\n/g, "\n");
+    const body = ruleBody(css, ".avatar.user-avatar");
+
+    expect(body).toContain("background:");
+    expect(body).not.toContain("kumiko-avatar-v1.png");
   });
 
   it("keeps non-chat pages aligned with the v6 window language", () => {

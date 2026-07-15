@@ -1,3 +1,5 @@
+import type { ListeningContext } from "../lib/musicItems";
+
 export interface CharacterState {
   displayName: string;
   romanizedName: string;
@@ -31,6 +33,7 @@ export interface ChatMessage {
   id: string;
   role: "user" | "kumiko";
   content: string;
+  novelRag?: NovelRagTrace;
 }
 
 export interface ChatSession {
@@ -45,11 +48,27 @@ export type PersonaStrength = "medium" | "strong";
 
 export type MemoryCategory = "preference" | "diary" | "creative_note" | "profile_fact";
 
+export type LlmProvider = "mock" | "deepseek" | "openai_compatible";
+
 export interface ProviderStatus {
-  provider: "mock" | "deepseek";
+  provider: LlmProvider;
   model: string | null;
   configured: boolean;
   label: string;
+}
+
+export interface LLMConfig {
+  provider: LlmProvider;
+  baseUrl: string | null;
+  apiKey: string | null;
+  model: string | null;
+}
+
+export interface LLMTestResult {
+  ok: boolean;
+  error: string | null;
+  model: string | null;
+  latencyMs: number | null;
 }
 
 export interface StoredChatMessage extends ChatMessage {
@@ -76,6 +95,157 @@ export interface ChatRequest {
   recentMessages?: ChatMessage[];
   personaStrength?: PersonaStrength;
   memoryEnabled?: boolean;
+  listeningContext?: ListeningContext;
+  musicState?: MusicAgentState;
+  llmConfig?: LLMConfig | null;
+}
+
+export interface MusicSearchResult {
+  source: "netease";
+  id: string;
+  songId: string;
+  title: string;
+  creator: string;
+  durationMs: number;
+  pageUrl: string;
+  platformAudioUrl: string;
+  tags: string[];
+  playable: boolean;
+  popularity: number | null;
+  commentCount: number | null;
+  hotCommentLikedCount: number | null;
+  score: number;
+  evidence: string[];
+}
+
+export interface ClientMusicItem {
+  id: string;
+  source: "bilibili" | "netease";
+  title: string;
+  creator: string;
+  durationMs: number;
+  pageUrl: string | null;
+  platformAudioUrl: string | null;
+  tags: string[];
+  canOpenVideo: boolean;
+  sourceQuery?: string | null;
+  selectedReason?: string | null;
+  selectionEvidence?: string[];
+  selectionScore?: number | null;
+  recommendationIntent?: RecommendationIntent | null;
+  recommendationRefillId?: string | null;
+}
+
+export interface MusicAgentTrack {
+  id: string;
+  source: "bilibili" | "netease";
+  title: string;
+  creator: string;
+  durationMs: number;
+  pageUrl?: string | null;
+  platformAudioUrl?: string | null;
+  tags: string[];
+  canOpenVideo: boolean;
+  saved: boolean;
+}
+
+export interface MusicAgentPlaylist {
+  id: string;
+  name: string;
+  description?: string | null;
+  itemCount: number;
+  updatedAt: string;
+  items: MusicAgentTrack[];
+}
+
+export interface MusicAgentState {
+  isPlaying: boolean;
+  currentTimeMs: number;
+  durationMs: number;
+  current: MusicAgentTrack | null;
+  previous: MusicAgentTrack | null;
+  next: MusicAgentTrack | null;
+  upcoming: MusicAgentTrack[];
+  recent: MusicAgentTrack[];
+  saved: MusicAgentTrack[];
+  playlists: MusicAgentPlaylist[];
+}
+
+export type RoomClientAction =
+  | {
+      type: "play_music_item";
+      item: ClientMusicItem;
+    }
+  | {
+      type: "add_music_to_queue";
+      item: ClientMusicItem;
+    }
+  | {
+      type: "remove_music_from_queue";
+      itemId: string;
+    }
+  | {
+      type: "save_music_item";
+      item: ClientMusicItem;
+    }
+  | {
+      type: "unsave_music_item";
+      itemId: string;
+    }
+  | {
+      type: "clear_music_queue";
+    }
+  | {
+      type: "open_video_window";
+      item: ClientMusicItem;
+    }
+  | {
+      type: "create_music_playlist";
+      playlistId: string;
+      playlistName: string;
+      description?: string | null;
+    }
+  | {
+      type: "rename_music_playlist";
+      playlistId: string;
+      playlistName: string;
+    }
+  | {
+      type: "delete_music_playlist";
+      playlistId: string;
+    }
+  | {
+      type: "add_music_to_playlist";
+      playlistId: string;
+      item: ClientMusicItem;
+    }
+  | {
+      type: "remove_music_from_playlist";
+      playlistId: string;
+      itemId: string;
+    }
+  | {
+      type: "play_music_playlist";
+      playlistId: string;
+    }
+  | {
+      type: "add_playlist_to_queue";
+      playlistId: string;
+    };
+
+export interface AgentTrace {
+  toolCalls: Array<{
+    id: string;
+    name: string;
+    ok: boolean;
+  }>;
+}
+
+export interface NovelRagTrace {
+  used: boolean;
+  query: string | null;
+  sources: string[];
+  reason: string | null;
 }
 
 export interface ChatResponse {
@@ -85,4 +255,129 @@ export interface ChatResponse {
   providerStatus: ProviderStatus;
   memoryEvents: MemoryEvent[];
   session: ChatSession | null;
+  clientActions: RoomClientAction[];
+  agentTrace: AgentTrace;
+  novelRag: NovelRagTrace;
+}
+
+export type RecommendationIntent =
+  | "similar_theme"
+  | "similar_mood"
+  | "same_creator_or_work"
+  | "light_exploration";
+
+export interface RecommendationThemeSignal {
+  key: string;
+  weight: number;
+  lastSeenAt: string;
+}
+
+export interface RecommendationCooldown {
+  key: string;
+  kind: "item" | "artist" | "tag" | "query";
+  weight: number;
+  expiresAt: string;
+  reason: "dislike" | "recently_played" | "recently_recommended";
+}
+
+export interface RecommendationHistoryEntry {
+  itemId: string;
+  title: string;
+  creator: string;
+  source: ClientMusicItem["source"];
+  recommendedAt: string;
+  played: boolean;
+  disliked: boolean;
+  reason: string;
+}
+
+export interface RecommendationRefillHistoryEntry {
+  refillId: string;
+  createdAt: string;
+  selectedItemIds: string[];
+  dominantThemes: string[];
+  explorationCount: number;
+}
+
+export interface MusicRecommendationProfile {
+  version: 1;
+  updatedAt: string;
+  artistWeights: Record<string, number>;
+  tagWeights: Record<string, number>;
+  sourceWeights: Partial<Record<ClientMusicItem["source"], number>>;
+  queryWeights: Record<string, number>;
+  recentThemes: RecommendationThemeSignal[];
+  cooldowns: RecommendationCooldown[];
+  recommendedItems: RecommendationHistoryEntry[];
+  refillHistory: RecommendationRefillHistoryEntry[];
+}
+
+export interface AutoDjSettings {
+  count: number;
+  queueDepthTrigger: number;
+  similarCount: number;
+  explorationCount: number;
+}
+
+export interface AutoDjRecommendRequest {
+  musicState: MusicAgentState | null;
+  recommendationProfile: MusicRecommendationProfile;
+  recentMessages: ChatMessage[];
+  settings: AutoDjSettings;
+  llmConfig?: LLMConfig | null;
+}
+
+export interface AutoDjRecommendation {
+  item: ClientMusicItem;
+  score: number;
+  intent: RecommendationIntent;
+  reason: string;
+  evidence: string[];
+}
+
+export interface AutoDjTraceQuery {
+  query: string;
+  intent: RecommendationIntent;
+  themes: string[];
+}
+
+export interface AutoDjTraceCandidate {
+  itemId: string;
+  title: string;
+  creator: string;
+  source: ClientMusicItem["source"];
+  query: string;
+  intent: RecommendationIntent;
+  score: number;
+  reason: string;
+  evidence: string[];
+  selected: boolean;
+}
+
+export interface AutoDjTrace {
+  plannerQueries: AutoDjTraceQuery[];
+  candidateCount: number;
+  scoredCount: number;
+  selectedItemIds: string[];
+  candidates: AutoDjTraceCandidate[];
+  sourceErrors: string[];
+  error: string | null;
+}
+
+export interface RecommendationProfilePatch {
+  recommendedItems: RecommendationHistoryEntry[];
+  cooldowns: RecommendationCooldown[];
+  refillHistory: RecommendationRefillHistoryEntry[];
+}
+
+export interface AutoDjRecommendResponse {
+  ok: boolean;
+  refillId: string | null;
+  notice: string;
+  clientActions: RoomClientAction[];
+  recommendations: AutoDjRecommendation[];
+  profilePatch: RecommendationProfilePatch;
+  error: string | null;
+  sourceErrors: string[];
+  trace: AutoDjTrace;
 }

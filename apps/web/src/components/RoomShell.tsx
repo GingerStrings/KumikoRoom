@@ -1,31 +1,108 @@
 "use client";
 
-import { FormEvent, KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, FormEvent, KeyboardEvent, SyntheticEvent, useCallback, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import {
   createSession,
   deleteSession,
   getSessionMessages,
   getSessions,
   postChat,
-  renameSession
+  recommendAutoDj,
+  renameSession,
+  testLLMConnection
 } from "../api/client";
 import type {
+  AutoDjRecommendation,
+  AutoDjRecommendResponse,
+  AutoDjSettings,
+  AutoDjTrace,
   ChatMessage,
   ChatSession,
+  ClientMusicItem,
+  LLMConfig,
+  LLMTestResult,
+  MusicRecommendationProfile,
   PersonaStrength,
   ProviderStatus,
+  RecommendationIntent,
+  RoomClientAction,
   RoomState,
   StoredChatMessage
 } from "../api/types";
 import type { ConnectionStatus } from "../lib/connectionStatus";
+import {
+  PLAYER_TRACKS,
+  buildListeningContext,
+  isDeletedStickyDefaultMusicItem,
+  makeMusicItemFromClientActionItem
+} from "../lib/musicItems";
+import type { ListeningContext, MusicItem, MusicSourceKind } from "../lib/musicItems";
+import { buildMusicAgentState } from "../lib/musicAgentState";
+import {
+  addMusicItemToPlaylist,
+  createInitialMusicLibrary,
+  createMusicPlaylist,
+  deleteMusicPlaylist,
+  getAvailableMusicPlaylistId,
+  getMusicPlaylistByIdOrName,
+  isMusicLibraryState,
+  removeMusicItemFromPlaylist,
+  renameMusicPlaylist,
+  type MusicLibraryState
+} from "../lib/musicLibrary";
+import {
+  addQueueItem,
+  advanceQueuePlayback,
+  appendMusicItemsToQueue,
+  applyClientMusicActionToQueue,
+  clearUpcomingQueue,
+  createInitialMusicQueue,
+  DEFAULT_RECENT_LIMIT,
+  getCurrentQueueEntry,
+  getPlaybackQueueEntries,
+  getQueuePreview,
+  getRecentQueueEntries,
+  getSavedQueueEntries,
+  getUpcomingQueueEntries,
+  playMusicItemsAsQueue,
+  playQueueItem,
+  removeQueueEntry,
+  saveQueueItem,
+  toggleQueueEntrySaved,
+  unsaveQueueItem,
+  type MusicPlaybackMode,
+  type MusicQueueEntry,
+  type MusicQueueState
+} from "../lib/musicQueue";
+import {
+  applyRecommendationProfilePatch,
+  createInitialMusicRecommendationProfile,
+  dislikeRecommendedItem,
+  isMusicRecommendationProfile,
+  markRecommendedItemAccepted,
+  markRecommendedItemSkipped,
+} from "../lib/musicRecommendationProfile";
+import { shouldRequestAutoDjRefill } from "../lib/autoDj";
+import { LLMConfigForm } from "./LLMConfigForm";
 import { SessionSidebar } from "./SessionSidebar";
+import { VideoMiniWindow } from "./VideoMiniWindow";
 
 const LAST_SESSION_STORAGE_KEY = "kumikoroom.lastSessionId";
-const PLAYER_TRACKS = [
-  { title: "雨后的走廊", subtitle: "练习室 · 傍晚" },
-  { title: "合奏前调音", subtitle: "部室 · 木管声部" },
-  { title: "青鸟的间奏", subtitle: "长笛 · 双簧管" }
-];
+const MUSIC_QUEUE_STORAGE_KEY = "kumikoroom.musicQueue";
+const MUSIC_LIBRARY_STORAGE_KEY = "kumikoroom.musicLibrary";
+const AUTO_DJ_ENABLED_STORAGE_KEY = "kumikoroom.autoDjEnabled";
+const MUSIC_RECOMMENDATION_PROFILE_STORAGE_KEY = "kumikoroom.musicRecommendationProfile";
+const EMPTY_PLAYER_TITLE = "暂无播放";
+const EMPTY_PLAYER_CREATOR = "可以让久美子继续帮你找歌";
+const DEFAULT_AUTO_DJ_SETTINGS: AutoDjSettings = {
+  count: 3,
+  queueDepthTrigger: 2,
+  similarCount: 2,
+  explorationCount: 1,
+};
+
+type MusicPanelTab = "queue" | "playlists" | "recent" | "saved";
 
 interface FailedOutgoingMessage {
   id: string;
@@ -39,6 +116,30 @@ interface RoomShellProps {
   connectionStatus: ConnectionStatus;
 }
 
+function makeAutoDjRequestFailedTrace(error: unknown): AutoDjTrace {
+  return {
+    plannerQueries: [],
+    candidateCount: 0,
+    scoredCount: 0,
+    selectedItemIds: [],
+    candidates: [],
+    sourceErrors: [getAutoDjRequestErrorMessage(error)],
+    error: "request_failed"
+  };
+}
+
+function getAutoDjRequestErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim().length > 0) {
+    return error.message;
+  }
+
+  return "Auto DJ request failed";
+}
+
+function isNonEmptyString(value: string | null | undefined): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const initializedSessionsRef = useRef(false);
   const activeSessionIdRef = useRef<string | null>(null);
@@ -46,6 +147,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const sessionActionPendingRef = useRef(false);
   const sessionsLoadingRef = useRef(false);
   const timelineRef = useRef<HTMLDivElement | null>(null);
+  const platformAudioRef = useRef<HTMLAudioElement | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [isSending, setIsSending] = useState(false);
@@ -54,6 +156,9 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const [memoryEnabled, setMemoryEnabled] = useState(true);
   const [settingsHydrated, setSettingsHydrated] = useState(false);
   const [providerStatus, setProviderStatus] = useState<ProviderStatus | null>(null);
+  const [llmConfig, setLlmConfig] = useState<LLMConfig | null>(null);
+  const [llmTestResult, setLlmTestResult] = useState<LLMTestResult | null>(null);
+  const [isTestingLLM, setIsTestingLLM] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [mobileSessionsOpen, setMobileSessionsOpen] = useState(false);
   const [mobileSessionMenuId, setMobileSessionMenuId] = useState<string | null>(null);
@@ -68,10 +173,80 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [pendingOutgoingMessageId, setPendingOutgoingMessageId] = useState<string | null>(null);
   const [failedOutgoing, setFailedOutgoing] = useState<FailedOutgoingMessage | null>(null);
-  const [playerTrackIndex, setPlayerTrackIndex] = useState(0);
+  const [musicQueue, setMusicQueue] = useState<MusicQueueState>(() => createInitialMusicQueue(PLAYER_TRACKS));
+  const [musicQueueHydrated, setMusicQueueHydrated] = useState(false);
+  const [musicLibrary, setMusicLibrary] = useState<MusicLibraryState>(() => createInitialMusicLibrary());
+  const [musicLibraryHydrated, setMusicLibraryHydrated] = useState(false);
+  const [autoDjEnabled, setAutoDjEnabled] = useState(false);
+  const [autoDjHydrated, setAutoDjHydrated] = useState(false);
+  const [autoDjInFlightSignature, setAutoDjInFlightSignature] = useState<string | null>(null);
+  const [autoDjLastRequestedSignature, setAutoDjLastRequestedSignature] = useState<string | null>(null);
+  const [autoDjStatus, setAutoDjStatus] = useState<"idle" | "loading" | "unavailable">("idle");
+  const [latestAutoDjTrace, setLatestAutoDjTrace] = useState<AutoDjTrace | null>(null);
+  const [musicRecommendationProfile, setMusicRecommendationProfile] = useState<MusicRecommendationProfile>(() =>
+    createInitialMusicRecommendationProfile()
+  );
+  const musicRecommendationProfileRef = useRef(musicRecommendationProfile);
+  musicRecommendationProfileRef.current = musicRecommendationProfile;
+  const [queuePanelOpen, setQueuePanelOpen] = useState(false);
+  const [queuePanelTab, setQueuePanelTab] = useState<MusicPanelTab>("queue");
+  const [selectedPlaylistId, setSelectedPlaylistId] = useState<string | null>(null);
+  const [playlistDraftName, setPlaylistDraftName] = useState("");
+  const [playlistDraftDescription, setPlaylistDraftDescription] = useState("");
+  const [playlistRenameName, setPlaylistRenameName] = useState("");
   const [isPlayerPlaying, setIsPlayerPlaying] = useState(true);
+  const [playbackMode, setPlaybackMode] = useState<MusicPlaybackMode>("sequence");
+  const [playerCurrentTime, setPlayerCurrentTime] = useState(0);
+  const [playerDuration, setPlayerDuration] = useState((PLAYER_TRACKS[0]?.durationMs ?? 0) / 1000);
+  const [videoWindowOpen, setVideoWindowOpen] = useState(false);
+  const [videoWindowSize, setVideoWindowSize] = useState<"compact" | "large">("compact");
+  const musicQueueRef = useRef(musicQueue);
+  const musicLibraryRef = useRef(musicLibrary);
+  const autoDjInFlightRef = useRef<string | null>(null);
+  const videoWindowOpenRef = useRef(videoWindowOpen);
+  const activeLlmConfig = settingsHydrated ? llmConfig : null;
   const connectionLabel = providerStatus?.label ?? connectionStatus.label;
-  const activeTrack = PLAYER_TRACKS[playerTrackIndex] ?? PLAYER_TRACKS[0];
+  musicQueueRef.current = musicQueue;
+  musicLibraryRef.current = musicLibrary;
+  videoWindowOpenRef.current = videoWindowOpen;
+  const playerQueueEntries = getPlaybackQueueEntries(musicQueue);
+  const playerQueue = playerQueueEntries.map((entry) => entry.item);
+  const activeQueueEntry = getCurrentQueueEntry(musicQueue) ?? playerQueueEntries[0] ?? null;
+  const activeTrack = activeQueueEntry?.item ?? null;
+  const playerTrackIndex = activeTrack
+    ? Math.max(0, playerQueue.findIndex((track) => track.id === activeTrack.id))
+    : 0;
+  const queuePreview = getQueuePreview(musicQueue);
+  const upcomingQueueEntries = getUpcomingQueueEntries(musicQueue);
+  const recentQueueEntries = getRecentQueueEntries(musicQueue);
+  const savedQueueEntries = getSavedQueueEntries(musicQueue);
+  const selectedPlaylist =
+    musicLibrary.playlists.find((playlist) => playlist.id === selectedPlaylistId) ??
+    musicLibrary.playlists[0] ??
+    null;
+  const visibleQueuePanelEntries = getVisibleQueuePanelEntries(
+    queuePanelTab,
+    playerQueueEntries,
+    recentQueueEntries,
+    savedQueueEntries
+  );
+  const latestAutoDjTraceProblems = latestAutoDjTrace
+    ? [latestAutoDjTrace.error, ...latestAutoDjTrace.sourceErrors].filter(isNonEmptyString)
+    : [];
+  const hasPlatformAudio = Boolean(activeTrack?.platformAudioUrl);
+  const activeTrackDuration = (activeTrack?.durationMs ?? 0) / 1000;
+  const playerDurationSeconds = playerDuration > 0 ? playerDuration : activeTrackDuration;
+  const playerProgress = hasPlatformAudio && playerDurationSeconds > 0
+    ? Math.min(100, Math.max(0, (playerCurrentTime / playerDurationSeconds) * 100))
+    : 0;
+  const playerProgressWidth = `${Math.round(playerProgress * 10) / 10}%`;
+  const playButtonLabel = hasPlatformAudio ? (isPlayerPlaying ? "暂停" : "播放") : "打开平台播放器";
+  const playbackModeLabel = getPlaybackModeLabel(playbackMode);
+  const playbackModeIcon = getPlaybackModeIcon(playbackMode);
+  const standeeImageSrc = isPlayerPlaying
+    ? "/assets/kumiko-euphonium-playing-v1.png"
+    : "/assets/kumiko-standee-v1.png";
+  const activeListeningContext = activeTrack ? buildListeningContext(activeTrack, isPlayerPlaying) : undefined;
   const setActiveSessionId = useCallback((sessionId: string | null) => {
     activeSessionIdRef.current = sessionId;
     setActiveSessionIdState(sessionId);
@@ -146,6 +321,30 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     [loadSessionMessages, setActiveSessionId, setSessionsLoadingState]
   );
 
+  const handleLLMConfigChange = useCallback((next: LLMConfig | null) => {
+    setLlmConfig(next);
+    setLlmTestResult(null);
+  }, []);
+
+  const handleLLMConfigTest = useCallback(async () => {
+    if (!llmConfig) return;
+    setIsTestingLLM(true);
+    setLlmTestResult(null);
+    try {
+      const result = await testLLMConnection(llmConfig);
+      setLlmTestResult(result);
+    } catch (error) {
+      setLlmTestResult({
+        ok: false,
+        error: error instanceof Error ? error.message : "测试连接失败",
+        model: llmConfig.model,
+        latencyMs: null
+      });
+    } finally {
+      setIsTestingLLM(false);
+    }
+  }, [llmConfig]);
+
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -157,6 +356,18 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     const savedMemoryEnabled = window.localStorage.getItem("kumikoroom.memoryEnabled");
     if (savedMemoryEnabled === "false") {
       setMemoryEnabled(false);
+    }
+
+    const savedLlmConfig = window.localStorage.getItem("kumikoroom.llmConfig");
+    if (savedLlmConfig) {
+      try {
+        const parsed = JSON.parse(savedLlmConfig) as LLMConfig;
+        if (parsed && typeof parsed === "object" && typeof parsed.provider === "string") {
+          setLlmConfig(parsed);
+        }
+      } catch {
+        // ignore malformed stored config
+      }
     }
 
     setSettingsHydrated(true);
@@ -183,10 +394,107 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
   }, [memoryEnabled, settingsHydrated]);
 
   useEffect(() => {
+    if (!settingsHydrated || typeof window === "undefined") return;
+
+    if (llmConfig === null) {
+      window.localStorage.removeItem("kumikoroom.llmConfig");
+    } else {
+      window.localStorage.setItem("kumikoroom.llmConfig", JSON.stringify(llmConfig));
+    }
+  }, [llmConfig, settingsHydrated]);
+
+  useEffect(() => {
     if (typeof window === "undefined" || !activeSessionId) return;
 
     window.localStorage.setItem(LAST_SESSION_STORAGE_KEY, activeSessionId);
   }, [activeSessionId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const storedQueue = readStoredMusicQueue(window.localStorage);
+    if (storedQueue) {
+      commitMusicQueue(storedQueue);
+    }
+    setMusicQueueHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const storedLibrary = readStoredMusicLibrary(window.localStorage);
+    if (storedLibrary) {
+      setMusicLibrary(storedLibrary);
+    }
+    setMusicLibraryHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!musicQueueHydrated || typeof window === "undefined") return;
+
+    window.localStorage.setItem(MUSIC_QUEUE_STORAGE_KEY, JSON.stringify(musicQueue));
+  }, [musicQueue, musicQueueHydrated]);
+
+  useEffect(() => {
+    if (!musicLibraryHydrated || typeof window === "undefined") return;
+
+    window.localStorage.setItem(MUSIC_LIBRARY_STORAGE_KEY, JSON.stringify(musicLibrary));
+  }, [musicLibrary, musicLibraryHydrated]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    setAutoDjEnabled(window.localStorage.getItem(AUTO_DJ_ENABLED_STORAGE_KEY) === "true");
+    const storedProfile = readStoredMusicRecommendationProfile(window.localStorage);
+    if (storedProfile) {
+      setMusicRecommendationProfile(storedProfile);
+    }
+    setAutoDjHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!autoDjHydrated || typeof window === "undefined") return;
+
+    window.localStorage.setItem(AUTO_DJ_ENABLED_STORAGE_KEY, String(autoDjEnabled));
+  }, [autoDjEnabled, autoDjHydrated]);
+
+  useEffect(() => {
+    if (!autoDjHydrated || typeof window === "undefined") return;
+
+    window.localStorage.setItem(
+      MUSIC_RECOMMENDATION_PROFILE_STORAGE_KEY,
+      JSON.stringify(musicRecommendationProfile)
+    );
+  }, [musicRecommendationProfile, autoDjHydrated]);
+
+  useEffect(() => {
+    if (selectedPlaylistId && musicLibrary.playlists.some((playlist) => playlist.id === selectedPlaylistId)) {
+      return;
+    }
+
+    setSelectedPlaylistId(musicLibrary.playlists[0]?.id ?? null);
+  }, [musicLibrary.playlists, selectedPlaylistId]);
+
+  useEffect(() => {
+    setPlaylistRenameName(selectedPlaylist?.name ?? "");
+  }, [selectedPlaylist?.id, selectedPlaylist?.name]);
+
+  useEffect(() => {
+    if (activeTrack?.canOpenVideo) return;
+
+    commitVideoWindowOpen(false);
+  }, [activeTrack?.canOpenVideo]);
+
+  useEffect(() => {
+    setPlayerCurrentTime(0);
+    setPlayerDuration((activeTrack?.durationMs ?? 0) / 1000);
+  }, [activeTrack?.id, activeTrack?.durationMs]);
+
+  useEffect(() => {
+    if (!activeTrack?.platformAudioUrl || !isPlayerPlaying) return;
+
+    void playPlatformAudio();
+  }, [activeTrack?.id, activeTrack?.platformAudioUrl, isPlayerPlaying]);
 
   useEffect(() => {
     const timeline = timelineRef.current;
@@ -194,6 +502,76 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
 
     timeline.scrollTop = timeline.scrollHeight;
   }, [messages, isSending, failedOutgoing]);
+
+  function requestAutoDjRecommendation(signature: string | null = null): boolean {
+    if (!settingsHydrated) return false;
+    if (autoDjInFlightRef.current !== null) return false;
+
+    const requestSignature = signature ?? `manual:${Date.now()}`;
+    autoDjInFlightRef.current = requestSignature;
+    setAutoDjInFlightSignature(requestSignature);
+    if (signature) {
+      setAutoDjLastRequestedSignature(signature);
+    }
+
+    const musicState = buildMusicAgentState(musicQueue, {
+      isPlaying: isPlayerPlaying,
+      currentTimeMs: Math.round(playerCurrentTime * 1000),
+      durationMs: Math.round(playerDurationSeconds * 1000)
+    }, musicLibrary);
+
+    setAutoDjStatus("loading");
+    void recommendAutoDj({
+      musicState,
+      recommendationProfile: musicRecommendationProfileRef.current,
+      recentMessages: messages,
+      settings: DEFAULT_AUTO_DJ_SETTINGS,
+      llmConfig: activeLlmConfig
+    })
+      .then((response) => {
+        applyAutoDjResponse(response);
+        setAutoDjStatus(response.ok ? "idle" : "unavailable");
+      })
+      .catch((error: unknown) => {
+        setLatestAutoDjTrace(makeAutoDjRequestFailedTrace(error));
+        setAutoDjStatus("unavailable");
+      })
+      .finally(() => {
+        autoDjInFlightRef.current = null;
+        setAutoDjInFlightSignature(null);
+      });
+
+    return true;
+  }
+
+  useEffect(() => {
+    const signature = shouldRequestAutoDjRefill({
+      enabled: autoDjEnabled,
+      hydrated: settingsHydrated && autoDjHydrated && musicQueueHydrated && musicLibraryHydrated,
+      queue: musicQueue,
+      settings: DEFAULT_AUTO_DJ_SETTINGS,
+      inFlightSignature: autoDjInFlightSignature,
+      lastRequestedSignature: autoDjLastRequestedSignature,
+    });
+    if (!signature) return;
+
+    requestAutoDjRecommendation(signature);
+  }, [
+    autoDjEnabled,
+    settingsHydrated,
+    autoDjHydrated,
+    musicQueueHydrated,
+    musicLibraryHydrated,
+    musicQueue,
+    musicLibrary,
+    isPlayerPlaying,
+    playerCurrentTime,
+    playerDurationSeconds,
+    messages,
+    llmConfig,
+    autoDjInFlightSignature,
+    autoDjLastRequestedSignature
+  ]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -212,6 +590,10 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     await sendChatMessage(failedOutgoing.content, failedOutgoing);
   }
 
+  function handleManualAutoDjRecommend() {
+    requestAutoDjRecommendation();
+  }
+
   async function sendChatMessage(message: string, retryMessage?: FailedOutgoingMessage) {
     const submittedSessionId = retryMessage?.sessionId ?? activeSessionIdRef.current;
     if (!submittedSessionId) return;
@@ -219,6 +601,13 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     setSendError(null);
     setFailedOutgoing(null);
     setSendingState(true);
+
+    const listeningContext = activeListeningContext;
+    const musicState = buildMusicAgentState(musicQueue, {
+      isPlaying: isPlayerPlaying,
+      currentTimeMs: Math.round(playerCurrentTime * 1000),
+      durationMs: Math.round(playerDurationSeconds * 1000)
+    }, musicLibrary);
 
     const recentMessages = retryMessage?.recentMessages ?? messages.slice(-8);
     const userMessage: ChatMessage = {
@@ -235,20 +624,28 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     try {
       const response = await postChat({
         message,
-        roomState: initialState,
+        roomState: listeningContext ? buildCurrentRoomState(initialState, listeningContext) : initialState,
         sessionId: submittedSessionId ?? undefined,
         recentMessages,
         personaStrength,
-        memoryEnabled
+        memoryEnabled,
+        listeningContext,
+        musicState,
+        llmConfig: activeLlmConfig ?? undefined
       });
       if (activeSessionIdRef.current !== submittedSessionId) {
         return;
       }
 
       const storedSessionId = response.session?.id ?? submittedSessionId;
+      const kumikoReply: ChatMessage = {
+        ...response.reply,
+        novelRag: response.novelRag
+      };
 
       setProviderStatus(response.providerStatus);
-      setMessages((current) => [...current, response.reply]);
+      setMessages((current) => [...current, kumikoReply]);
+      applyRoomClientActions(response.clientActions);
       if (storedSessionId) {
         setSessionMessages((current) => [
           ...current,
@@ -408,6 +805,472 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     setMobileDeleteConfirmId(null);
   }
 
+  function applyRoomClientActions(actions: RoomClientAction[]) {
+    if (actions.length === 0) {
+      return;
+    }
+
+    const queueBeforeActions = musicQueueRef.current;
+    const libraryBeforeActions = musicLibraryRef.current;
+    const activeEntryBeforeActions = getCurrentQueueEntry(queueBeforeActions);
+    const activeTrackBeforeActions = activeEntryBeforeActions?.item ?? activeTrack;
+    const previousActiveTrackId = activeTrackBeforeActions.id;
+    let nextQueueState = queueBeforeActions;
+    let nextLibraryState = libraryBeforeActions;
+    let nextVideoWindowOpen = videoWindowOpenRef.current;
+    let shouldPlay = false;
+    const playlistIdAliases = new Map<string, string>();
+
+    function resolvePlaylistId(playlistId: string): string {
+      return playlistIdAliases.get(playlistId) ?? playlistId;
+    }
+
+    for (const clientAction of actions) {
+      switch (clientAction.type) {
+        case "play_music_item":
+          nextQueueState = applyClientMusicActionToQueue(nextQueueState, clientAction.item);
+          nextVideoWindowOpen = clientAction.item.canOpenVideo ? nextVideoWindowOpen : false;
+          shouldPlay = true;
+          break;
+        case "add_music_to_queue":
+          nextQueueState = addQueueItem(nextQueueState, clientAction.item);
+          break;
+        case "remove_music_from_queue":
+          if (getUpcomingQueueEntries(nextQueueState).some((entry) => entry.id === clientAction.itemId)) {
+            nextQueueState = removeQueueEntry(nextQueueState, clientAction.itemId);
+          }
+          break;
+        case "save_music_item":
+          nextQueueState = saveQueueItem(nextQueueState, clientAction.item);
+          break;
+        case "unsave_music_item":
+          nextQueueState = unsaveQueueItem(nextQueueState, clientAction.itemId);
+          break;
+        case "clear_music_queue":
+          nextQueueState = clearUpcomingQueue(nextQueueState);
+          break;
+        case "open_video_window":
+          nextQueueState = applyClientMusicActionToQueue(nextQueueState, clientAction.item);
+          nextVideoWindowOpen = clientAction.item.canOpenVideo;
+          shouldPlay = true;
+          break;
+        case "create_music_playlist": {
+          const playlistId = getAvailableMusicPlaylistId(nextLibraryState, clientAction.playlistId);
+          playlistIdAliases.set(clientAction.playlistId, playlistId);
+          nextLibraryState = createMusicPlaylist(
+            nextLibraryState,
+            {
+              id: playlistId,
+              name: clientAction.playlistName,
+              description: clientAction.description?.trim() ? clientAction.description : undefined
+            }
+          );
+          break;
+        }
+        case "rename_music_playlist":
+          nextLibraryState = renameMusicPlaylist(
+            nextLibraryState,
+            resolvePlaylistId(clientAction.playlistId),
+            clientAction.playlistName
+          );
+          break;
+        case "delete_music_playlist":
+          nextLibraryState = deleteMusicPlaylist(nextLibraryState, resolvePlaylistId(clientAction.playlistId));
+          break;
+        case "add_music_to_playlist":
+          nextLibraryState = addMusicItemToPlaylist(
+            nextLibraryState,
+            resolvePlaylistId(clientAction.playlistId),
+            makeMusicItemFromClientActionItem(clientAction.item),
+            "agent"
+          );
+          break;
+        case "remove_music_from_playlist":
+          nextLibraryState = removeMusicItemFromPlaylist(
+            nextLibraryState,
+            resolvePlaylistId(clientAction.playlistId),
+            clientAction.itemId
+          );
+          break;
+        case "play_music_playlist": {
+          const playlist = getMusicPlaylistByIdOrName(nextLibraryState, resolvePlaylistId(clientAction.playlistId));
+          const playlistItems = playlist?.items.map((entry) => entry.item) ?? [];
+          if (playlistItems.length > 0) {
+            nextQueueState = playMusicItemsAsQueue(nextQueueState, playlistItems, "agent");
+            nextVideoWindowOpen = playlistItems[0].canOpenVideo ? nextVideoWindowOpen : false;
+            shouldPlay = true;
+          }
+          break;
+        }
+        case "add_playlist_to_queue": {
+          const playlist = getMusicPlaylistByIdOrName(nextLibraryState, resolvePlaylistId(clientAction.playlistId));
+          const playlistItems = playlist?.items.map((entry) => entry.item) ?? [];
+          if (playlistItems.length > 0) {
+            nextQueueState = appendMusicItemsToQueue(nextQueueState, playlistItems, "agent");
+          }
+          break;
+        }
+      }
+    }
+
+    const nextActiveEntry = getCurrentQueueEntry(nextQueueState);
+    const nextTrack = nextActiveEntry?.item ?? activeTrackBeforeActions;
+
+    if (nextTrack.id !== previousActiveTrackId) {
+      platformAudioRef.current?.pause();
+      setPlayerCurrentTime(0);
+      setPlayerDuration(nextTrack.durationMs / 1000);
+    }
+
+    if (shouldPlay) {
+      setIsPlayerPlaying(true);
+    }
+
+    const resolvedVideoWindowOpen = nextTrack.canOpenVideo ? nextVideoWindowOpen : false;
+    if (nextLibraryState !== libraryBeforeActions) {
+      commitMusicLibrary(nextLibraryState);
+    }
+    commitMusicQueue(nextQueueState);
+    commitVideoWindowOpen(resolvedVideoWindowOpen);
+  }
+
+  function applyAutoDjResponse(response: AutoDjRecommendResponse) {
+    setLatestAutoDjTrace(response.trace ?? null);
+    if (response.profilePatch) {
+      setMusicRecommendationProfile((current) =>
+        applyRecommendationProfilePatch(current, response.profilePatch)
+      );
+    }
+    if (!response.ok || response.clientActions.length === 0) {
+      return;
+    }
+
+    applyRoomClientActions(withAutoDjRecommendationMetadata(response));
+    const notice: ChatMessage = {
+      id: `auto-dj-${response.refillId ?? Date.now()}`,
+      role: "kumiko",
+      content: response.notice
+    };
+    setMessages((current) => [...current, notice]);
+  }
+
+  function handleDislikeRecommendation(entry: MusicQueueEntry) {
+    if (!entry.selectedReason) return;
+
+    setMusicRecommendationProfile((current) =>
+      dislikeRecommendedItem(
+        current,
+        makeAutoDjRecommendationFromQueueEntry(entry),
+        new Date().toISOString()
+      )
+    );
+    if (entry.status === "queued") {
+      commitMusicQueue(removeQueueEntry(musicQueueRef.current, entry.id));
+    }
+  }
+
+  function recordRecommendedItemAccepted(entry: MusicQueueEntry) {
+    if (!isRecommendedQueueEntry(entry)) return;
+
+    setMusicRecommendationProfile((current) => {
+      const historyEntry = current.recommendedItems.find((item) => item.itemId === entry.id);
+      if (!historyEntry || historyEntry.played || historyEntry.disliked) {
+        return current;
+      }
+
+      return markRecommendedItemAccepted(
+        current,
+        makeAutoDjRecommendationFromQueueEntry(entry),
+        new Date().toISOString()
+      );
+    });
+  }
+
+  function recordRecommendedItemSkipped(entry: MusicQueueEntry) {
+    if (!isRecommendedQueueEntry(entry) || entry.status !== "queued") return;
+
+    setMusicRecommendationProfile((current) => {
+      const historyEntry = current.recommendedItems.find((item) => item.itemId === entry.id);
+      if (!historyEntry || historyEntry.played || historyEntry.disliked) {
+        return current;
+      }
+
+      return markRecommendedItemSkipped(
+        current,
+        makeAutoDjRecommendationFromQueueEntry(entry),
+        new Date().toISOString()
+      );
+    });
+  }
+
+  function advancePlayerQueue(mode: MusicPlaybackMode = playbackMode) {
+    const result = advanceQueuePlayback(musicQueueRef.current, mode);
+    const nextEntry = result.currentEntry;
+
+    if (!result.shouldContinue || !nextEntry) {
+      setIsPlayerPlaying(false);
+      return;
+    }
+
+    const nextTrack = nextEntry.item;
+    platformAudioRef.current?.pause();
+    recordRecommendedItemAccepted(nextEntry);
+    commitMusicQueue(result.state);
+    setPlayerCurrentTime(0);
+    setPlayerDuration(nextTrack.durationMs / 1000);
+    setIsPlayerPlaying(true);
+    if (!nextTrack.canOpenVideo) {
+      commitVideoWindowOpen(false);
+    }
+  }
+
+  function handlePreviousTrack() {
+    if (playerQueue.length === 0) return;
+
+    selectPlayerTrack((playerTrackIndex - 1 + playerQueue.length) % playerQueue.length);
+  }
+
+  function handleNextTrack() {
+    if (playerQueue.length === 0) return;
+
+    advancePlayerQueue(playbackMode);
+  }
+
+  function selectPlayerTrack(nextIndex: number) {
+    if (playerQueue.length === 0) return;
+
+    const nextEntry = playerQueueEntries[nextIndex] ?? playerQueueEntries[0] ?? null;
+    const nextTrack = nextEntry?.item ?? null;
+    if (!nextTrack) return;
+
+    platformAudioRef.current?.pause();
+    if (nextEntry) {
+      recordRecommendedItemAccepted(nextEntry);
+    }
+    updateMusicQueue((currentQueue) => playQueueItem(currentQueue, nextTrack.id));
+    setPlayerCurrentTime(0);
+    setPlayerDuration(nextTrack.durationMs / 1000);
+    if (!nextTrack.canOpenVideo) {
+      commitVideoWindowOpen(false);
+    }
+  }
+
+  function handleQueueEntryPlay(entryId: string) {
+    const entry = musicQueue.entries.find((candidate) => candidate.id === entryId);
+    if (!entry) return;
+
+    platformAudioRef.current?.pause();
+    recordRecommendedItemAccepted(entry);
+    updateMusicQueue((currentQueue) => playQueueItem(currentQueue, entryId));
+    setPlayerCurrentTime(0);
+    setPlayerDuration(entry.item.durationMs / 1000);
+    setIsPlayerPlaying(true);
+    if (!entry.item.canOpenVideo) {
+      commitVideoWindowOpen(false);
+    }
+  }
+
+  function handleQueueEntryRemove(entryId: string) {
+    const entry = musicQueueRef.current.entries.find((candidate) => candidate.id === entryId);
+    if (!entry) return;
+
+    recordRecommendedItemSkipped(entry);
+    updateMusicQueue((currentQueue) => removeQueueEntry(currentQueue, entryId));
+  }
+
+  function handleQueueEntrySave(entryId: string) {
+    updateMusicQueue((currentQueue) => toggleQueueEntrySaved(currentQueue, entryId));
+  }
+
+  function handleQueueEntryVideo(entry: MusicQueueEntry) {
+    recordRecommendedItemAccepted(entry);
+    updateMusicQueue((currentQueue) => playQueueItem(currentQueue, entry.id));
+    setPlayerCurrentTime(0);
+    setPlayerDuration(entry.item.durationMs / 1000);
+    setIsPlayerPlaying(true);
+    commitVideoWindowOpen(true);
+  }
+
+  function handleCreatePlaylist(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = playlistDraftName.trim();
+    if (!name) return;
+
+    const before = musicLibraryRef.current;
+    const nextLibraryState = createMusicPlaylist(
+      before,
+      {
+        name,
+        description: playlistDraftDescription.trim() || undefined
+      }
+    );
+    const createdPlaylist =
+      nextLibraryState.playlists.find((playlist) => !before.playlists.some((current) => current.id === playlist.id)) ??
+      nextLibraryState.playlists[nextLibraryState.playlists.length - 1] ??
+      null;
+
+    commitMusicLibrary(nextLibraryState);
+    setSelectedPlaylistId(createdPlaylist?.id ?? selectedPlaylistId);
+    setPlaylistRenameName(createdPlaylist?.name ?? "");
+    setPlaylistDraftName("");
+    setPlaylistDraftDescription("");
+  }
+
+  function handlePlaylistSelect(playlistId: string) {
+    const playlist = getMusicPlaylistByIdOrName(musicLibraryRef.current, playlistId);
+    setSelectedPlaylistId(playlistId);
+    setPlaylistRenameName(playlist?.name ?? "");
+  }
+
+  function handleRenameSelectedPlaylist(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedPlaylist) return;
+
+    const nextName = playlistRenameName.trim();
+    if (!nextName) return;
+
+    commitMusicLibrary(renameMusicPlaylist(musicLibraryRef.current, selectedPlaylist.id, nextName));
+  }
+
+  function handleDeletePlaylist(playlistId: string) {
+    commitMusicLibrary(deleteMusicPlaylist(musicLibraryRef.current, playlistId));
+    if (selectedPlaylistId === playlistId) {
+      setSelectedPlaylistId(null);
+      setPlaylistRenameName("");
+    }
+  }
+
+  function handleAddItemToSelectedPlaylist(item: MusicItem) {
+    if (!selectedPlaylist) return;
+
+    commitMusicLibrary(addMusicItemToPlaylist(musicLibraryRef.current, selectedPlaylist.id, item, "user"));
+  }
+
+  function handleRemoveItemFromPlaylist(playlistId: string, itemId: string) {
+    commitMusicLibrary(removeMusicItemFromPlaylist(musicLibraryRef.current, playlistId, itemId));
+  }
+
+  function handlePlayMusicItems(items: MusicItem[]) {
+    const firstItem = items[0];
+    if (!firstItem) return;
+
+    platformAudioRef.current?.pause();
+    commitMusicQueue(playMusicItemsAsQueue(musicQueueRef.current, items, "user"));
+    setPlayerCurrentTime(0);
+    setPlayerDuration(firstItem.durationMs / 1000);
+    setIsPlayerPlaying(true);
+    if (!firstItem.canOpenVideo) {
+      commitVideoWindowOpen(false);
+    }
+  }
+
+  function handlePlayPlaylist(playlistId: string) {
+    const playlist = getMusicPlaylistByIdOrName(musicLibraryRef.current, playlistId);
+    handlePlayMusicItems(playlist?.items.map((entry) => entry.item) ?? []);
+  }
+
+  function handleAppendPlaylistToQueue(playlistId: string) {
+    const playlist = getMusicPlaylistByIdOrName(musicLibraryRef.current, playlistId);
+    const items = playlist?.items.map((entry) => entry.item) ?? [];
+    if (items.length === 0) return;
+
+    commitMusicQueue(appendMusicItemsToQueue(musicQueueRef.current, items, "user"));
+  }
+
+  function handleSaveMusicItem(item: MusicItem) {
+    updateMusicQueue((currentQueue) => saveQueueItem(currentQueue, makeClientMusicItemFromMusicItem(item)));
+  }
+
+  function handleOpenMusicItemVideo(item: MusicItem) {
+    if (!item.canOpenVideo) return;
+
+    handlePlayMusicItems([item]);
+    commitVideoWindowOpen(true);
+  }
+
+  function handlePlayPause() {
+    if (!hasPlatformAudio) {
+      if (activeTrack?.canOpenVideo) {
+        commitVideoWindowOpen(true);
+        setIsPlayerPlaying(true);
+      }
+      return;
+    }
+
+    if (isPlayerPlaying) {
+      platformAudioRef.current?.pause();
+      setIsPlayerPlaying(false);
+      return;
+    }
+
+    setIsPlayerPlaying(true);
+    void playPlatformAudio();
+  }
+
+  function cyclePlaybackMode() {
+    setPlaybackMode((current) => {
+      if (current === "sequence") return "shuffle";
+      if (current === "shuffle") return "repeat-one";
+
+      return "sequence";
+    });
+  }
+
+  function commitMusicQueue(nextQueueState: MusicQueueState) {
+    musicQueueRef.current = nextQueueState;
+    setMusicQueue(nextQueueState);
+  }
+
+  function updateMusicQueue(updater: (currentQueue: MusicQueueState) => MusicQueueState) {
+    commitMusicQueue(updater(musicQueueRef.current));
+  }
+
+  function commitMusicLibrary(nextLibraryState: MusicLibraryState) {
+    musicLibraryRef.current = nextLibraryState;
+    setMusicLibrary(nextLibraryState);
+    if (musicLibraryHydrated && typeof window !== "undefined") {
+      window.localStorage.setItem(MUSIC_LIBRARY_STORAGE_KEY, JSON.stringify(nextLibraryState));
+    }
+  }
+
+  function commitVideoWindowOpen(open: boolean) {
+    videoWindowOpenRef.current = open;
+    setVideoWindowOpen(open);
+  }
+
+  async function playPlatformAudio() {
+    const audio = platformAudioRef.current;
+
+    if (!audio) {
+      return;
+    }
+
+    try {
+      await audio.play();
+    } catch {
+      setIsPlayerPlaying(false);
+    }
+  }
+
+  function handlePlatformAudioLoadedMetadata(event: SyntheticEvent<HTMLAudioElement>) {
+    const audio = event.currentTarget;
+    const metadataDuration = Number.isFinite(audio.duration) && audio.duration > 0
+      ? audio.duration
+      : (activeTrack?.durationMs ?? 0) / 1000;
+
+    setPlayerDuration(metadataDuration);
+    setPlayerCurrentTime(audio.currentTime);
+  }
+
+  function handlePlatformAudioTimeUpdate(event: SyntheticEvent<HTMLAudioElement>) {
+    setPlayerCurrentTime(event.currentTarget.currentTime);
+  }
+
+  function handlePlatformAudioEnded(event: SyntheticEvent<HTMLAudioElement>) {
+    setPlayerCurrentTime(event.currentTarget.currentTime);
+    advancePlayerQueue(playbackMode);
+  }
+
   function beginMobileRename(session: ChatSession) {
     if (isSessionBusy) return;
 
@@ -461,6 +1324,125 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
     } catch {
       // Session errors are shown by the shared sidebar state.
     }
+  }
+
+  function renderAddToPlaylistControl(item: MusicItem) {
+    if (musicLibrary.playlists.length === 0) {
+      return <span className="music-add-to-playlist-empty">先新建歌单</span>;
+    }
+
+    const playlistId = selectedPlaylist?.id ?? musicLibrary.playlists[0].id;
+
+    return (
+      <div className="music-add-to-playlist">
+        <select
+          aria-label={`选择歌单 ${item.title}`}
+          value={playlistId}
+          onChange={(event) => handlePlaylistSelect(event.currentTarget.value)}
+        >
+          {musicLibrary.playlists.map((playlist) => (
+            <option key={playlist.id} value={playlist.id}>
+              {playlist.name}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={() =>
+            commitMusicLibrary(addMusicItemToPlaylist(musicLibraryRef.current, playlistId, item, "user"))
+          }
+        >
+          加入歌单
+        </button>
+      </div>
+    );
+  }
+
+  function renderQueueEntryRow(
+    entry: MusicQueueEntry,
+    options: { active?: boolean; removable?: boolean } = {}
+  ) {
+    return (
+      <article className="music-queue-row" data-active={options.active ? "true" : undefined}>
+        <div className="music-queue-row-copy">
+          <span className="source-badge" data-source={entry.item.source}>
+            {getMusicSourceLabel(entry.item.source)}
+          </span>
+          <div>
+            <strong>{entry.item.title}</strong>
+            <span>{entry.item.creator}</span>
+            {entry.sourceQuery ? <em>来自: {entry.sourceQuery}</em> : null}
+            {entry.selectedReason ? (
+              <em className="music-recommendation-reason">{entry.selectedReason}</em>
+            ) : null}
+          </div>
+        </div>
+        <div className="music-queue-row-actions">
+          <button type="button" onClick={() => handleQueueEntryPlay(entry.id)}>
+            播放
+          </button>
+          <button
+            type="button"
+            aria-label={`${entry.saved ? "取消收藏" : "收藏"} ${entry.item.title}`}
+            onClick={() => handleQueueEntrySave(entry.id)}
+          >
+            {entry.saved ? "取消收藏" : "收藏"}
+          </button>
+          {entry.item.canOpenVideo ? (
+            <button type="button" onClick={() => handleQueueEntryVideo(entry)}>
+              小窗
+            </button>
+          ) : null}
+          {entry.selectedReason ? (
+            <button
+              type="button"
+              aria-label={`不喜欢 ${entry.item.title}`}
+              onClick={() => handleDislikeRecommendation(entry)}
+            >
+              不喜欢
+            </button>
+          ) : null}
+          {options.removable ? (
+            <button type="button" onClick={() => handleQueueEntryRemove(entry.id)}>
+              移除
+            </button>
+          ) : null}
+          {renderAddToPlaylistControl(entry.item)}
+        </div>
+      </article>
+    );
+  }
+
+  function renderPlaylistItemRow(item: MusicItem, playlistId: string) {
+    return (
+      <article className="music-queue-row" key={`${playlistId}-${item.id}`}>
+        <div className="music-queue-row-copy">
+          <span className="source-badge" data-source={item.source}>
+            {getMusicSourceLabel(item.source)}
+          </span>
+          <div>
+            <strong>{item.title}</strong>
+            <span>{item.creator}</span>
+          </div>
+        </div>
+        <div className="music-queue-row-actions">
+          <button type="button" onClick={() => handlePlayMusicItems([item])}>
+            播放
+          </button>
+          <button type="button" onClick={() => handleRemoveItemFromPlaylist(playlistId, item.id)}>
+            移除
+          </button>
+          <button type="button" onClick={() => handleSaveMusicItem(item)}>
+            收藏
+          </button>
+          {item.canOpenVideo ? (
+            <button type="button" onClick={() => handleOpenMusicItemVideo(item)}>
+              小窗
+            </button>
+          ) : null}
+        </div>
+      </article>
+    );
   }
 
   return (
@@ -562,10 +1544,13 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                     <span>当前连接</span>
                     <strong>{connectionLabel}</strong>
                   </div>
-                  <div className="settings-section">
-                    <span>模型</span>
-                    <strong>{providerStatus?.model ?? "发送后同步"}</strong>
-                  </div>
+                  <LLMConfigForm
+                    value={llmConfig}
+                    onChange={handleLLMConfigChange}
+                    onTest={handleLLMConfigTest}
+                    testResult={llmTestResult}
+                    isTesting={isTestingLLM}
+                  />
                   <div className="ai-setting-row">
                     <span>人设强度</span>
                     <div className="segmented-control" role="group" aria-label="人设强度">
@@ -766,6 +1751,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                 const isShort = message.content.trim().length <= 24;
                 const isPending = pendingOutgoingMessageId === message.id;
                 const isFailed = failedOutgoing?.id === message.id;
+                const novelRagBadge = isUser ? null : getNovelRagBadge(message.novelRag);
                 const messageClassName = [
                   "message",
                   isUser ? "me" : "",
@@ -783,8 +1769,13 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                       <div className="meta">
                         <span>{isUser ? "你" : initialState.character.displayName}</span>
                         <span>{getMessageStatusLabel(isUser, isPending, isFailed)}</span>
+                        {novelRagBadge ? (
+                          <span className="novel-rag-badge" title={novelRagBadge.title}>
+                            {novelRagBadge.label}
+                          </span>
+                        ) : null}
                       </div>
-                      <p className="bubble">{message.content}</p>
+                      <MarkdownBubble content={message.content} />
                       {isFailed ? (
                         <button
                           className="message-retry"
@@ -804,7 +1795,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                         </button>
                       </div>
                     </div>
-                    {isUser ? <span className="avatar small" aria-hidden="true" /> : null}
+                    {isUser ? <span className="avatar small user-avatar" aria-hidden="true" /> : null}
                   </article>
                 );
               })}
@@ -836,7 +1827,7 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
                 □
               </button>
               <button className="tool" type="button" aria-label="语音">
-                ♬
+                ♪
               </button>
             </div>
             <div className="composer-main">
@@ -873,66 +1864,908 @@ export function RoomShell({ initialState, connectionStatus }: RoomShellProps) {
 
         <aside className="profile" aria-label="播放器面板" data-playing={isPlayerPlaying ? "true" : "false"}>
           <div className="standee-stage" aria-hidden="true">
-            <img className="standee-img" src="/assets/kumiko-standee-v1.png" alt="" />
+            <img
+              className="standee-img"
+              src={standeeImageSrc}
+              alt=""
+              data-performance={isPlayerPlaying ? "playing" : "idle"}
+            />
           </div>
           <section className="media-player" aria-label="氛围播放器">
+            {activeTrack?.platformAudioUrl ? (
+              <audio
+                ref={platformAudioRef}
+                className="platform-audio-host"
+                src={activeTrack.platformAudioUrl}
+                preload="metadata"
+                onLoadedMetadata={handlePlatformAudioLoadedMetadata}
+                onTimeUpdate={handlePlatformAudioTimeUpdate}
+                onEnded={handlePlatformAudioEnded}
+              />
+            ) : null}
             <div className="track-head">
               <div className="track-title">
-                <strong>{activeTrack.title}</strong>
-                <span>{activeTrack.subtitle}</span>
+                <strong>{activeTrack?.title ?? EMPTY_PLAYER_TITLE}</strong>
+                <span>{activeTrack?.creator ?? EMPTY_PLAYER_CREATOR}</span>
               </div>
-              <div className="equalizer" aria-hidden="true">
-                <i />
-                <i />
-                <i />
+              <div className="track-actions">
+                {activeTrack ? (
+                  <span className="source-badge" data-source={activeTrack.source}>
+                    {getMusicSourceLabel(activeTrack.source)}
+                  </span>
+                ) : null}
+                <div className="equalizer" aria-hidden="true">
+                  <i />
+                  <i />
+                  <i />
+                </div>
               </div>
             </div>
             <div className="progress" aria-label="播放进度">
-              <span>00:42</span>
+              <span>{hasPlatformAudio ? formatPlayerTime(playerCurrentTime) : "平台"}</span>
               <div className="bar">
-                <span />
+                <span style={{ width: playerProgressWidth }} />
               </div>
-              <span>02:18</span>
+              <span>{hasPlatformAudio ? formatPlayerTime(playerDurationSeconds) : "控制"}</span>
             </div>
-            <div className="player-controls">
-              <button className="control" type="button" aria-label="上一首">
-                ‹
+            <div
+              className="player-controls"
+              data-has-video={activeTrack?.canOpenVideo ? "true" : undefined}
+            >
+              <button className="control" type="button" aria-label="上一首" onClick={handlePreviousTrack}>
+                {"<"}
               </button>
               <button
                 className="control play"
                 type="button"
-                aria-label={isPlayerPlaying ? "暂停" : "播放"}
-                onClick={() => setIsPlayerPlaying((current) => !current)}
+                aria-label={playButtonLabel}
+                onClick={handlePlayPause}
               >
-                {isPlayerPlaying ? "Ⅱ" : "▶"}
+                {hasPlatformAudio && isPlayerPlaying ? "II" : ">"}
               </button>
-              <button className="control" type="button" aria-label="下一首">
-                ›
+              <button className="control" type="button" aria-label="下一首" onClick={handleNextTrack}>
+                {">"}
               </button>
               <div className="volume" aria-label="音量">
                 <span />
               </div>
-              <button className="control" type="button" aria-label="循环">
-                ↻
+              <button
+                className="control playback-mode"
+                type="button"
+                aria-label={`播放模式：${playbackModeLabel}`}
+                title={playbackModeLabel}
+                data-mode={playbackMode}
+                onClick={cyclePlaybackMode}
+              >
+                {playbackModeIcon}
               </button>
-            </div>
-            <div className="playlist" aria-label="播放列表">
-              {PLAYER_TRACKS.map((track, index) => (
+              {activeTrack?.canOpenVideo ? (
                 <button
+                  className="control video"
                   type="button"
-                  data-active={index === playerTrackIndex ? "true" : undefined}
-                  key={track.title}
-                  onClick={() => setPlayerTrackIndex(index)}
+                  aria-label="打开视频小窗"
+                  onClick={() => commitVideoWindowOpen(true)}
                 >
-                  {track.title.replace("的", "")}
+                  □
                 </button>
-              ))}
+              ) : null}
+              <div className="auto-dj-controls">
+                <label className="auto-dj-switch">
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    checked={autoDjEnabled}
+                    onChange={(event) => {
+                      const next = event.currentTarget.checked;
+                      setAutoDjEnabled(next);
+                      setAutoDjStatus("idle");
+                      if (!next) {
+                        setAutoDjLastRequestedSignature(null);
+                      }
+                    }}
+                    aria-label="Auto DJ"
+                  />
+                  <span>Auto DJ</span>
+                  {autoDjStatus === "loading" ? (
+                    <span className="auto-dj-status" data-state="loading" aria-live="polite">
+                      搜索中...
+                    </span>
+                  ) : null}
+                  {autoDjStatus === "unavailable" ? (
+                    <span className="auto-dj-status" data-state="unavailable" aria-live="polite">
+                      暂时没找到合适的歌
+                    </span>
+                  ) : null}
+                </label>
+                <button
+                  className="auto-dj-manual"
+                  type="button"
+                  aria-label="手动触发推荐"
+                  onClick={handleManualAutoDjRecommend}
+                  disabled={!settingsHydrated || autoDjStatus === "loading"}
+                >
+                  推荐
+                </button>
+              </div>
+            </div>
+            <div className="queue-preview" aria-label="播放队列预览">
+              <button
+                className="queue-preview-main"
+                type="button"
+                onClick={() => {
+                  if (queuePreview.nextEntryId) {
+                    handleQueueEntryPlay(queuePreview.nextEntryId);
+                  } else {
+                    setQueuePanelOpen(true);
+                  }
+                }}
+              >
+                <span className="queue-preview-label">队列</span>
+                <span className="queue-preview-copy">
+                  <strong>{queuePreview.nextTitle ?? "暂无下一首"}</strong>
+                  <span>
+                    {queuePreview.nextCreator
+                      ? `${queuePreview.nextSource ? getMusicSourceLabel(queuePreview.nextSource) : "队列"} · ${queuePreview.nextCreator}`
+                      : "可以让久美子继续帮你找歌"}
+                  </span>
+                </span>
+                {queuePreview.remainingCount > 1 ? (
+                  <span className="queue-preview-count">+{queuePreview.remainingCount - 1}</span>
+                ) : null}
+              </button>
+              <button
+                className="queue-manage"
+                type="button"
+                aria-label="管理播放队列"
+                onClick={() => setQueuePanelOpen(true)}
+              >
+                管理
+              </button>
             </div>
           </section>
         </aside>
+        {queuePanelOpen ? (
+          <section className="music-queue-panel" role="dialog" aria-label="音乐记录">
+            <div className="music-queue-panel-head">
+              <div>
+                <strong>音乐记录</strong>
+                <span>正在播放、队列、歌单和收藏</span>
+              </div>
+              <button type="button" aria-label="关闭音乐记录" onClick={() => setQueuePanelOpen(false)}>
+                x
+              </button>
+            </div>
+            <div className="music-queue-tabs" role="tablist" aria-label="音乐记录分类">
+              {([
+                ["queue", "接下来"],
+                ["playlists", "我的歌单"],
+                ["recent", "最近"],
+                ["saved", "收藏"]
+              ] as const).map(([tab, label]) => (
+                <button
+                  key={tab}
+                  type="button"
+                  role="tab"
+                  aria-selected={queuePanelTab === tab}
+                  onClick={() => setQueuePanelTab(tab)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {latestAutoDjTrace ? (
+              <section className="auto-dj-trace" aria-label="Auto DJ Trace">
+                <div className="auto-dj-trace-head">
+                  <strong>Auto DJ Trace</strong>
+                  <span>
+                    candidates {latestAutoDjTrace.candidateCount} / scored {latestAutoDjTrace.scoredCount}
+                  </span>
+                </div>
+                {latestAutoDjTrace.plannerQueries.length > 0 ? (
+                  <div className="auto-dj-trace-queries">
+                    {latestAutoDjTrace.plannerQueries.map((query) => (
+                      <span key={`${query.intent}-${query.query}`}>
+                        {query.query}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                {latestAutoDjTrace.candidates.length > 0 ? (
+                  <div className="auto-dj-trace-candidates">
+                    {latestAutoDjTrace.candidates.slice(0, 3).map((candidate) => (
+                      <span key={`${candidate.itemId}-${candidate.intent}-${candidate.query}`} data-selected={candidate.selected ? "true" : undefined}>
+                        {candidate.selected ? "selected " : ""}
+                        {candidate.title}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                {latestAutoDjTraceProblems.length > 0 ? (
+                  <span className="auto-dj-trace-error">
+                    {latestAutoDjTraceProblems.join("; ")}
+                  </span>
+                ) : null}
+              </section>
+            ) : null}
+            <div className="music-queue-list">
+              {queuePanelTab === "queue" && visibleQueuePanelEntries.length > 0 ? (
+                <span className="music-queue-section-label">播放队列</span>
+              ) : null}
+              {queuePanelTab === "queue"
+                ? visibleQueuePanelEntries.map((entry) => (
+                    <Fragment key={`${queuePanelTab}-${entry.id}`}>
+                      {renderQueueEntryRow(entry, {
+                        active: activeQueueEntry?.id === entry.id,
+                        removable: true
+                      })}
+                    </Fragment>
+                  ))
+                : null}
+              {queuePanelTab === "playlists" ? (
+                <div className="music-playlist-panel">
+                  <form className="music-library-create" onSubmit={handleCreatePlaylist}>
+                    <label>
+                      <span>歌单名称</span>
+                      <input
+                        value={playlistDraftName}
+                        onChange={(event) => setPlaylistDraftName(event.currentTarget.value)}
+                      />
+                    </label>
+                    <label>
+                      <span>描述</span>
+                      <input
+                        value={playlistDraftDescription}
+                        onChange={(event) => setPlaylistDraftDescription(event.currentTarget.value)}
+                      />
+                    </label>
+                    <button type="submit">新建歌单</button>
+                  </form>
+
+                  {musicLibrary.playlists.length > 0 ? (
+                    <div className="music-playlist-list" aria-label="我的歌单列表">
+                      {musicLibrary.playlists.map((playlist) => (
+                        <article
+                          key={playlist.id}
+                          className="music-playlist-row"
+                          data-selected={selectedPlaylist?.id === playlist.id ? "true" : undefined}
+                        >
+                          <button type="button" onClick={() => handlePlaylistSelect(playlist.id)}>
+                            <strong>{playlist.name}</strong>
+                            <span>{getPlaylistItemCountLabel(playlist.items.length)}</span>
+                          </button>
+                          <div className="music-playlist-row-actions">
+                            <button type="button" onClick={() => handlePlayPlaylist(playlist.id)}>
+                              播放
+                            </button>
+                            <button type="button" onClick={() => handleAppendPlaylistToQueue(playlist.id)}>
+                              加到接下来
+                            </button>
+                            <button type="button" onClick={() => handlePlaylistSelect(playlist.id)}>
+                              重命名
+                            </button>
+                            <button type="button" onClick={() => handleDeletePlaylist(playlist.id)}>
+                              删除
+                            </button>
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="music-queue-empty">还没有歌单</p>
+                  )}
+
+                  {selectedPlaylist ? (
+                    <div className="music-playlist-detail">
+                      <form className="music-playlist-rename" onSubmit={handleRenameSelectedPlaylist}>
+                        <label>
+                          <span>歌单新名称</span>
+                          <input
+                            value={playlistRenameName}
+                            onChange={(event) => setPlaylistRenameName(event.currentTarget.value)}
+                          />
+                        </label>
+                        <button type="submit">重命名</button>
+                      </form>
+                      <div className="music-playlist-detail-actions">
+                        <button type="button" onClick={() => handlePlayPlaylist(selectedPlaylist.id)}>
+                          播放
+                        </button>
+                        <button type="button" onClick={() => handleAppendPlaylistToQueue(selectedPlaylist.id)}>
+                          加到接下来
+                        </button>
+                        <button type="button" onClick={() => handleDeletePlaylist(selectedPlaylist.id)}>
+                          删除
+                        </button>
+                      </div>
+                      <span className="music-queue-section-label">歌曲</span>
+                      {selectedPlaylist.items.length > 0 ? (
+                        selectedPlaylist.items.map((entry) => renderPlaylistItemRow(entry.item, selectedPlaylist.id))
+                      ) : (
+                        <p className="music-queue-empty">这个歌单还没有歌曲</p>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              {queuePanelTab === "recent" || queuePanelTab === "saved"
+                ? visibleQueuePanelEntries.map((entry) => (
+                    <Fragment key={`${queuePanelTab}-${entry.id}`}>
+                      {renderQueueEntryRow(entry, { removable: false })}
+                    </Fragment>
+                  ))
+                : null}
+              {queuePanelTab !== "playlists" && visibleQueuePanelEntries.length === 0 ? (
+                <p className="music-queue-empty">
+                  {getQueuePanelEmptyLabel(queuePanelTab)}
+                </p>
+              ) : null}
+            </div>
+          </section>
+        ) : null}
       </section>
+      {videoWindowOpen && activeTrack?.canOpenVideo ? (
+        <VideoMiniWindow
+          item={activeTrack}
+          size={videoWindowSize}
+          onClose={() => commitVideoWindowOpen(false)}
+          onToggleSize={() =>
+            setVideoWindowSize((current) => (current === "compact" ? "large" : "compact"))
+          }
+        />
+      ) : null}
     </main>
   );
+}
+
+function isMusicItem(value: unknown): value is MusicItem {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Partial<MusicItem>;
+  return (
+    typeof candidate.id === "string" &&
+    (candidate.source === "bilibili" || candidate.source === "netease") &&
+    typeof candidate.title === "string" &&
+    typeof candidate.creator === "string" &&
+    typeof candidate.durationMs === "number" &&
+    Array.isArray(candidate.tags) &&
+    typeof candidate.canOpenVideo === "boolean"
+  );
+}
+
+function withAutoDjRecommendationMetadata(response: AutoDjRecommendResponse): RoomClientAction[] {
+  const recommendationsById = new Map(
+    response.recommendations.map((recommendation) => [recommendation.item.id, recommendation])
+  );
+
+  return response.clientActions.map((action) => {
+    if (!("item" in action)) {
+      return action;
+    }
+
+    const recommendation = recommendationsById.get(action.item.id);
+    if (!recommendation) {
+      return action;
+    }
+
+    return {
+      ...action,
+      item: {
+        ...action.item,
+        sourceQuery: action.item.sourceQuery ?? recommendation.item.sourceQuery ?? null,
+        selectedReason: action.item.selectedReason ?? recommendation.reason,
+        selectionEvidence: action.item.selectionEvidence ?? recommendation.evidence,
+        selectionScore: action.item.selectionScore ?? recommendation.score,
+        recommendationIntent: recommendation.intent,
+        recommendationRefillId: response.refillId,
+      },
+    };
+  });
+}
+
+function readStoredMusicQueue(storage: Storage): MusicQueueState | null {
+  const rawQueue = storage.getItem(MUSIC_QUEUE_STORAGE_KEY);
+  if (!rawQueue) return null;
+
+  try {
+    const parsed = JSON.parse(rawQueue);
+    if (!isRecord(parsed) || !Array.isArray(parsed.entries)) {
+      return null;
+    }
+
+    const entries = parsed.entries
+      .filter(isMusicQueueEntry)
+      .filter((entry) => !isDeletedStickyDefaultMusicItem(entry.item));
+    const currentId = typeof parsed.currentId === "string" ? parsed.currentId : null;
+    const validCurrentId = getValidStoredMusicQueueCurrentId(entries, currentId);
+    const recentLimit = typeof parsed.recentLimit === "number" && parsed.recentLimit > 0
+      ? parsed.recentLimit
+      : DEFAULT_RECENT_LIMIT;
+
+    return {
+      entries: normalizeStoredMusicQueueEntries(entries, validCurrentId),
+      currentId: validCurrentId,
+      recentLimit,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function readStoredMusicLibrary(storage: Storage): MusicLibraryState | null {
+  const rawLibrary = storage.getItem(MUSIC_LIBRARY_STORAGE_KEY);
+  if (!rawLibrary) return null;
+
+  try {
+    const parsed = JSON.parse(rawLibrary);
+    return isMusicLibraryState(parsed) ? removeDeletedStickyDefaultTracksFromLibrary(parsed) : null;
+  } catch {
+    return null;
+  }
+}
+
+function getValidStoredMusicQueueCurrentId(entries: MusicQueueEntry[], currentId: string | null): string | null {
+  if (currentId && entries.some((entry) => entry.id === currentId && entry.status !== "played")) {
+    return currentId;
+  }
+
+  return entries.find((entry) => entry.status === "current" || entry.status === "queued")?.id ?? null;
+}
+
+function normalizeStoredMusicQueueEntries(entries: MusicQueueEntry[], currentId: string | null): MusicQueueEntry[] {
+  if (!currentId) {
+    return entries;
+  }
+
+  return entries.map((entry) => {
+    if (entry.id === currentId) {
+      return { ...entry, status: "current" };
+    }
+
+    if (entry.status === "current") {
+      return { ...entry, status: "queued" };
+    }
+
+    return entry;
+  });
+}
+
+function removeDeletedStickyDefaultTracksFromLibrary(library: MusicLibraryState): MusicLibraryState {
+  return {
+    playlists: library.playlists.map((playlist) => ({
+      ...playlist,
+      items: playlist.items.filter((entry) => !isDeletedStickyDefaultMusicItem(entry.item)),
+    })),
+  };
+}
+
+function readStoredMusicRecommendationProfile(storage: Storage): MusicRecommendationProfile | null {
+  const rawProfile = storage.getItem(MUSIC_RECOMMENDATION_PROFILE_STORAGE_KEY);
+  if (!rawProfile) return null;
+
+  try {
+    const parsed = JSON.parse(rawProfile);
+    return isMusicRecommendationProfile(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isMusicQueueEntry(value: unknown): value is MusicQueueEntry {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.id === "string" &&
+    isMusicItem(value.item) &&
+    (value.status === "current" || value.status === "queued" || value.status === "played") &&
+    (value.addedBy === "agent" || value.addedBy === "user" || value.addedBy === "default") &&
+    typeof value.addedAt === "string" &&
+    typeof value.playCount === "number" &&
+    isOptionalString(value.lastPlayedAt) &&
+    isOptionalString(value.sourceQuery) &&
+    isOptionalString(value.selectedReason) &&
+    isOptionalStringArray(value.selectionEvidence) &&
+    isOptionalNumber(value.selectionScore) &&
+    isOptionalRecommendationIntent(value.recommendationIntent) &&
+    isOptionalString(value.recommendationRefillId) &&
+    isOptionalBoolean(value.saved)
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === "string";
+}
+
+function isOptionalNumber(value: unknown): boolean {
+  return value === undefined || typeof value === "number";
+}
+
+function isOptionalBoolean(value: unknown): boolean {
+  return value === undefined || typeof value === "boolean";
+}
+
+function isOptionalStringArray(value: unknown): boolean {
+  return value === undefined || (Array.isArray(value) && value.every((entry) => typeof entry === "string"));
+}
+
+function isOptionalRecommendationIntent(value: unknown): value is RecommendationIntent | undefined {
+  return value === undefined || isRecommendationIntent(value);
+}
+
+function isRecommendationIntent(value: unknown): value is RecommendationIntent {
+  return (
+    value === "similar_theme" ||
+    value === "similar_mood" ||
+    value === "same_creator_or_work" ||
+    value === "light_exploration"
+  );
+}
+
+function getVisibleQueuePanelEntries(
+  tab: MusicPanelTab,
+  queueEntries: MusicQueueEntry[],
+  recentEntries: MusicQueueEntry[],
+  savedEntries: MusicQueueEntry[]
+): MusicQueueEntry[] {
+  if (tab === "recent") return recentEntries;
+  if (tab === "saved") return savedEntries;
+  if (tab === "queue") return queueEntries;
+
+  return [];
+}
+
+function getPlaybackModeLabel(mode: MusicPlaybackMode): string {
+  if (mode === "shuffle") return "随机播放";
+  if (mode === "repeat-one") return "单曲循环";
+
+  return "顺序播放";
+}
+
+function getPlaybackModeIcon(mode: MusicPlaybackMode): string {
+  if (mode === "shuffle") return "S";
+  if (mode === "repeat-one") return "1";
+
+  return ">";
+}
+
+function getQueuePanelEmptyLabel(tab: MusicPanelTab): string {
+  if (tab === "queue") return "接下来还没有歌曲";
+  if (tab === "saved") return "还没有收藏";
+  if (tab === "playlists") return "还没有歌单";
+
+  return "还没有最近播放";
+}
+
+function getPlaylistItemCountLabel(count: number): string {
+  return `${count} 首`;
+}
+
+function makeClientMusicItemFromMusicItem(item: MusicItem): ClientMusicItem {
+  return {
+    id: item.id,
+    source: item.source,
+    title: item.title,
+    creator: item.creator,
+    durationMs: item.durationMs,
+    pageUrl: item.pageUrl ?? null,
+    platformAudioUrl: item.platformAudioUrl ?? null,
+    tags: [...item.tags],
+    canOpenVideo: item.canOpenVideo
+  };
+}
+
+function makeClientMusicItemFromQueueEntry(entry: MusicQueueEntry): ClientMusicItem {
+  return {
+    ...makeClientMusicItemFromMusicItem(entry.item),
+    sourceQuery: entry.sourceQuery ?? null,
+    selectedReason: entry.selectedReason ?? null,
+    selectionEvidence: entry.selectionEvidence ? [...entry.selectionEvidence] : [],
+    selectionScore: entry.selectionScore ?? null,
+    recommendationIntent: entry.recommendationIntent ?? null,
+    recommendationRefillId: entry.recommendationRefillId ?? null,
+  };
+}
+
+function makeAutoDjRecommendationFromQueueEntry(entry: MusicQueueEntry): AutoDjRecommendation {
+  return {
+    item: makeClientMusicItemFromQueueEntry(entry),
+    score: entry.selectionScore ?? 0,
+    intent: entry.recommendationIntent ?? "similar_theme",
+    reason: entry.selectedReason ?? "",
+    evidence: entry.selectionEvidence ? [...entry.selectionEvidence] : [],
+  };
+}
+
+function isRecommendedQueueEntry(entry: MusicQueueEntry): boolean {
+  return Boolean(entry.recommendationRefillId || entry.selectedReason);
+}
+
+function getMusicSourceLabel(source: MusicSourceKind): string {
+  if (source === "bilibili") return "B站";
+
+  return "网易云";
+}
+
+function buildCurrentRoomState(initialState: RoomState, listeningContext: ListeningContext): RoomState {
+  return {
+    ...initialState,
+    music: {
+      currentTrackTitle: listeningContext.title,
+      currentArtist: listeningContext.creator,
+      listeningMood: listeningContext.isPlaying ? "playing" : "paused"
+    }
+  };
+}
+
+function formatPlayerTime(value: number): string {
+  const safeValue = Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+  const minutes = Math.floor(safeValue / 60);
+  const seconds = safeValue % 60;
+
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+type MarkdownBlock =
+  | { type: "paragraph"; text: string }
+  | { type: "heading"; level: number; text: string }
+  | { type: "blockquote"; text: string }
+  | { type: "unordered-list"; items: string[] }
+  | { type: "ordered-list"; items: string[] }
+  | { type: "code"; language: string; text: string };
+
+function MarkdownBubble({ content }: { content: string }) {
+  const blocks = parseMarkdownBlocks(content);
+
+  return <div className="bubble bubble-markdown">{blocks.map((block, index) => renderMarkdownBlock(block, index))}</div>;
+}
+
+function parseMarkdownBlocks(content: string): MarkdownBlock[] {
+  const lines = content.replace(/\r\n?/g, "\n").split("\n");
+  const blocks: MarkdownBlock[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    if (line.trim() === "") {
+      index += 1;
+      continue;
+    }
+
+    const codeFence = line.match(/^\s*```([\w-]+)?\s*$/);
+    if (codeFence) {
+      const codeLines: string[] = [];
+      index += 1;
+      while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) index += 1;
+      blocks.push({ type: "code", language: codeFence[1] ?? "", text: codeLines.join("\n") });
+      continue;
+    }
+
+    const heading = line.match(/^\s{0,3}(#{1,4})\s+(.+)$/);
+    if (heading) {
+      blocks.push({ type: "heading", level: heading[1].length, text: heading[2].trim() });
+      index += 1;
+      continue;
+    }
+
+    const unorderedItem = line.match(/^\s*[-+*]\s+(.+)$/);
+    if (unorderedItem) {
+      const items: string[] = [];
+      while (index < lines.length) {
+        const item = lines[index].match(/^\s*[-+*]\s+(.+)$/);
+        if (!item) break;
+        items.push(item[1]);
+        index += 1;
+      }
+      blocks.push({ type: "unordered-list", items });
+      continue;
+    }
+
+    const orderedItem = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (orderedItem) {
+      const items: string[] = [];
+      while (index < lines.length) {
+        const item = lines[index].match(/^\s*\d+[.)]\s+(.+)$/);
+        if (!item) break;
+        items.push(item[1]);
+        index += 1;
+      }
+      blocks.push({ type: "ordered-list", items });
+      continue;
+    }
+
+    const quote = line.match(/^\s*>\s?(.*)$/);
+    if (quote) {
+      const quoteLines: string[] = [];
+      while (index < lines.length) {
+        const quoteLine = lines[index].match(/^\s*>\s?(.*)$/);
+        if (!quoteLine) break;
+        quoteLines.push(quoteLine[1]);
+        index += 1;
+      }
+      blocks.push({ type: "blockquote", text: quoteLines.join("\n") });
+      continue;
+    }
+
+    const paragraphLines: string[] = [];
+    while (index < lines.length && lines[index].trim() !== "" && !isMarkdownBlockStart(lines[index])) {
+      paragraphLines.push(lines[index]);
+      index += 1;
+    }
+    blocks.push({ type: "paragraph", text: paragraphLines.join("\n") });
+  }
+
+  if (blocks.length === 0) return [{ type: "paragraph", text: "" }];
+
+  return blocks;
+}
+
+function isMarkdownBlockStart(line: string): boolean {
+  return (
+    /^\s*```/.test(line) ||
+    /^\s{0,3}#{1,4}\s+/.test(line) ||
+    /^\s*[-+*]\s+/.test(line) ||
+    /^\s*\d+[.)]\s+/.test(line) ||
+    /^\s*>\s?/.test(line)
+  );
+}
+
+function renderMarkdownBlock(block: MarkdownBlock, index: number): ReactNode {
+  if (block.type === "heading") {
+    return (
+      <p className="markdown-heading" role="heading" aria-level={Math.min(block.level + 2, 6)} key={`heading-${index}`}>
+        {renderInlineMarkdown(block.text, `heading-${index}`)}
+      </p>
+    );
+  }
+
+  if (block.type === "blockquote") {
+    return <blockquote key={`quote-${index}`}>{renderInlineMarkdown(block.text, `quote-${index}`)}</blockquote>;
+  }
+
+  if (block.type === "unordered-list") {
+    return (
+      <ul key={`ul-${index}`}>
+        {block.items.map((item, itemIndex) => (
+          <li key={`ul-${index}-${itemIndex}`}>{renderInlineMarkdown(item, `ul-${index}-${itemIndex}`)}</li>
+        ))}
+      </ul>
+    );
+  }
+
+  if (block.type === "ordered-list") {
+    return (
+      <ol key={`ol-${index}`}>
+        {block.items.map((item, itemIndex) => (
+          <li key={`ol-${index}-${itemIndex}`}>{renderInlineMarkdown(item, `ol-${index}-${itemIndex}`)}</li>
+        ))}
+      </ol>
+    );
+  }
+
+  if (block.type === "code") {
+    return (
+      <pre key={`code-${index}`}>
+        <code className={block.language ? `language-${block.language}` : undefined}>{block.text}</code>
+      </pre>
+    );
+  }
+
+  return <p key={`paragraph-${index}`}>{renderInlineMarkdown(block.text, `paragraph-${index}`)}</p>;
+}
+
+function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  let buffer = "";
+  let index = 0;
+  let nodeIndex = 0;
+
+  const flushText = () => {
+    if (!buffer) return;
+    const parts = buffer.split("\n");
+    parts.forEach((part, partIndex) => {
+      if (partIndex > 0) {
+        nodes.push(<br key={`${keyPrefix}-br-${nodeIndex}`} />);
+        nodeIndex += 1;
+      }
+      if (part) nodes.push(part);
+    });
+    buffer = "";
+  };
+
+  while (index < text.length) {
+    if (text[index] === "`") {
+      const end = text.indexOf("`", index + 1);
+      if (end > index + 1) {
+        flushText();
+        nodes.push(<code key={`${keyPrefix}-code-${nodeIndex}`}>{text.slice(index + 1, end)}</code>);
+        nodeIndex += 1;
+        index = end + 1;
+        continue;
+      }
+    }
+
+    if (text.startsWith("**", index)) {
+      const end = text.indexOf("**", index + 2);
+      if (end > index + 2) {
+        flushText();
+        nodes.push(
+          <strong key={`${keyPrefix}-strong-${nodeIndex}`}>
+            {renderInlineMarkdown(text.slice(index + 2, end), `${keyPrefix}-strong-${nodeIndex}`)}
+          </strong>
+        );
+        nodeIndex += 1;
+        index = end + 2;
+        continue;
+      }
+    }
+
+    if (text[index] === "*" && !text.startsWith("**", index)) {
+      const end = text.indexOf("*", index + 1);
+      if (end > index + 1) {
+        flushText();
+        nodes.push(
+          <em key={`${keyPrefix}-em-${nodeIndex}`}>
+            {renderInlineMarkdown(text.slice(index + 1, end), `${keyPrefix}-em-${nodeIndex}`)}
+          </em>
+        );
+        nodeIndex += 1;
+        index = end + 1;
+        continue;
+      }
+    }
+
+    if (text[index] === "[") {
+      const labelEnd = text.indexOf("](", index);
+      const hrefEnd = labelEnd >= 0 ? text.indexOf(")", labelEnd + 2) : -1;
+      if (labelEnd > index && hrefEnd > labelEnd + 2) {
+        const label = text.slice(index + 1, labelEnd);
+        const href = getSafeMarkdownHref(text.slice(labelEnd + 2, hrefEnd));
+        if (href) {
+          const isExternal = /^https?:\/\//i.test(href);
+          flushText();
+          nodes.push(
+            <a
+              href={href}
+              key={`${keyPrefix}-link-${nodeIndex}`}
+              rel={isExternal ? "noreferrer" : undefined}
+              target={isExternal ? "_blank" : undefined}
+            >
+              {renderInlineMarkdown(label, `${keyPrefix}-link-${nodeIndex}`)}
+            </a>
+          );
+          nodeIndex += 1;
+          index = hrefEnd + 1;
+          continue;
+        }
+      }
+    }
+
+    buffer += text[index];
+    index += 1;
+  }
+
+  flushText();
+  return nodes;
+}
+
+function getSafeMarkdownHref(href: string): string | null {
+  const trimmed = href.trim();
+  if (/^(https?:\/\/|mailto:)/i.test(trimmed) || trimmed.startsWith("/") || trimmed.startsWith("#")) {
+    return trimmed;
+  }
+
+  return null;
 }
 
 function shouldUseSparseTimeline(messages: ChatMessage[]): boolean {
@@ -953,6 +2786,24 @@ function getMessageStatusLabel(isUser: boolean, isPending: boolean, isFailed: bo
   if (isPending) return "发送中";
 
   return "刚刚";
+}
+
+function getNovelRagBadge(
+  novelRag: ChatMessage["novelRag"]
+): { label: string; title: string } | null {
+  if (!novelRag?.used) return null;
+
+  const sourceCount = Math.max(1, novelRag.sources.length);
+  const titleParts = [
+    novelRag.query ? `检索：${novelRag.query}` : null,
+    novelRag.sources.length > 0 ? `来源：${novelRag.sources.join("，")}` : null,
+    novelRag.reason ? `原因：${novelRag.reason}` : null
+  ].filter((part): part is string => Boolean(part));
+
+  return {
+    label: `参考原作 · ${sourceCount} 段`,
+    title: titleParts.join("\n") || "本轮回答参考了本地小说片段"
+  };
 }
 
 function storedToChatMessage(message: StoredChatMessage): ChatMessage {

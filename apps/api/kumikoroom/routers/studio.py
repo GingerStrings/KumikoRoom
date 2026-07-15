@@ -1,0 +1,797 @@
+import hashlib
+import os
+import stat
+from pathlib import Path
+from threading import RLock
+from typing import Annotated, Literal, Protocol
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import BaseModel, ConfigDict
+
+from kumikoroom.config import load_settings
+from kumikoroom.studio.models import (
+    AnalysisDiagnostic,
+    AnalysisStatus,
+    AutomationSummary,
+    ChannelSummary,
+    DependencyOpenIdentity,
+    DependencyReference,
+    FlpAnalysisSnapshot,
+    MixerInsertSummary,
+    MusicalFingerprint,
+    PatternSummary,
+    PlaylistClipSummary,
+    PluginInstance,
+    ProjectAsset,
+    ProjectInfo,
+)
+from kumikoroom.studio.parsers import PyFlpParser
+from kumikoroom.studio.diff import diff_snapshots
+from kumikoroom.studio.repository import (
+    ScanJobStatus,
+    StudioProject,
+    StudioRepository,
+    StudioScanJob,
+    StudioSnapshotRecord,
+)
+from kumikoroom.studio.service import StudioService
+
+
+router = APIRouter(prefix="/api/studio", tags=["studio"])
+
+
+class StudioModel(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RootOut(StudioModel):
+    id: str
+    path: str
+    created_at: str
+
+
+class RootIn(BaseModel):
+    path: str
+
+
+class ScanJobOut(StudioModel):
+    id: str
+    status: ScanJobStatus
+    discovered_count: int
+    parsed_count: int
+    cached_count: int
+    failed_count: int
+    error: str | None
+    created_at: str
+    updated_at: str
+
+
+class ProjectSummary(StudioModel):
+    id: str
+    canonical_path: str
+    display_name: str
+    status: AnalysisStatus
+    modified_at: str | None
+    latest_snapshot_id: str | None
+    created_at: str
+    updated_at: str
+    tempo: float | None = None
+    pattern_count: int = 0
+    warning_count: int = 0
+    error_count: int = 0
+    diagnostic_count: int = 0
+    inferred_key: str | None = None
+
+
+class ProjectDetail(ProjectSummary):
+    latest_snapshot_source_hash: str | None = None
+    latest_snapshot_analyzed_at: str | None = None
+
+
+class DependencyOut(StudioModel):
+    entity_id: str | None
+    path: str
+    kind: str
+    exists: bool
+
+
+class AnalysisOut(StudioModel):
+    source_path: str
+    source_hash: str
+    status: AnalysisStatus
+    project: ProjectInfo
+    patterns: list[PatternSummary]
+    channels: list[ChannelSummary]
+    playlist_clips: list[PlaylistClipSummary]
+    plugins: list[PluginInstance]
+    mixer_inserts: list[MixerInsertSummary]
+    automations: list[AutomationSummary]
+    related_assets: list[ProjectAsset]
+    dependencies: list[DependencyOut]
+    fingerprint: MusicalFingerprint
+    diagnostics: list[AnalysisDiagnostic]
+    unknown_event_count: int
+
+
+class VersionOut(StudioModel):
+    snapshot_id: str
+    source_path: str
+    source_hash: str
+    analyzed_at: str
+    kind: Literal["current", "history", "backup", "candidate"]
+    association_id: str | None = None
+    score: float | None = None
+    confirmed: bool
+    title: str | None = None
+    tempo: float | None = None
+    pattern_count: int | None = None
+
+
+class VersionPageOut(StudioModel):
+    items: list[VersionOut]
+    next_cursor: str | None = None
+
+
+class ConfirmVersionIn(BaseModel):
+    candidate_id: str
+
+
+class ConfirmVersionOut(StudioModel):
+    id: str
+    project_id: str
+    candidate_project_id: str
+    snapshot_id: str
+    score: float
+    confirmed: bool
+    created_at: str
+    updated_at: str
+
+
+class OpenProjectIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["project", "folder", "dependency", "backup"]
+    entity_id: str | None = None
+
+
+class LocalOpener(Protocol):
+    def open(self, target: Path) -> None: ...
+
+
+class WindowsLocalOpener:
+    def open(self, target: Path) -> None:
+        startfile = getattr(os, "startfile", None)
+        if startfile is None:
+            raise OSError("Local open actions require Windows")
+        startfile(str(target))
+
+
+def local_opener() -> LocalOpener:
+    return WindowsLocalOpener()
+
+
+LocalOpenerDependency = Annotated[LocalOpener, Depends(local_opener)]
+
+
+def studio_repository() -> StudioRepository:
+    return StudioRepository(load_settings().studio_db_path)
+
+
+StudioRepositoryDependency = Annotated[StudioRepository, Depends(studio_repository)]
+
+
+_studio_service_lock = RLock()
+_default_studio_service: StudioService | None = None
+_default_studio_service_db_path: Path | None = None
+_root_mutation_lock = RLock()
+
+
+def studio_service() -> StudioService:
+    global _default_studio_service, _default_studio_service_db_path
+
+    db_path = load_settings().studio_db_path.expanduser().resolve()
+    with _studio_service_lock:
+        if (
+            _default_studio_service is None
+            or _default_studio_service_db_path != db_path
+        ):
+            if _default_studio_service is not None:
+                _default_studio_service.close()
+            _default_studio_service = StudioService(
+                StudioRepository(db_path),
+                PyFlpParser(),
+            )
+            _default_studio_service_db_path = db_path
+        return _default_studio_service
+
+
+def close_studio_service() -> None:
+    global _default_studio_service, _default_studio_service_db_path
+
+    with _studio_service_lock:
+        service = _default_studio_service
+        _default_studio_service = None
+        _default_studio_service_db_path = None
+    if service is not None:
+        service.close()
+
+
+StudioServiceDependency = Annotated[StudioService, Depends(studio_service)]
+
+
+@router.get("/roots", response_model=list[RootOut])
+def list_roots(repository: StudioRepositoryDependency) -> list[RootOut]:
+    return [RootOut.model_validate(root) for root in repository.list_roots()]
+
+
+@router.post("/roots", response_model=RootOut, status_code=status.HTTP_201_CREATED)
+def create_root(
+    payload: RootIn,
+    response: Response,
+    repository: StudioRepositoryDependency,
+) -> RootOut:
+    root_path = payload.path.strip()
+    if not root_path:
+        raise HTTPException(status_code=400, detail="Studio root path is invalid")
+    try:
+        canonical_path = Path(root_path).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise HTTPException(status_code=400, detail="Studio root path is invalid") from None
+    if not canonical_path.is_dir() or not os.access(
+        canonical_path,
+        os.R_OK | os.X_OK,
+    ):
+        raise HTTPException(status_code=400, detail="Studio root must be a readable directory")
+
+    with _root_mutation_lock:
+        identity = os.path.normcase(str(canonical_path))
+        existing = next(
+            (
+                root
+                for root in repository.list_roots()
+                if os.path.normcase(str(Path(root.path).resolve())) == identity
+            ),
+            None,
+        )
+        root = (
+            existing
+            if existing is not None
+            else repository.add_root(canonical_path)
+        )
+    if existing is not None:
+        response.status_code = status.HTTP_200_OK
+    return RootOut.model_validate(root)
+
+
+@router.delete("/roots/{root_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_root(
+    root_id: str,
+    repository: StudioRepositoryDependency,
+) -> Response:
+    try:
+        repository.remove_root(root_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Studio root not found") from None
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/scans", response_model=ScanJobOut, status_code=status.HTTP_202_ACCEPTED)
+def start_scan(service: StudioServiceDependency) -> ScanJobOut:
+    return _scan_job_out(service.start_scan())
+
+
+@router.get("/scans/{scan_id}", response_model=ScanJobOut)
+def get_scan(scan_id: str, service: StudioServiceDependency) -> ScanJobOut:
+    try:
+        job = service.get_scan_job(scan_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Studio scan not found") from None
+    return _scan_job_out(job)
+
+
+@router.get("/projects", response_model=list[ProjectSummary])
+def list_projects(
+    repository: StudioRepositoryDependency,
+) -> list[ProjectSummary]:
+    return [
+        _project_out(project, record)
+        for project, record in repository.list_projects_with_latest_snapshots()
+        if not _is_backup_candidate_path(project.canonical_path)
+    ]
+
+
+@router.get("/projects/{project_id}", response_model=ProjectDetail)
+def get_project(
+    project_id: str,
+    repository: StudioRepositoryDependency,
+) -> ProjectDetail:
+    try:
+        project = repository.get_project(project_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Studio project not found") from None
+
+    record = _latest_snapshot(repository, project)
+    summary = _project_out(project, record)
+    return ProjectDetail(
+        **summary.model_dump(),
+        latest_snapshot_source_hash=(record.source_hash if record is not None else None),
+        latest_snapshot_analyzed_at=(record.analyzed_at if record is not None else None),
+    )
+
+
+@router.get("/projects/{project_id}/analysis", response_model=AnalysisOut)
+def get_project_analysis(
+    project_id: str,
+    repository: StudioRepositoryDependency,
+) -> AnalysisOut:
+    try:
+        repository.get_project(project_id)
+        record = repository.get_latest_snapshot(project_id)
+    except KeyError:
+        raise HTTPException(
+            status_code=404,
+            detail="Studio project analysis not found",
+        ) from None
+    try:
+        snapshot = record.snapshot
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=409,
+            detail="Stored analysis is invalid; rescan the project.",
+        ) from None
+    return AnalysisOut.model_validate(
+        {
+            **snapshot.__dict__,
+            "dependencies": [
+                DependencyOut(
+                    entity_id=(
+                        _dependency_entity_id(
+                            project_id,
+                            record.id,
+                            index,
+                            dependency,
+                        )
+                        if dependency.open_identity is not None
+                        else None
+                    ),
+                    path=dependency.path,
+                    kind=dependency.kind,
+                    exists=dependency.exists,
+                )
+                for index, dependency in enumerate(snapshot.dependencies)
+            ],
+        }
+    )
+
+
+@router.post(
+    "/projects/{project_id}/open",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def open_project_target(
+    project_id: str,
+    payload: OpenProjectIn,
+    repository: StudioRepositoryDependency,
+    opener: LocalOpenerDependency,
+) -> Response:
+    try:
+        project = repository.get_project(project_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Studio project not found") from None
+
+    try:
+        target = _resolve_open_target(repository, project, payload)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Local target not found") from None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Local target is invalid") from None
+    except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
+        raise HTTPException(
+            status_code=409, detail="Local target no longer exists or is unavailable"
+        ) from None
+
+    try:
+        opener.open(target)
+    except OSError:
+        raise HTTPException(status_code=409, detail="Local target could not be opened") from None
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/projects/{project_id}/versions", response_model=VersionPageOut)
+def list_project_versions(
+    project_id: str,
+    repository: StudioRepositoryDependency,
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: str | None = Query(default=None),
+) -> VersionPageOut:
+    try:
+        page = repository.list_project_versions_page(
+            project_id,
+            limit=limit,
+            cursor=cursor,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Studio project not found") from None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Version cursor is invalid") from None
+    return VersionPageOut(
+        items=[
+            VersionOut(
+                snapshot_id=version.snapshot_id,
+                source_path=version.source_path,
+                source_hash=version.source_hash,
+                analyzed_at=version.analyzed_at,
+                kind=version.kind,
+                association_id=version.association_id,
+                score=version.score,
+                confirmed=version.confirmed,
+                title=version.title,
+                tempo=version.tempo,
+                pattern_count=version.pattern_count,
+            )
+            for version in page.items
+        ],
+        next_cursor=page.next_cursor,
+    )
+
+
+@router.post(
+    "/projects/{project_id}/versions/confirm",
+    response_model=ConfirmVersionOut,
+)
+def confirm_project_version(
+    project_id: str,
+    payload: ConfirmVersionIn,
+    repository: StudioRepositoryDependency,
+) -> ConfirmVersionOut:
+    try:
+        association = repository.confirm_backup_association(
+            project_id, payload.candidate_id
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Backup candidate not found") from None
+    except ValueError:
+        raise HTTPException(
+            status_code=400, detail="Backup candidate does not belong to project"
+        ) from None
+    return ConfirmVersionOut.model_validate(association)
+
+
+@router.get("/projects/{project_id}/diff")
+def get_project_diff(
+    project_id: str,
+    repository: StudioRepositoryDependency,
+    from_snapshot_id: str = Query(alias="from"),
+    to_snapshot_id: str = Query(alias="to"),
+) -> dict[str, object]:
+    try:
+        repository.get_project(project_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Studio project not found") from None
+    try:
+        before_record = repository.get_project_version_snapshot(
+            project_id, from_snapshot_id
+        )
+        after_record = repository.get_project_version_snapshot(
+            project_id, to_snapshot_id
+        )
+    except ValueError:
+        raise HTTPException(
+            status_code=400, detail="Snapshot does not belong to project"
+        ) from None
+    try:
+        result = diff_snapshots(before_record.snapshot, after_record.snapshot)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=409,
+            detail="Stored version analysis is invalid; rescan the project.",
+        ) from None
+    result["from_snapshot_id"] = from_snapshot_id
+    result["to_snapshot_id"] = to_snapshot_id
+    return result
+
+
+def _scan_job_out(job: StudioScanJob) -> ScanJobOut:
+    return ScanJobOut.model_validate(job)
+
+
+def _project_out(
+    project: StudioProject,
+    record: StudioSnapshotRecord | None,
+) -> ProjectSummary:
+    snapshot = _snapshot_value(record)
+    diagnostics = snapshot.diagnostics if snapshot is not None else []
+    return ProjectSummary.model_validate(project).model_copy(
+        update={
+            "tempo": snapshot.project.tempo if snapshot is not None else None,
+            "pattern_count": len(snapshot.patterns) if snapshot is not None else 0,
+            "warning_count": sum(
+                item.severity == "warning" for item in diagnostics
+            ),
+            "error_count": sum(item.severity == "error" for item in diagnostics),
+            "diagnostic_count": len(diagnostics),
+            "inferred_key": (
+                snapshot.fingerprint.inferred_key if snapshot is not None else None
+            ),
+        }
+    )
+
+
+def _latest_snapshot(
+    repository: StudioRepository,
+    project: StudioProject,
+) -> StudioSnapshotRecord | None:
+    if project.latest_snapshot_id is None:
+        return None
+    try:
+        return repository.get_latest_snapshot(project.id)
+    except KeyError:
+        return None
+
+
+def _snapshot_value(
+    record: StudioSnapshotRecord | None,
+) -> FlpAnalysisSnapshot | None:
+    if record is None:
+        return None
+    try:
+        return record.snapshot
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_backup_candidate_path(path: str) -> bool:
+    return any(
+        part.casefold() in {"backup", "backups"}
+        for part in Path(path).parts[:-1]
+    )
+
+
+def _entity_id(
+    kind: str,
+    project_id: str,
+    snapshot_id: str,
+    index: int,
+    recorded_path: str,
+) -> str:
+    identity = "\0".join(
+        (kind, project_id, snapshot_id, str(index), recorded_path)
+    ).encode("utf-8", errors="surrogatepass")
+    return f"{kind}_{hashlib.sha256(identity).hexdigest()}"
+
+
+def _resolve_open_target(
+    repository: StudioRepository,
+    project: StudioProject,
+    payload: OpenProjectIn,
+) -> Path:
+    project_path = Path(project.canonical_path)
+    if payload.kind == "project":
+        if payload.entity_id is not None:
+            raise ValueError("project actions do not accept entity ids")
+        return _verified_registered_target(repository, project)
+    if payload.kind == "folder":
+        if payload.entity_id is not None:
+            raise ValueError("folder actions do not accept entity ids")
+        return _verified_registered_target(repository, project, open_folder=True)
+    if not payload.entity_id:
+        raise ValueError("entity id is required")
+
+    if payload.kind == "backup":
+        association = repository.get_backup_association(
+            project.id, payload.entity_id
+        )
+        if not association.confirmed:
+            raise KeyError(payload.entity_id)
+        candidate = repository.get_project(association.candidate_project_id)
+        return _verified_registered_target(repository, candidate, open_folder=True)
+
+    try:
+        record = repository.get_latest_snapshot(project.id)
+        snapshot = record.snapshot
+    except KeyError:
+        raise KeyError(payload.entity_id) from None
+    except (TypeError, ValueError):
+        raise OSError("stored analysis is invalid") from None
+    dependency_match = next(
+        (
+            (index, item)
+            for index, item in enumerate(snapshot.dependencies)
+            if item.open_identity is not None
+            and _dependency_entity_id(
+                project.id, record.id, index, item
+            ) == payload.entity_id
+        ),
+        None,
+    )
+    if dependency_match is None:
+        raise KeyError(payload.entity_id)
+    index, dependency = dependency_match
+    if not dependency.exists:
+        raise FileNotFoundError(dependency.path)
+    if dependency.open_identity is None:
+        raise OSError("dependency has no persisted open identity")
+    return _verified_dependency_folder(
+        dependency,
+        project_folder=Path(project.canonical_path).parent,
+    )
+
+
+def _verified_dependency_folder(
+    dependency: DependencyReference,
+    *,
+    project_folder: Path,
+) -> Path:
+    identity = dependency.open_identity
+    if identity is None:
+        raise OSError("dependency has no persisted open identity")
+    raw_path = Path(dependency.path).expanduser()
+    candidate = raw_path if raw_path.is_absolute() else project_folder / raw_path
+    if _has_link_or_reparse_component(candidate):
+        raise OSError("dependency path contains a link or reparse point")
+    first = candidate.lstat()
+    if not _matches_dependency_identity(first, identity):
+        raise OSError("dependency target changed")
+    resolved = candidate.resolve(strict=True)
+    if os.path.normcase(str(resolved)) != identity.canonical_path_identity:
+        raise OSError("dependency target path changed")
+    current = resolved.lstat()
+    if not _matches_dependency_identity(current, identity):
+        raise OSError("dependency target changed during verification")
+    parent_details = resolved.parent.lstat()
+    if _is_reparse_point(parent_details) or not stat.S_ISDIR(parent_details.st_mode):
+        raise OSError("dependency parent is unavailable")
+    return resolved.parent
+
+
+def _matches_dependency_identity(
+    details: os.stat_result,
+    identity: DependencyOpenIdentity,
+) -> bool:
+    return (
+        stat.S_ISREG(details.st_mode)
+        and not _is_reparse_point(details)
+        and details.st_dev == identity.file_dev
+        and details.st_ino == identity.file_ino
+        and details.st_size == identity.size
+        and details.st_mtime_ns == identity.modified_ns
+    )
+
+
+def _verified_registered_target(
+    repository: StudioRepository,
+    project: StudioProject,
+    *,
+    open_folder: bool = False,
+) -> Path:
+    try:
+        identity = repository.get_project_open_identity(project.id)
+    except KeyError:
+        raise OSError("registered project has no available open identity") from None
+    project_path = Path(project.canonical_path).expanduser()
+    if _has_link_or_reparse_component(project_path):
+        raise OSError("registered project path contains a link or reparse point")
+    project_identity = os.path.normcase(str(project_path))
+    if (
+        project_path.suffix.casefold() != ".flp"
+        or identity.project_id != project.id
+        or identity.canonical_path_identity != project_identity
+    ):
+        raise OSError("registered project identity is invalid")
+
+    parent = project_path.parent
+    parent_identity = os.path.normcase(str(parent))
+    if identity.parent_path_identity != parent_identity:
+        raise OSError("registered project boundary is invalid")
+
+    source_details = project_path.lstat()
+    parent_details = parent.lstat()
+    if (
+        _is_reparse_point(source_details)
+        or _is_reparse_point(parent_details)
+        or not stat.S_ISREG(source_details.st_mode)
+        or not stat.S_ISDIR(parent_details.st_mode)
+        or not _matches_file_identity(
+            source_details, identity.file_dev, identity.file_ino
+        )
+        or not _matches_file_identity(
+            parent_details, identity.parent_dev, identity.parent_ino
+        )
+    ):
+        raise OSError("registered project target changed")
+
+    resolved = project_path.resolve(strict=True)
+    resolved_parent = parent.resolve(strict=True)
+    if (
+        os.path.normcase(str(resolved)) != identity.canonical_path_identity
+        or resolved.parent != resolved_parent
+        or os.path.normcase(str(resolved_parent)) != identity.parent_path_identity
+    ):
+        raise OSError("registered project target escaped its boundary")
+
+    current_details = resolved.lstat()
+    current_parent_details = resolved_parent.lstat()
+    if (
+        _is_reparse_point(current_details)
+        or _is_reparse_point(current_parent_details)
+        or not stat.S_ISREG(current_details.st_mode)
+        or not stat.S_ISDIR(current_parent_details.st_mode)
+        or not _matches_file_identity(
+            current_details, identity.file_dev, identity.file_ino
+        )
+        or not _matches_file_identity(
+            current_parent_details, identity.parent_dev, identity.parent_ino
+        )
+    ):
+        raise OSError("registered project target changed during verification")
+
+    # This is the last userspace verification before the OS dispatch. The opener
+    # accepts a concrete Path and never interpolates it into a shell command.
+    return resolved_parent if open_folder else resolved
+
+
+def _matches_file_identity(
+    details: os.stat_result,
+    expected_dev: int,
+    expected_ino: int,
+) -> bool:
+    return (
+        expected_dev > 0
+        and expected_ino > 0
+        and details.st_dev == expected_dev
+        and details.st_ino == expected_ino
+    )
+
+
+def _is_reparse_point(details: os.stat_result) -> bool:
+    attributes = getattr(details, "st_file_attributes", 0)
+    reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(attributes & reparse_attribute)
+
+
+def _has_link_or_reparse_component(path: Path) -> bool:
+    for component in (path, *path.parents):
+        details = component.lstat()
+        if stat.S_ISLNK(details.st_mode) or _is_reparse_point(details):
+            return True
+    return False
+
+
+def _existing_path(path: Path, *, expected: str | None = None) -> Path:
+    resolved = path.resolve(strict=True)
+    # Refresh metadata immediately before dispatch; startfile itself remains an
+    # OS-level operation, so no shell interpolation or user-controlled command exists.
+    resolved.stat()
+    if expected == "file" and not resolved.is_file():
+        raise FileNotFoundError(str(resolved))
+    if expected == "directory" and not resolved.is_dir():
+        raise NotADirectoryError(str(resolved))
+    return resolved
+
+
+def _dependency_entity_id(
+    project_id: str,
+    snapshot_id: str,
+    index: int,
+    dependency: DependencyReference,
+) -> str:
+    base = _entity_id(
+        "dependency", project_id, snapshot_id, index, dependency.path
+    )
+    identity = dependency.open_identity
+    if identity is not None:
+        version = "\0".join(
+            (
+                identity.canonical_path_identity,
+                str(identity.file_dev),
+                str(identity.file_ino),
+                str(identity.size),
+                str(identity.modified_ns),
+            )
+        )
+    else:
+        version = "unavailable"
+    version_hash = hashlib.sha256(
+        version.encode("utf-8", errors="surrogatepass")
+    ).hexdigest()
+    return f"{base}_{version_hash}"

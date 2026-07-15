@@ -1,15 +1,25 @@
 from dataclasses import asdict
+import logging
 
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 
-from kumikoroom.config import load_settings
+from kumikoroom.auto_dj import recommend_auto_dj
+from kumikoroom.config import load_settings, runtime_config_from_llm_config
 from kumikoroom.conversation import ConversationManager
+from kumikoroom.llm import test_llm_connection
 from kumikoroom.memory import MemoryStore
+from kumikoroom.music_search import MusicSearchError, search_netease_songs
 from kumikoroom.schemas import (
+    AutoDjRecommendIn,
+    AutoDjRecommendOut,
+    AutoDjTraceOut,
     ChatIn,
     ChatOut,
     ChatSessionOut,
+    LLMConfigIn,
+    LLMTestOut,
     MemoryEventOut,
+    MusicSearchResultOut,
     RoomStateOut,
     SessionRenameIn,
     StoredChatMessageOut,
@@ -17,6 +27,7 @@ from kumikoroom.schemas import (
 from kumikoroom.sessions import ChatSession, SessionStore, StoredChatMessage
 
 router = APIRouter(prefix="/api/room", tags=["room"])
+logger = logging.getLogger(__name__)
 
 
 def default_room_state() -> RoomStateOut:
@@ -49,12 +60,89 @@ def get_room_state() -> RoomStateOut:
     return default_room_state()
 
 
+@router.get("/music/search", response_model=list[MusicSearchResultOut])
+def search_music(
+    q: str = Query(..., min_length=1), limit: int = Query(5, ge=1, le=10)
+) -> list[MusicSearchResultOut]:
+    query = q.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Search query is empty")
+
+    try:
+        results = search_netease_songs(query, limit=limit)
+    except MusicSearchError as error:
+        raise HTTPException(status_code=502, detail=str(error))
+
+    return [
+        MusicSearchResultOut(
+            source="netease",
+            id=result.id,
+            song_id=result.song_id,
+            title=result.title,
+            creator=result.creator,
+            duration_ms=result.duration_ms,
+            page_url=result.page_url,
+            platform_audio_url=result.platform_audio_url,
+            tags=["netease", "search"],
+            playable=result.playable,
+            popularity=result.popularity,
+            comment_count=result.comment_count,
+            hot_comment_liked_count=result.hot_comment_liked_count,
+            score=result.score,
+            evidence=result.evidence,
+        )
+        for result in results
+    ]
+
+
+@router.post("/music/auto-dj/recommend", response_model=AutoDjRecommendOut)
+def recommend_auto_dj_tracks(payload: AutoDjRecommendIn) -> AutoDjRecommendOut:
+    try:
+        planner = ConversationManager(
+            settings=load_settings(),
+            llm_config=payload.llm_config,
+            initialize_stores=False,
+            planner_timeout_seconds=45.0,
+        )
+        return recommend_auto_dj(payload, planner=planner)
+    except Exception as exc:
+        logger.exception("auto dj recommendation request failed")
+        detail = str(exc).strip() or exc.__class__.__name__
+        return AutoDjRecommendOut(
+            ok=False,
+            refill_id=None,
+            notice="Auto DJ request failed.",
+            client_actions=[],
+            recommendations=[],
+            error="request_failed",
+            source_errors=[detail],
+            trace=AutoDjTraceOut(error="request_failed", source_errors=[detail]),
+        )
+
+
 @router.post("/chat", response_model=ChatOut)
 def post_chat(payload: ChatIn) -> ChatOut:
     try:
-        return ConversationManager(settings=load_settings()).chat(payload)
+        return ConversationManager(
+            settings=load_settings(), llm_config=payload.llm_config
+        ).chat(payload)
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
+
+
+@router.post("/llm/test", response_model=LLMTestOut)
+def test_llm(payload: LLMConfigIn) -> LLMTestOut:
+    settings = load_settings()
+    runtime_config = runtime_config_from_llm_config(
+        settings, payload.normalized()
+    )
+    result = test_llm_connection(runtime_config)
+    return LLMTestOut(
+        ok=result.ok,
+        error=result.error,
+        model=result.model,
+        latency_ms=result.latency_ms,
+    )
 
 
 def memory_store() -> MemoryStore:

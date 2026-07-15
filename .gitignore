@@ -14,6 +14,7 @@ user-data/
 .env.local
 apps/web/tsconfig.tsbuildinfo
 docs/design-previews/
+tmp/
 .pytest-tmp/
 .superpowers/
 .worktrees/
