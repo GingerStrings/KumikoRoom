@@ -12,7 +12,7 @@ interface VersionTimelineProps {
 type TimelineState =
   | { phase: "loading" }
   | { phase: "error"; message: string }
-  | { phase: "ready"; versions: StudioVersion[] };
+  | { phase: "ready"; versions: StudioVersion[]; nextCursor: string | null };
 
 type DiffState =
   | { phase: "idle" }
@@ -36,8 +36,10 @@ export function VersionTimeline({ projectId }: VersionTimelineProps) {
   const [fromId, setFromId] = useState("");
   const [toId, setToId] = useState("");
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [diffState, setDiffState] = useState<DiffState>({ phase: "idle" });
   const confirmationController = useRef<AbortController | null>(null);
+  const loadMoreController = useRef<AbortController | null>(null);
   const projectIdentity = useRef(projectId);
   projectIdentity.current = projectId;
 
@@ -47,9 +49,10 @@ export function VersionTimeline({ projectId }: VersionTimelineProps) {
     setFromId("");
     setToId("");
     void getStudioVersions(projectId, { signal: controller.signal })
-      .then((versions) => {
+      .then((page) => {
         if (controller.signal.aborted) return;
-        setState({ phase: "ready", versions });
+        const versions = page.items;
+        setState({ phase: "ready", versions, nextCursor: page.nextCursor });
         const selectable = versions.filter((item) => item.confirmed);
         const current = selectable.find((item) => item.kind === "current") ?? selectable[0];
         const previous = selectable.find((item) => item.snapshotId !== current?.snapshotId);
@@ -64,9 +67,15 @@ export function VersionTimeline({ projectId }: VersionTimelineProps) {
 
   useEffect(() => {
     confirmationController.current?.abort();
+    loadMoreController.current?.abort();
     confirmationController.current = null;
+    loadMoreController.current = null;
     setConfirmingId(null);
-    return () => confirmationController.current?.abort();
+    setLoadingMore(false);
+    return () => {
+      confirmationController.current?.abort();
+      loadMoreController.current?.abort();
+    };
   }, [projectId]);
 
   useEffect(() => {
@@ -106,7 +115,17 @@ export function VersionTimeline({ projectId }: VersionTimelineProps) {
         controller.signal.aborted
         || projectIdentity.current !== requestedProjectId
       ) return;
-      setRefreshKey((value) => value + 1);
+      setState((current) => {
+        if (current.phase !== "ready") return current;
+        return {
+          ...current,
+          versions: current.versions.map((item) =>
+            item.associationId === version.associationId
+              ? { ...item, confirmed: true, kind: "backup" }
+              : item
+          )
+        };
+      });
     } catch (cause) {
       if (
         controller.signal.aborted
@@ -119,6 +138,40 @@ export function VersionTimeline({ projectId }: VersionTimelineProps) {
         if (projectIdentity.current === requestedProjectId) {
           setConfirmingId(null);
         }
+      }
+    }
+  }
+
+  async function loadMoreVersions() {
+    if (state.phase !== "ready" || !state.nextCursor || loadingMore) return;
+    loadMoreController.current?.abort();
+    const controller = new AbortController();
+    const requestedProjectId = projectId;
+    const requestedCursor = state.nextCursor;
+    loadMoreController.current = controller;
+    setLoadingMore(true);
+    try {
+      const page = await getStudioVersions(projectId, {
+        cursor: requestedCursor,
+        signal: controller.signal
+      });
+      if (controller.signal.aborted || projectIdentity.current !== requestedProjectId) return;
+      setState((current) => {
+        if (current.phase !== "ready" || current.nextCursor !== requestedCursor) return current;
+        const known = new Set(current.versions.map((item) => `${item.kind}:${item.snapshotId}`));
+        return {
+          phase: "ready",
+          versions: [
+            ...current.versions,
+            ...page.items.filter((item) => !known.has(`${item.kind}:${item.snapshotId}`))
+          ],
+          nextCursor: page.nextCursor
+        };
+      });
+    } finally {
+      if (loadMoreController.current === controller) {
+        loadMoreController.current = null;
+        if (projectIdentity.current === requestedProjectId) setLoadingMore(false);
       }
     }
   }
@@ -175,6 +228,17 @@ export function VersionTimeline({ projectId }: VersionTimelineProps) {
               </div>
             </li>
           ))}
+          {state.nextCursor && (
+            <li className={studioCss.versionMore}>
+              <button
+                type="button"
+                disabled={loadingMore}
+                onClick={() => void loadMoreVersions()}
+              >
+                {loadingMore ? "正在加载…" : "加载更多版本"}
+              </button>
+            </li>
+          )}
         </ol>
 
         <section className={studioCss.diffDesk} aria-labelledby="version-diff-title">

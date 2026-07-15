@@ -179,6 +179,11 @@ export interface StudioVersion {
   patternCount: number;
 }
 
+export interface StudioVersionPage {
+  items: StudioVersion[];
+  nextCursor: string | null;
+}
+
 export interface StudioBackupAssociation {
   id: string;
   projectId: string;

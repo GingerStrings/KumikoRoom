@@ -29,12 +29,12 @@ function response(body: unknown, status = 200) {
 describe("Studio API client", () => {
   it("maps versions and semantic diffs and sends confirmation", async () => {
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(response([{ snapshot_id: "s1", source_path: "D:/Song.flp", source_hash: "h1", analyzed_at: "2026-07-14T10:00:00Z", kind: "current", association_id: null, score: null, confirmed: true, title: "Song", tempo: 128, pattern_count: 4 }]))
+      .mockResolvedValueOnce(response({ items: [{ snapshot_id: "s1", source_path: "D:/Song.flp", source_hash: "h1", analyzed_at: "2026-07-14T10:00:00Z", kind: "current", association_id: null, score: null, confirmed: true, title: "Song", tempo: 128, pattern_count: 4 }], next_cursor: "cursor-2" }))
       .mockResolvedValueOnce(response({ id: "a1", project_id: "p1", candidate_project_id: "p2", snapshot_id: "s2", score: 0.7, confirmed: true, created_at: "2026-07-14T09:00:00Z", updated_at: "2026-07-14T10:00:00Z" }))
       .mockResolvedValueOnce(response({ from_snapshot_id: "s2", to_snapshot_id: "s1", summary: { change_count: 0 }, project_metrics: { added: [], removed: [], changed: [] }, patterns: { added: [], removed: [], changed: [] }, notes: { added: [], removed: [], changed: [] }, channels: { added: [], removed: [], changed: [] }, plugins: { added: [], removed: [], changed: [] }, playlist_clips: { added: [], removed: [], changed: [] }, mixer_inserts: { added: [], removed: [], changed: [] }, dependencies: { added: [], removed: [], changed: [] } }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(getStudioVersions("p/1")).resolves.toMatchObject([{ snapshotId: "s1", patternCount: 4 }]);
+    await expect(getStudioVersions("p/1")).resolves.toMatchObject({ items: [{ snapshotId: "s1", patternCount: 4 }], nextCursor: "cursor-2" });
     const confirmationController = new AbortController();
     await expect(confirmStudioVersion("p/1", "a/1", { signal: confirmationController.signal })).resolves.toMatchObject({ id: "a1", confirmed: true });
     await expect(getStudioDiff("p/1", "s/2", "s/1")).resolves.toMatchObject({ fromSnapshotId: "s2", summary: { changeCount: 0 } });

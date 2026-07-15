@@ -30,10 +30,11 @@ const versions = [
     score: 0.63, confirmed: false, title: null, tempo: 124, patternCount: 8
   }
 ];
+const versionsPage = { items: versions, nextCursor: null };
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(studioApi.getStudioVersions).mockResolvedValue(versions);
+  vi.mocked(studioApi.getStudioVersions).mockResolvedValue(versionsPage);
   vi.mocked(studioApi.confirmStudioVersion).mockResolvedValue({
     id: "association-2", projectId: "project-1", candidateProjectId: "candidate-project",
     snapshotId: "candidate", score: 0.63, confirmed: true,
@@ -75,8 +76,7 @@ describe("VersionTimeline", () => {
 
   it("confirms a candidate and refreshes the timeline", async () => {
     vi.mocked(studioApi.getStudioVersions)
-      .mockResolvedValueOnce(versions)
-      .mockResolvedValueOnce([{ ...versions[2], confirmed: true, kind: "backup" }, ...versions.slice(0, 2)]);
+      .mockResolvedValueOnce(versionsPage);
     render(<VersionTimeline projectId="project-1" />);
     await screen.findByText("待确认候选");
 
@@ -87,14 +87,15 @@ describe("VersionTimeline", () => {
       "association-2",
       { signal: expect.any(AbortSignal) }
     ));
-    await waitFor(() => expect(studioApi.getStudioVersions).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getAllByText("已确认备份").length).toBeGreaterThan(1));
+    expect(studioApi.getStudioVersions).toHaveBeenCalledTimes(1);
   });
 
   it("cancels stale requests when the project changes", async () => {
     const signals: AbortSignal[] = [];
     vi.mocked(studioApi.getStudioVersions).mockImplementation((_projectId, options) => {
       signals.push(options.signal!);
-      return Promise.resolve(versions);
+      return Promise.resolve(versionsPage);
     });
     const view = render(<VersionTimeline projectId="project-1" />);
     view.rerender(<VersionTimeline projectId="project-2" />);
@@ -136,4 +137,21 @@ describe("VersionTimeline", () => {
       expect(screen.queryByText("stale confirmation failed")).toBeNull();
     }
   );
+
+  it("loads additional version pages without losing deep candidates", async () => {
+    vi.mocked(studioApi.getStudioVersions)
+      .mockResolvedValueOnce({ items: versions.slice(0, 2), nextCursor: "page-2" })
+      .mockResolvedValueOnce({ items: [versions[2]], nextCursor: null });
+    render(<VersionTimeline projectId="project-1" />);
+    await screen.findByText("当前工程");
+
+    fireEvent.click(screen.getByRole("button", { name: "加载更多版本" }));
+
+    expect(await screen.findByText("待确认候选")).toBeTruthy();
+    expect(studioApi.getStudioVersions).toHaveBeenNthCalledWith(
+      2,
+      "project-1",
+      expect.objectContaining({ cursor: "page-2", signal: expect.any(AbortSignal) })
+    );
+  });
 });

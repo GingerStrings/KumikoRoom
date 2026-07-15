@@ -68,9 +68,7 @@ def diff_snapshots(
     patterns = _entity_diff(before.patterns, after.patterns, lambda item: item.id)
     channels = _entity_diff(before.channels, after.channels, lambda item: item.id)
     plugins = _entity_diff(before.plugins, after.plugins, lambda item: item.id)
-    playlist = _entity_diff(
-        before.playlist_clips, after.playlist_clips, lambda item: item.id
-    )
+    playlist = _playlist_clip_diff(before.playlist_clips, after.playlist_clips)
     mixer = _entity_diff(
         before.mixer_inserts, after.mixer_inserts, lambda item: item.id
     )
@@ -211,6 +209,131 @@ def _entity_diff(
         if old[item_key] != new[item_key]
     ]
     return {"added": added, "removed": removed, "changed": changed}
+
+
+def _playlist_clip_diff(
+    before: Iterable[Any],
+    after: Iterable[Any],
+) -> dict[str, list[dict[str, Any]]]:
+    """Compare playlist clips without relying on parser-generated indices.
+
+    FL Studio clip IDs currently contain the parser's positional index, so adding
+    one early clip can renumber every later clip. Exact semantic occurrences are
+    cancelled as a multiset first. The remaining clips are paired only when they
+    have a plausible musical identity, which turns an edit into one changed row
+    while leaving unrelated clips as additions and removals.
+    """
+    old = [_stable_entity(item) for item in before]
+    new = [_stable_entity(item) for item in after]
+    old, new = _cancel_exact_clip_occurrences(old, new)
+
+    candidates: list[tuple[tuple[Any, ...], int, int]] = []
+    for old_index, old_clip in enumerate(old):
+        for new_index, new_clip in enumerate(new):
+            if not _clips_can_represent_an_edit(old_clip, new_clip):
+                continue
+            candidates.append(
+                (
+                    _clip_edit_cost(old_clip, new_clip),
+                    old_index,
+                    new_index,
+                )
+            )
+
+    paired_old: set[int] = set()
+    paired_new: set[int] = set()
+    changed: list[dict[str, Any]] = []
+    for _, old_index, new_index in sorted(candidates):
+        if old_index in paired_old or new_index in paired_new:
+            continue
+        paired_old.add(old_index)
+        paired_new.add(new_index)
+        old_clip = old[old_index]
+        new_clip = new[new_index]
+        changed.append(
+            {
+                "id": _clip_semantic_label(old_clip, new_clip),
+                "before": old_clip,
+                "after": new_clip,
+            }
+        )
+
+    removed = [clip for index, clip in enumerate(old) if index not in paired_old]
+    added = [clip for index, clip in enumerate(new) if index not in paired_new]
+    return {
+        "added": sorted(added, key=_sort_dict),
+        "removed": sorted(removed, key=_sort_dict),
+        "changed": sorted(changed, key=_sort_dict),
+    }
+
+
+def _cancel_exact_clip_occurrences(
+    old: list[dict[str, Any]],
+    new: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    old_groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    new_groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for clip in old:
+        old_groups.setdefault(_clip_semantic_key(clip), []).append(clip)
+    for clip in new:
+        new_groups.setdefault(_clip_semantic_key(clip), []).append(clip)
+
+    old_left: list[dict[str, Any]] = []
+    new_left: list[dict[str, Any]] = []
+    for key in sorted(old_groups.keys() | new_groups.keys(), key=repr):
+        old_members = sorted(old_groups.get(key, []), key=_sort_dict)
+        new_members = sorted(new_groups.get(key, []), key=_sort_dict)
+        matches = min(len(old_members), len(new_members))
+        old_left.extend(old_members[matches:])
+        new_left.extend(new_members[matches:])
+    return old_left, new_left
+
+
+def _clip_semantic_key(clip: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        clip["track_index"],
+        clip["start"],
+        clip["length"],
+        clip["clip_type"],
+        clip["source_id"] or "",
+    )
+
+
+def _clips_can_represent_an_edit(
+    old: dict[str, Any],
+    new: dict[str, Any],
+) -> bool:
+    if old["track_index"] != new["track_index"]:
+        return False
+    if old["clip_type"] != new["clip_type"]:
+        return False
+    return (
+        (old["source_id"] or "") == (new["source_id"] or "")
+        or old["start"] == new["start"]
+    )
+
+
+def _clip_edit_cost(
+    old: dict[str, Any],
+    new: dict[str, Any],
+) -> tuple[Any, ...]:
+    return (
+        (old["source_id"] or "") != (new["source_id"] or ""),
+        abs(float(old["start"]) - float(new["start"])),
+        abs(float(old["length"]) - float(new["length"])),
+        _sort_dict(old),
+        _sort_dict(new),
+    )
+
+
+def _clip_semantic_label(
+    old: dict[str, Any],
+    new: dict[str, Any],
+) -> str:
+    if old.get("id") == new.get("id") and old.get("id"):
+        return str(old["id"])
+    source = new["source_id"] or old["source_id"] or new["clip_type"]
+    return f"track-{new['track_index']}:{source}@{new['start']}"
 
 
 def _indexed_entities(

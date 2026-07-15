@@ -18,7 +18,8 @@ import type {
   StudioScanJob,
   StudioBackupAssociation,
   StudioSnapshotDiff,
-  StudioVersion
+  StudioVersion,
+  StudioVersionPage
 } from "./studioTypes";
 
 type RootApi = { id: string; path: string; created_at: string };
@@ -84,6 +85,7 @@ type VersionApi = {
   kind: StudioVersion["kind"]; association_id: string | null; score: number | null;
   confirmed: boolean; title: string | null; tempo: number | null; pattern_count: number;
 };
+type VersionPageApi = { items: VersionApi[]; next_cursor: string | null };
 type AssociationApi = {
   id: string; project_id: string; candidate_project_id: string; snapshot_id: string;
   score: number; confirmed: boolean; created_at: string; updated_at: string;
@@ -136,10 +138,20 @@ export function getStudioAnalysis(projectId: string, options: { signal?: AbortSi
   }).then(mapAnalysis);
 }
 
-export function getStudioVersions(projectId: string, options: { signal?: AbortSignal } = {}): Promise<StudioVersion[]> {
-  return request<VersionApi[]>(`/api/studio/projects/${encodeURIComponent(projectId)}/versions`, {
+export function getStudioVersions(
+  projectId: string,
+  options: { signal?: AbortSignal; cursor?: string; limit?: number } = {}
+): Promise<StudioVersionPage> {
+  const params = new URLSearchParams();
+  if (options.cursor) params.set("cursor", options.cursor);
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  const query = params.size > 0 ? `?${params.toString()}` : "";
+  return request<VersionPageApi>(`/api/studio/projects/${encodeURIComponent(projectId)}/versions${query}`, {
     signal: options.signal
-  }).then((values) => values.map(mapVersion));
+  }).then((page) => ({
+    items: page.items.map(mapVersion),
+    nextCursor: page.next_cursor
+  }));
 }
 
 export function confirmStudioVersion(

@@ -226,6 +226,57 @@ def test_note_diff_reports_added_removed_changed_with_duplicates(tmp_path: Path)
     assert notes["added"][0]["key"] == 64
 
 
+def test_playlist_clip_diff_ignores_parser_index_shift_and_preserves_duplicates(
+    tmp_path: Path,
+) -> None:
+    base = snapshot(tmp_path / "Blue Hour.flp", "v1")
+    before = replace(
+        base,
+        playlist_clips=[
+            PlaylistClipSummary("clip:1:0", 1, 96, 96, "pattern", "a"),
+            PlaylistClipSummary("clip:1:1", 1, 192, 96, "pattern", "b"),
+            PlaylistClipSummary("clip:2:0", 2, 0, 96, "pattern", "dup"),
+            PlaylistClipSummary("clip:2:1", 2, 0, 96, "pattern", "dup"),
+        ],
+    )
+    after_insert = replace(
+        before,
+        source_hash="v2",
+        playlist_clips=[
+            PlaylistClipSummary("clip:1:0", 1, 0, 48, "pattern", "intro"),
+            PlaylistClipSummary("clip:1:1", 1, 96, 96, "pattern", "a"),
+            PlaylistClipSummary("clip:1:2", 1, 192, 96, "pattern", "b"),
+            PlaylistClipSummary("clip:2:0", 2, 0, 96, "pattern", "dup"),
+            PlaylistClipSummary("clip:2:1", 2, 0, 96, "pattern", "dup"),
+        ],
+    )
+
+    inserted = diff_snapshots(before, after_insert)["playlist_clips"]
+    assert len(inserted["added"]) == 1
+    assert inserted["added"][0]["source_id"] == "intro"
+    assert inserted["removed"] == []
+    assert inserted["changed"] == []
+
+    changed = diff_snapshots(
+        before,
+        replace(
+            before,
+            source_hash="v3",
+            playlist_clips=[
+                PlaylistClipSummary("renumbered-a", 1, 96, 48, "pattern", "a"),
+                PlaylistClipSummary("renumbered-b", 1, 192, 96, "pattern", "b"),
+                PlaylistClipSummary("dup-b", 2, 0, 96, "pattern", "dup"),
+                PlaylistClipSummary("dup-a", 2, 0, 96, "pattern", "dup"),
+            ],
+        ),
+    )["playlist_clips"]
+    assert changed["added"] == []
+    assert changed["removed"] == []
+    assert len(changed["changed"]) == 1
+    assert changed["changed"][0]["before"]["length"] == 96
+    assert changed["changed"][0]["after"]["length"] == 48
+
+
 def install_versions(repository: StudioRepository, tmp_path: Path):
     main_path = tmp_path / "Blue Hour.flp"
     backup_path = tmp_path / "Backups" / "Blue Hour - backup.flp"
@@ -247,7 +298,7 @@ def test_repository_association_is_owned_idempotent_and_bounded(tmp_path: Path) 
     assert duplicate.id == association.id
     assert duplicate.confirmed is True
     assert repository.confirm_backup_association(main.id, association.id) == duplicate
-    assert repository.list_project_versions(main.id, limit=1)[0].snapshot.id
+    assert repository.list_project_versions_page(main.id, limit=1).items[0].snapshot_id
     with pytest.raises(ValueError, match="self"):
         repository.save_backup_association(main.id, main.id, backup_record.id, score=0.5)
     with pytest.raises(ValueError, match="candidate"):
@@ -256,7 +307,7 @@ def test_repository_association_is_owned_idempotent_and_bounded(tmp_path: Path) 
     with pytest.raises(ValueError, match="already associated"):
         repository.save_backup_association(other.id, backup.id, backup_record.id, score=0.5)
     with pytest.raises(ValueError, match="limit"):
-        repository.list_project_versions(main.id, limit=201)
+        repository.list_project_versions_page(main.id, limit=201)
 
 
 def test_versions_api_confirmation_and_diff_enforce_ownership(tmp_path: Path) -> None:
@@ -267,8 +318,8 @@ def test_versions_api_confirmation_and_diff_enforce_ownership(tmp_path: Path) ->
         with TestClient(app) as client:
             versions = client.get(f"/api/studio/projects/{main.id}/versions")
             assert versions.status_code == 200
-            assert versions.json()[0]["kind"] == "current"
-            assert versions.json()[1]["confirmed"] is False
+            assert versions.json()["items"][0]["kind"] == "current"
+            assert versions.json()["items"][1]["confirmed"] is False
 
             assert client.get(
                 f"/api/studio/projects/{main.id}/diff",
@@ -345,7 +396,8 @@ def test_versions_api_hides_corrupt_payload_and_caps_history(tmp_path: Path) -> 
                 f"/api/studio/projects/{project.id}/diff",
                 params={"from": records[0].id, "to": records[-1].id},
             )
-        assert response.status_code == 409
+        assert response.status_code == 200
+        assert len(response.json()["items"]) == 10
         assert "private-corrupt-payload" not in response.text
         assert compared.status_code == 409
         assert "private-corrupt-payload" not in compared.text
@@ -367,11 +419,145 @@ def test_version_limit_always_keeps_an_activated_older_current_snapshot(tmp_path
     ]
     repository.activate_snapshot(project.id, records[0].id)
 
-    versions = repository.list_project_versions(project.id, limit=1)
+    versions = repository.list_project_versions_page(project.id, limit=1).items
 
     assert len(versions) == 1
     assert versions[0].kind == "current"
-    assert versions[0].snapshot.id == records[0].id
+    assert versions[0].snapshot_id == records[0].id
+
+
+def test_version_cursor_reaches_large_history_and_rejects_invalid_cursor(
+    tmp_path: Path,
+) -> None:
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    main_path = tmp_path / "Long History.flp"
+    main = repository.upsert_project(main_path, display_name="Long History")
+    main_records = [
+        repository.save_snapshot(main.id, snapshot(main_path, f"main-{index}"))
+        for index in range(3)
+    ]
+    expected = {record.id for record in main_records}
+    candidate_id: str | None = None
+    for index in range(105):
+        path = tmp_path / "Backups" / f"Long History {index:03d}.flp"
+        backup = repository.upsert_project(path, display_name=path.stem)
+        record = repository.save_snapshot(backup.id, snapshot(path, f"backup-{index}"))
+        association = repository.save_backup_association(
+            main.id,
+            backup.id,
+            record.id,
+            score=0.9 if index else 0.6,
+            confirmed=index != 0,
+        )
+        if index == 0:
+            candidate_id = association.id
+        expected.add(record.id)
+
+    seen: list[str] = []
+    candidate_seen = False
+    cursor: str | None = None
+    while True:
+        page = repository.list_project_versions_page(main.id, limit=17, cursor=cursor)
+        seen.extend(item.snapshot_id for item in page.items)
+        candidate_seen = candidate_seen or any(
+            item.association_id == candidate_id for item in page.items
+        )
+        if page.next_cursor is None:
+            break
+        cursor = page.next_cursor
+
+    assert set(seen) == expected
+    assert len(seen) == len(expected)
+    assert candidate_seen
+    with pytest.raises(ValueError, match="cursor"):
+        repository.list_project_versions_page(main.id, cursor="not-a-cursor")
+
+
+def test_version_cursor_is_stable_when_newer_backups_arrive_between_pages(
+    tmp_path: Path,
+) -> None:
+    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    main_path = tmp_path / "Concurrent.flp"
+    main = repository.upsert_project(main_path, display_name="Concurrent")
+    current = repository.save_snapshot(main.id, snapshot(main_path, "current"))
+    initial_ids = {current.id}
+    for index in range(25):
+        path = tmp_path / "Backups" / f"Concurrent {index}.flp"
+        backup = repository.upsert_project(path, display_name=path.stem)
+        record = repository.save_snapshot(
+            backup.id,
+            snapshot(path, f"backup-{index}"),
+            analyzed_at=f"2026-01-{index + 1:02d}T00:00:00Z",
+        )
+        repository.save_backup_association(
+            main.id, backup.id, record.id, score=0.9, confirmed=True
+        )
+        initial_ids.add(record.id)
+
+    first = repository.list_project_versions_page(main.id, limit=10)
+    late_path = tmp_path / "Backups" / "Concurrent newest.flp"
+    late_project = repository.upsert_project(late_path, display_name=late_path.stem)
+    late = repository.save_snapshot(
+        late_project.id,
+        snapshot(late_path, "late"),
+        analyzed_at="2030-01-01T00:00:00Z",
+    )
+    repository.save_backup_association(
+        main.id, late_project.id, late.id, score=0.9, confirmed=True
+    )
+
+    seen = [item.snapshot_id for item in first.items]
+    cursor = first.next_cursor
+    while cursor is not None:
+        page = repository.list_project_versions_page(main.id, limit=10, cursor=cursor)
+        seen.extend(item.snapshot_id for item in page.items)
+        cursor = page.next_cursor
+
+    assert set(seen) == initial_ids
+    assert len(seen) == len(initial_ids)
+    assert late.id not in seen
+
+
+def test_snapshot_summary_migration_is_bounded_and_version_query_avoids_payloads(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "studio.sqlite3"
+    repository = StudioRepository(db_path)
+    path = tmp_path / "Legacy.flp"
+    project = repository.upsert_project(path, display_name="Legacy")
+    for index in range(105):
+        repository.save_snapshot(project.id, snapshot(path, f"legacy-{index}"))
+
+    with repository._connect() as connection:
+        connection.execute("ALTER TABLE studio_snapshots DROP COLUMN summary_json")
+
+    migrated = StudioRepository(db_path)
+    with migrated._connect() as connection:
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(studio_snapshots)")
+        }
+        backfilled = connection.execute(
+            "SELECT COUNT(*) FROM studio_snapshots WHERE summary_json IS NOT NULL"
+        ).fetchone()[0]
+    assert "summary_json" in columns
+    assert backfilled == 100
+
+    statements: list[str] = []
+    connection = migrated._connect()
+    connection.set_trace_callback(statements.append)
+    try:
+        migrated._select_project_versions_page(
+            connection,
+            project.id,
+            latest_snapshot_id=migrated.get_project(project.id).latest_snapshot_id,
+            limit=10,
+            cursor=None,
+        )
+    finally:
+        connection.close()
+    version_queries = [statement for statement in statements if "WITH versions" in statement]
+    assert version_queries
+    assert all("payload_json" not in statement for statement in version_queries)
 
 
 class BackupParser:

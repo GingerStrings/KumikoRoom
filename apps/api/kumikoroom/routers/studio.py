@@ -117,6 +117,11 @@ class VersionOut(StudioModel):
     pattern_count: int = 0
 
 
+class VersionPageOut(StudioModel):
+    items: list[VersionOut]
+    next_cursor: str | None = None
+
+
 class ConfirmVersionIn(BaseModel):
     candidate_id: str
 
@@ -300,41 +305,42 @@ def get_project_analysis(
         ) from None
 
 
-@router.get("/projects/{project_id}/versions", response_model=list[VersionOut])
+@router.get("/projects/{project_id}/versions", response_model=VersionPageOut)
 def list_project_versions(
     project_id: str,
     repository: StudioRepositoryDependency,
-    limit: int = Query(default=100, ge=1, le=200),
-) -> list[VersionOut]:
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: str | None = Query(default=None),
+) -> VersionPageOut:
     try:
-        versions = repository.list_project_versions(project_id, limit=limit)
+        page = repository.list_project_versions_page(
+            project_id,
+            limit=limit,
+            cursor=cursor,
+        )
     except KeyError:
         raise HTTPException(status_code=404, detail="Studio project not found") from None
-    output: list[VersionOut] = []
-    for version in versions:
-        try:
-            snapshot = version.snapshot.snapshot
-        except (TypeError, ValueError):
-            raise HTTPException(
-                status_code=409,
-                detail="Stored version analysis is invalid; rescan the project.",
-            ) from None
-        output.append(
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Version cursor is invalid") from None
+    return VersionPageOut(
+        items=[
             VersionOut(
-                snapshot_id=version.snapshot.id,
-                source_path=version.snapshot.source_path,
-                source_hash=version.snapshot.source_hash,
-                analyzed_at=version.snapshot.analyzed_at,
+                snapshot_id=version.snapshot_id,
+                source_path=version.source_path,
+                source_hash=version.source_hash,
+                analyzed_at=version.analyzed_at,
                 kind=version.kind,
                 association_id=version.association_id,
                 score=version.score,
                 confirmed=version.confirmed,
-                title=snapshot.project.title,
-                tempo=snapshot.project.tempo,
-                pattern_count=len(snapshot.patterns),
+                title=version.title,
+                tempo=version.tempo,
+                pattern_count=version.pattern_count,
             )
-        )
-    return output
+            for version in page.items
+        ],
+        next_cursor=page.next_cursor,
+    )
 
 
 @router.post(
