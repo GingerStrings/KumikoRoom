@@ -2,6 +2,7 @@ import base64
 import json
 import os
 import sqlite3
+import stat
 import uuid
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -48,6 +49,17 @@ class StudioProject:
     latest_snapshot_id: str | None
     created_at: str
     updated_at: str
+
+
+@dataclass(frozen=True)
+class ProjectOpenIdentity:
+    project_id: str
+    canonical_path_identity: str
+    file_dev: int
+    file_ino: int
+    parent_path_identity: str
+    parent_dev: int
+    parent_ino: int
 
 
 @dataclass(frozen=True)
@@ -206,6 +218,7 @@ class StudioRepository:
     ) -> StudioProject:
         path_value = _canonical_path(canonical_path)
         path_identity = _path_identity(canonical_path)
+        open_identity = _capture_open_identity(Path(path_value))
         if not isinstance(display_name, str):
             raise TypeError("display_name must be a string")
         if not display_name.strip():
@@ -261,11 +274,64 @@ class StudioRepository:
                     """,
                     (path_identity,),
                 ).fetchone()
+                if row is not None and open_identity is not None:
+                    connection.execute(
+                        """
+                        INSERT INTO studio_project_open_identities (
+                            project_id, canonical_path_identity,
+                            file_dev, file_ino, parent_path_identity,
+                            parent_dev, parent_ino
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(project_id) DO UPDATE SET
+                            canonical_path_identity = excluded.canonical_path_identity,
+                            file_dev = excluded.file_dev,
+                            file_ino = excluded.file_ino,
+                            parent_path_identity = excluded.parent_path_identity,
+                            parent_dev = excluded.parent_dev,
+                            parent_ino = excluded.parent_ino
+                        """,
+                        (
+                            row["id"],
+                            open_identity[0],
+                            str(open_identity[1]),
+                            str(open_identity[2]),
+                            open_identity[3],
+                            str(open_identity[4]),
+                            str(open_identity[5]),
+                        ),
+                    )
         finally:
             connection.close()
 
         assert row is not None
         return self._project_from_row(row)
+
+    def get_project_open_identity(self, project_id: str) -> ProjectOpenIdentity:
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                """
+                SELECT project_id, canonical_path_identity,
+                       file_dev, file_ino, parent_path_identity,
+                       parent_dev, parent_ino
+                FROM studio_project_open_identities
+                WHERE project_id = ?
+                """,
+                (project_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise KeyError(project_id)
+        return ProjectOpenIdentity(
+            project_id=row["project_id"],
+            canonical_path_identity=row["canonical_path_identity"],
+            file_dev=int(row["file_dev"]),
+            file_ino=int(row["file_ino"]),
+            parent_path_identity=row["parent_path_identity"],
+            parent_dev=int(row["parent_dev"]),
+            parent_ino=int(row["parent_ino"]),
+        )
 
     def list_projects(self) -> list[StudioProject]:
         connection = self._connect()
@@ -1049,6 +1115,14 @@ class StudioRepository:
         connection = self._connect()
         try:
             with connection:
+                had_open_identity_table = connection.execute(
+                    """
+                    SELECT 1
+                    FROM sqlite_master
+                    WHERE type = 'table'
+                      AND name = 'studio_project_open_identities'
+                    """
+                ).fetchone() is not None
                 connection.executescript(
                     """
                     CREATE TABLE IF NOT EXISTS studio_roots (
@@ -1073,6 +1147,17 @@ class StudioRepository:
                         latest_snapshot_id TEXT NULL,
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS studio_project_open_identities (
+                        project_id TEXT PRIMARY KEY
+                            REFERENCES studio_projects(id) ON DELETE CASCADE,
+                        canonical_path_identity TEXT NOT NULL,
+                        file_dev TEXT NOT NULL,
+                        file_ino TEXT NOT NULL,
+                        parent_path_identity TEXT NOT NULL,
+                        parent_dev TEXT NOT NULL,
+                        parent_ino TEXT NOT NULL
                     );
 
                     CREATE TABLE IF NOT EXISTS studio_snapshots (
@@ -1145,8 +1230,46 @@ class StudioRepository:
                         "ALTER TABLE studio_snapshots ADD COLUMN summary_json TEXT NULL"
                     )
                     self._backfill_snapshot_summaries(connection)
+                if not had_open_identity_table:
+                    self._backfill_project_open_identities(connection)
         finally:
             connection.close()
+
+    @staticmethod
+    def _backfill_project_open_identities(
+        connection: sqlite3.Connection,
+    ) -> None:
+        rows = connection.execute(
+            """
+            SELECT projects.id, projects.canonical_path
+            FROM studio_projects AS projects
+            LEFT JOIN studio_project_open_identities AS identities
+              ON identities.project_id = projects.id
+            WHERE identities.project_id IS NULL
+            """
+        ).fetchall()
+        for row in rows:
+            identity = _capture_open_identity(Path(row["canonical_path"]))
+            if identity is None:
+                continue
+            connection.execute(
+                """
+                INSERT INTO studio_project_open_identities (
+                    project_id, canonical_path_identity,
+                    file_dev, file_ino, parent_path_identity,
+                    parent_dev, parent_ino
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row["id"],
+                    identity[0],
+                    str(identity[1]),
+                    str(identity[2]),
+                    identity[3],
+                    str(identity[4]),
+                    str(identity[5]),
+                ),
+            )
 
     @staticmethod
     def _backfill_snapshot_summaries(
@@ -1281,6 +1404,86 @@ def _canonical_path(path: Path) -> str:
 
 def _path_identity(path: Path) -> str:
     return os.path.normcase(_canonical_path(path))
+
+
+def _capture_open_identity(
+    path: Path,
+) -> tuple[str, int, int, str, int, int] | None:
+    if path.suffix.casefold() != ".flp":
+        return None
+    try:
+        if _has_link_or_reparse_component(path):
+            return None
+        source_details = path.lstat()
+        parent_details = path.parent.lstat()
+        if (
+            _is_reparse_point(source_details)
+            or _is_reparse_point(parent_details)
+            or not stat.S_ISREG(source_details.st_mode)
+            or not stat.S_ISDIR(parent_details.st_mode)
+            or not all(_file_identity(source_details))
+            or not all(_file_identity(parent_details))
+        ):
+            return None
+
+        resolved = path.resolve(strict=True)
+        resolved_parent = path.parent.resolve(strict=True)
+        if (
+            os.path.normcase(str(resolved)) != os.path.normcase(str(path))
+            or resolved.parent != resolved_parent
+        ):
+            return None
+
+        current_details = resolved.lstat()
+        current_parent_details = resolved_parent.lstat()
+        if (
+            _is_reparse_point(current_details)
+            or _is_reparse_point(current_parent_details)
+            or not stat.S_ISREG(current_details.st_mode)
+            or not stat.S_ISDIR(current_parent_details.st_mode)
+            or not _same_file_version(source_details, current_details)
+            or not _same_file_version(parent_details, current_parent_details)
+        ):
+            return None
+    except OSError:
+        return None
+
+    file_dev, file_ino = _file_identity(current_details)
+    parent_dev, parent_ino = _file_identity(current_parent_details)
+    return (
+        os.path.normcase(str(resolved)),
+        file_dev,
+        file_ino,
+        os.path.normcase(str(resolved_parent)),
+        parent_dev,
+        parent_ino,
+    )
+
+
+def _same_file_version(first: os.stat_result, second: os.stat_result) -> bool:
+    return (
+        _file_identity(first) == _file_identity(second)
+        and first.st_size == second.st_size
+        and first.st_mtime_ns == second.st_mtime_ns
+    )
+
+
+def _file_identity(details: os.stat_result) -> tuple[int, int]:
+    return details.st_dev, details.st_ino
+
+
+def _is_reparse_point(details: os.stat_result) -> bool:
+    attributes = getattr(details, "st_file_attributes", 0)
+    reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(attributes & reparse_attribute)
+
+
+def _has_link_or_reparse_component(path: Path) -> bool:
+    for component in (path, *path.parents):
+        details = component.lstat()
+        if stat.S_ISLNK(details.st_mode) or _is_reparse_point(details):
+            return True
+    return False
 
 
 def _utc_now() -> str:

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { confirmStudioVersion, getStudioDiff, getStudioVersions } from "../../api/studioClient";
+import { confirmStudioVersion, getStudioDiff, getStudioVersions, openStudioAsset } from "../../api/studioClient";
 import type { StudioSnapshotDiff, StudioVersion } from "../../api/studioTypes";
 import studioCss from "./Studio.module.css";
 
@@ -38,9 +38,12 @@ export function VersionTimeline({ projectId }: VersionTimelineProps) {
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
+  const [openingBackupId, setOpeningBackupId] = useState<string | null>(null);
+  const [openBackupError, setOpenBackupError] = useState<{ associationId: string; message: string } | null>(null);
   const [diffState, setDiffState] = useState<DiffState>({ phase: "idle" });
   const confirmationController = useRef<AbortController | null>(null);
   const loadMoreController = useRef<AbortController | null>(null);
+  const backupOpenController = useRef<AbortController | null>(null);
   const projectIdentity = useRef(projectId);
   projectIdentity.current = projectId;
 
@@ -69,14 +72,19 @@ export function VersionTimeline({ projectId }: VersionTimelineProps) {
   useEffect(() => {
     confirmationController.current?.abort();
     loadMoreController.current?.abort();
+    backupOpenController.current?.abort();
     confirmationController.current = null;
     loadMoreController.current = null;
+    backupOpenController.current = null;
     setConfirmingId(null);
     setLoadingMore(false);
     setLoadMoreError(null);
+    setOpeningBackupId(null);
+    setOpenBackupError(null);
     return () => {
       confirmationController.current?.abort();
       loadMoreController.current?.abort();
+      backupOpenController.current?.abort();
     };
   }, [projectId]);
 
@@ -188,6 +196,32 @@ export function VersionTimeline({ projectId }: VersionTimelineProps) {
     }
   }
 
+  async function openBackup(version: StudioVersion) {
+    if (!version.confirmed || version.kind !== "backup" || !version.associationId) return;
+    backupOpenController.current?.abort();
+    const controller = new AbortController();
+    const requestedProjectId = projectId;
+    const associationId = version.associationId;
+    backupOpenController.current = controller;
+    setOpeningBackupId(associationId);
+    setOpenBackupError(null);
+    try {
+      await openStudioAsset(
+        projectId,
+        { kind: "backup", entityId: associationId },
+        { signal: controller.signal }
+      );
+    } catch (cause) {
+      if (controller.signal.aborted || projectIdentity.current !== requestedProjectId) return;
+      setOpenBackupError({ associationId, message: errorMessage(cause) });
+    } finally {
+      if (backupOpenController.current === controller) {
+        backupOpenController.current = null;
+        if (projectIdentity.current === requestedProjectId) setOpeningBackupId(null);
+      }
+    }
+  }
+
   if (state.phase === "loading") {
     return <section className={studioCss.versionState} role="status">正在整理版本时间线…</section>;
   }
@@ -236,6 +270,24 @@ export function VersionTimeline({ projectId }: VersionTimelineProps) {
                   >
                     {confirmingId === version.associationId ? "确认中…" : "确认归组"}
                   </button>
+                )}
+                {version.confirmed && version.kind === "backup" && version.associationId && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={openingBackupId === version.associationId}
+                      aria-busy={openingBackupId === version.associationId}
+                      aria-label={`打开 ${fileName(version.sourcePath)} 所在位置`}
+                      onClick={() => void openBackup(version)}
+                    >
+                      {openingBackupId === version.associationId ? "打开中…" : "打开位置"}
+                    </button>
+                    {openBackupError?.associationId === version.associationId && (
+                      <p className={studioCss.versionOpenError} role="alert">
+                        {openBackupError.message}
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
             </li>

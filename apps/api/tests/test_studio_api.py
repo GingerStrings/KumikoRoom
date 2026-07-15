@@ -785,6 +785,160 @@ def test_open_backup_requires_project_owned_association(
     assert cross_project.status_code == 404
 
 
+def test_open_backup_requires_a_confirmed_association(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    repository = StudioRepository(load_settings().studio_db_path)
+    main_path = tmp_path / "song.flp"
+    backup_path = tmp_path / "Backups" / "candidate.flp"
+    backup_path.parent.mkdir()
+    main_path.write_bytes(b"FLhd-main")
+    backup_path.write_bytes(b"FLhd-candidate")
+    main = repository.upsert_project(main_path, display_name="song")
+    candidate = repository.upsert_project(backup_path, display_name="candidate")
+    candidate_snapshot = repository.save_snapshot(
+        candidate.id,
+        analysis_snapshot(backup_path, source_hash="candidate-hash"),
+    )
+    association = repository.save_backup_association(
+        main.id,
+        candidate.id,
+        candidate_snapshot.id,
+        score=0.72,
+        confirmed=False,
+    )
+
+    class RecordingOpener:
+        def __init__(self) -> None:
+            self.targets: list[Path] = []
+
+        def open(self, target: Path) -> None:
+            self.targets.append(target)
+
+    opener = RecordingOpener()
+    app.dependency_overrides[studio.local_opener] = lambda: opener
+    try:
+        response = client.post(
+            f"/api/studio/projects/{main.id}/open",
+            json={"kind": "backup", "entity_id": association.id},
+        )
+    finally:
+        app.dependency_overrides.pop(studio.local_opener, None)
+
+    assert response.status_code == 404
+    assert opener.targets == []
+
+
+def test_open_project_rejects_a_regular_file_replacement(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    project_path = tmp_path / "registered.flp"
+    project_path.write_bytes(b"FLhd-original")
+    repository = StudioRepository(load_settings().studio_db_path)
+    project = repository.upsert_project(project_path, display_name="registered")
+    project_path.unlink()
+    project_path.write_bytes(b"MZ-external-executable")
+
+    class RecordingOpener:
+        def __init__(self) -> None:
+            self.targets: list[Path] = []
+
+        def open(self, target: Path) -> None:
+            self.targets.append(target)
+
+    opener = RecordingOpener()
+    app.dependency_overrides[studio.local_opener] = lambda: opener
+    try:
+        response = client.post(
+            f"/api/studio/projects/{project.id}/open",
+            json={"kind": "project"},
+        )
+    finally:
+        app.dependency_overrides.pop(studio.local_opener, None)
+
+    assert response.status_code == 409
+    assert opener.targets == []
+
+
+def test_open_folder_rejects_a_replacement_directory(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    project_folder = tmp_path / "registered-folder"
+    project_folder.mkdir()
+    project_path = project_folder / "song.flp"
+    project_path.write_bytes(b"FLhd")
+    repository = StudioRepository(load_settings().studio_db_path)
+    project = repository.upsert_project(project_path, display_name="song")
+    moved_folder = tmp_path / "original-folder"
+    project_folder.rename(moved_folder)
+    project_folder.mkdir()
+
+    class RecordingOpener:
+        def __init__(self) -> None:
+            self.targets: list[Path] = []
+
+        def open(self, target: Path) -> None:
+            self.targets.append(target)
+
+    opener = RecordingOpener()
+    app.dependency_overrides[studio.local_opener] = lambda: opener
+    try:
+        response = client.post(
+            f"/api/studio/projects/{project.id}/open",
+            json={"kind": "folder"},
+        )
+    finally:
+        app.dependency_overrides.pop(studio.local_opener, None)
+
+    assert response.status_code == 409
+    assert opener.targets == []
+
+
+def test_open_backup_rejects_a_regular_file_replacement(
+    client: TestClient,
+    tmp_path: Path,
+) -> None:
+    repository = StudioRepository(load_settings().studio_db_path)
+    main_path = tmp_path / "main.flp"
+    backup_path = tmp_path / "Backups" / "main backup.flp"
+    backup_path.parent.mkdir()
+    main_path.write_bytes(b"FLhd-main")
+    backup_path.write_bytes(b"FLhd-backup")
+    main = repository.upsert_project(main_path, display_name="main")
+    backup = repository.upsert_project(backup_path, display_name="main backup")
+    record = repository.save_snapshot(
+        backup.id, analysis_snapshot(backup_path, source_hash="backup")
+    )
+    association = repository.save_backup_association(
+        main.id, backup.id, record.id, score=0.91, confirmed=True
+    )
+    backup_path.unlink()
+    backup_path.write_bytes(b"MZ-external-executable")
+
+    class RecordingOpener:
+        def __init__(self) -> None:
+            self.targets: list[Path] = []
+
+        def open(self, target: Path) -> None:
+            self.targets.append(target)
+
+    opener = RecordingOpener()
+    app.dependency_overrides[studio.local_opener] = lambda: opener
+    try:
+        response = client.post(
+            f"/api/studio/projects/{main.id}/open",
+            json={"kind": "backup", "entity_id": association.id},
+        )
+    finally:
+        app.dependency_overrides.pop(studio.local_opener, None)
+
+    assert response.status_code == 409
+    assert opener.targets == []
+
+
 def test_default_service_reuses_db_and_replaces_it_when_path_changes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

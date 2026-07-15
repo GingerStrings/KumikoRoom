@@ -1,5 +1,6 @@
 import hashlib
 import os
+import stat
 from pathlib import Path
 from threading import RLock
 from typing import Annotated, Literal, Protocol
@@ -563,11 +564,11 @@ def _resolve_open_target(
     if payload.kind == "project":
         if payload.entity_id is not None:
             raise ValueError("project actions do not accept entity ids")
-        return _existing_path(project_path, expected="file")
+        return _verified_registered_target(repository, project)
     if payload.kind == "folder":
         if payload.entity_id is not None:
             raise ValueError("folder actions do not accept entity ids")
-        return _existing_path(project_path.parent, expected="directory")
+        return _verified_registered_target(repository, project, open_folder=True)
     if not payload.entity_id:
         raise ValueError("entity id is required")
 
@@ -575,9 +576,10 @@ def _resolve_open_target(
         association = repository.get_backup_association(
             project.id, payload.entity_id
         )
+        if not association.confirmed:
+            raise KeyError(payload.entity_id)
         candidate = repository.get_project(association.candidate_project_id)
-        backup_path = _existing_path(Path(candidate.canonical_path), expected="file")
-        return _existing_path(backup_path.parent, expected="directory")
+        return _verified_registered_target(repository, candidate, open_folder=True)
 
     try:
         record = repository.get_latest_snapshot(project.id)
@@ -620,6 +622,102 @@ def _resolve_open_target(
     return resolved if resolved.is_dir() else _existing_path(
         resolved.parent, expected="directory"
     )
+
+
+def _verified_registered_target(
+    repository: StudioRepository,
+    project: StudioProject,
+    *,
+    open_folder: bool = False,
+) -> Path:
+    identity = repository.get_project_open_identity(project.id)
+    project_path = Path(project.canonical_path).expanduser()
+    if _has_link_or_reparse_component(project_path):
+        raise OSError("registered project path contains a link or reparse point")
+    project_identity = os.path.normcase(str(project_path))
+    if (
+        project_path.suffix.casefold() != ".flp"
+        or identity.project_id != project.id
+        or identity.canonical_path_identity != project_identity
+    ):
+        raise OSError("registered project identity is invalid")
+
+    parent = project_path.parent
+    parent_identity = os.path.normcase(str(parent))
+    if identity.parent_path_identity != parent_identity:
+        raise OSError("registered project boundary is invalid")
+
+    source_details = project_path.lstat()
+    parent_details = parent.lstat()
+    if (
+        _is_reparse_point(source_details)
+        or _is_reparse_point(parent_details)
+        or not stat.S_ISREG(source_details.st_mode)
+        or not stat.S_ISDIR(parent_details.st_mode)
+        or not _matches_file_identity(
+            source_details, identity.file_dev, identity.file_ino
+        )
+        or not _matches_file_identity(
+            parent_details, identity.parent_dev, identity.parent_ino
+        )
+    ):
+        raise OSError("registered project target changed")
+
+    resolved = project_path.resolve(strict=True)
+    resolved_parent = parent.resolve(strict=True)
+    if (
+        os.path.normcase(str(resolved)) != identity.canonical_path_identity
+        or resolved.parent != resolved_parent
+        or os.path.normcase(str(resolved_parent)) != identity.parent_path_identity
+    ):
+        raise OSError("registered project target escaped its boundary")
+
+    current_details = resolved.lstat()
+    current_parent_details = resolved_parent.lstat()
+    if (
+        _is_reparse_point(current_details)
+        or _is_reparse_point(current_parent_details)
+        or not stat.S_ISREG(current_details.st_mode)
+        or not stat.S_ISDIR(current_parent_details.st_mode)
+        or not _matches_file_identity(
+            current_details, identity.file_dev, identity.file_ino
+        )
+        or not _matches_file_identity(
+            current_parent_details, identity.parent_dev, identity.parent_ino
+        )
+    ):
+        raise OSError("registered project target changed during verification")
+
+    # This is the last userspace verification before the OS dispatch. The opener
+    # accepts a concrete Path and never interpolates it into a shell command.
+    return resolved_parent if open_folder else resolved
+
+
+def _matches_file_identity(
+    details: os.stat_result,
+    expected_dev: int,
+    expected_ino: int,
+) -> bool:
+    return (
+        expected_dev > 0
+        and expected_ino > 0
+        and details.st_dev == expected_dev
+        and details.st_ino == expected_ino
+    )
+
+
+def _is_reparse_point(details: os.stat_result) -> bool:
+    attributes = getattr(details, "st_file_attributes", 0)
+    reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(attributes & reparse_attribute)
+
+
+def _has_link_or_reparse_component(path: Path) -> bool:
+    for component in (path, *path.parents):
+        details = component.lstat()
+        if stat.S_ISLNK(details.st_mode) or _is_reparse_point(details):
+            return True
+    return False
 
 
 def _existing_path(path: Path, *, expected: str | None = None) -> Path:

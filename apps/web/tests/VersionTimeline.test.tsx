@@ -9,7 +9,8 @@ vi.mock("../src/api/studioClient", async (importOriginal) => {
     ...actual,
     getStudioVersions: vi.fn(),
     confirmStudioVersion: vi.fn(),
-    getStudioDiff: vi.fn()
+    getStudioDiff: vi.fn(),
+    openStudioAsset: vi.fn()
   };
 });
 
@@ -40,6 +41,7 @@ beforeEach(() => {
     snapshotId: "candidate", score: 0.63, confirmed: true,
     createdAt: "2026-07-13T09:40:00Z", updatedAt: "2026-07-14T10:00:00Z"
   });
+  vi.mocked(studioApi.openStudioAsset).mockResolvedValue(undefined);
   vi.mocked(studioApi.getStudioDiff).mockResolvedValue({
     fromSnapshotId: "backup",
     toSnapshotId: "current",
@@ -88,7 +90,56 @@ describe("VersionTimeline", () => {
       { signal: expect.any(AbortSignal) }
     ));
     await waitFor(() => expect(screen.getAllByText("已确认备份").length).toBeGreaterThan(1));
+    expect(screen.getByRole("button", { name: "打开 Untitled.flp 所在位置" })).toBeTruthy();
     expect(studioApi.getStudioVersions).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens only confirmed backup associations through the allowlisted action", async () => {
+    render(<VersionTimeline projectId="project-1" />);
+    await screen.findByText("已确认备份");
+
+    expect(screen.queryByRole("button", { name: "打开 Untitled.flp 所在位置" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "打开 Blue Hour backup.flp 所在位置" }));
+
+    await waitFor(() => expect(studioApi.openStudioAsset).toHaveBeenCalledWith(
+      "project-1",
+      { kind: "backup", entityId: "association-1" },
+      { signal: expect.any(AbortSignal) }
+    ));
+  });
+
+  it("keeps an inline pending and error state for backup open actions", async () => {
+    let rejectOpen!: (cause: unknown) => void;
+    vi.mocked(studioApi.openStudioAsset).mockImplementation(() => new Promise((_resolve, reject) => {
+      rejectOpen = reject;
+    }));
+    render(<VersionTimeline projectId="project-1" />);
+    const openButton = await screen.findByRole("button", { name: "打开 Blue Hour backup.flp 所在位置" });
+
+    fireEvent.click(openButton);
+    expect(openButton.hasAttribute("disabled")).toBe(true);
+    expect(openButton.getAttribute("aria-busy")).toBe("true");
+    await act(async () => rejectOpen(new Error("备份位置已失效")));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("备份位置已失效");
+    expect(openButton.hasAttribute("disabled")).toBe(false);
+  });
+
+  it("aborts and ignores a stale backup open action after project change", async () => {
+    let settleOpen!: () => void;
+    let openSignal: AbortSignal | undefined;
+    vi.mocked(studioApi.openStudioAsset).mockImplementation((_projectId, _action, options) => new Promise((_resolve, reject) => {
+      openSignal = options.signal;
+      settleOpen = () => reject(new Error("stale open failed"));
+    }));
+    const view = render(<VersionTimeline projectId="project-1" />);
+    fireEvent.click(await screen.findByRole("button", { name: "打开 Blue Hour backup.flp 所在位置" }));
+
+    view.rerender(<VersionTimeline projectId="project-2" />);
+    await act(async () => settleOpen());
+
+    await waitFor(() => expect(openSignal?.aborted).toBe(true));
+    expect(screen.queryByText("stale open failed")).toBeNull();
   });
 
   it("cancels stale requests when the project changes", async () => {
