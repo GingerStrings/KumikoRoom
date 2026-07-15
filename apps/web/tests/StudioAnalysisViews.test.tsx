@@ -242,6 +242,60 @@ describe("plugin, Mixer, and dependency workspace", () => {
     expect(within(chains).getByRole("button", { name: "Insert 4", exact: true }).closest("section")?.getAttribute("data-selected")).toBe("true");
   });
 
+  it("links same-name Channel plugins by exact parser location or instance id", () => {
+    const sameName: StudioAnalysis = {
+      ...analysis,
+      channels: [
+        { id: "1", name: "FLEX one", pluginName: "FLEX", channelType: "instrument" },
+        { id: "2", name: "FLEX two", pluginName: "FLEX", channelType: "instrument" }
+      ],
+      plugins: [
+        { id: "plugin-flex-one", name: "FLEX", kind: "generator", location: "channel:1", stateSupported: true },
+        { id: "channel:2", name: "FLEX", kind: "generator", location: "", stateSupported: true }
+      ],
+      mixerInserts: []
+    };
+    render(<PluginMixerView analysis={sameName} />);
+    const rack = screen.getByLabelText("Channel Rack");
+    const first = within(rack).getByRole("button", { name: /FLEX one/ }).closest("li")!;
+    const second = within(rack).getByRole("button", { name: /FLEX two/ }).closest("li")!;
+
+    expect(within(first).getByText("已关联").getAttribute("title")).toContain("plugin-flex-one");
+    expect(within(second).getByText("已关联").getAttribute("title")).toContain("channel:2");
+  });
+
+  it("rejects conflicting, duplicate, and malformed exact Channel plugin metadata", () => {
+    const boundaries: StudioAnalysis = {
+      ...analysis,
+      channels: [
+        { id: "3", name: "Consistent", pluginName: "Exact", channelType: "instrument" },
+        { id: "4", name: "Conflict source", pluginName: "Conflict", channelType: "instrument" },
+        { id: "5", name: "Conflict target", pluginName: "Conflict", channelType: "instrument" },
+        { id: "6", name: "Duplicate", pluginName: "Duplicate", channelType: "instrument" },
+        { id: "7", name: "Malformed", pluginName: "Malformed", channelType: "instrument" },
+        { id: "8", name: "Legacy", pluginName: "Legacy", channelType: "instrument" }
+      ],
+      plugins: [
+        { id: "channel:3", name: "Exact", kind: "generator", location: "channel:3", stateSupported: true },
+        { id: "channel:4", name: "Conflict", kind: "generator", location: "channel:5", stateSupported: true },
+        { id: "duplicate-a", name: "Duplicate", kind: "generator", location: "channel:6", stateSupported: true },
+        { id: "duplicate-b", name: "Duplicate", kind: "generator", location: "channel:6", stateSupported: true },
+        { id: "malformed", name: "Malformed", kind: "generator", location: "channel:", stateSupported: true },
+        { id: "legacy", name: "Legacy", kind: "generator", location: "unknown", stateSupported: true }
+      ],
+      mixerInserts: []
+    };
+    render(<PluginMixerView analysis={boundaries} />);
+    const rack = screen.getByLabelText("Channel Rack");
+    const row = (name: string) => within(rack).getByRole("button", { name: new RegExp(name) }).closest("li")!;
+
+    expect(within(row("Consistent")).getByText("已关联").getAttribute("title")).toContain("channel:3");
+    expect(within(row("Legacy")).getByText("已关联").getAttribute("title")).toContain("legacy");
+    for (const name of ["Conflict source", "Conflict target", "Duplicate", "Malformed"]) {
+      expect(within(row(name)).getByText("未解析")).toBeTruthy();
+    }
+  });
+
   it("bounds large cyclic Mixer graphs and reports hidden and unresolved routes in text", () => {
     const total = 110;
     const inserts = Array.from({ length: total }, (_, index) => ({

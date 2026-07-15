@@ -68,7 +68,10 @@ export function PluginMixerView({ analysis, selectedTarget = null, onSelectTarge
                       <strong>{channel.name}</strong><small>{channel.channelType || "类型未知"}</small>
                     </button>
                     <span>{channel.pluginName || "未报告插件"}</span>
-                    <em data-resolved={Boolean(linked)}>{linked ? "已关联" : channel.pluginName ? "未解析" : "空"}</em>
+                    <em
+                      data-resolved={Boolean(linked)}
+                      title={linked ? `关联插件 ${linked.name} (${linked.id})` : channel.pluginName ? "没有唯一可确认的插件实例" : undefined}
+                    >{linked ? "已关联" : channel.pluginName ? "未解析" : "空"}</em>
                   </li>
                 );
               })}
@@ -245,12 +248,43 @@ function kindFilterLabel(kind: PluginKindFilter): string {
 }
 
 function resolveChannelPlugin(channel: StudioChannelSummary, plugins: StudioPluginInstance[]): StudioPluginInstance | null {
-  const byId = plugins.filter((plugin) => plugin.id === channel.id);
-  if (byId.length === 1) return byId[0];
+  const exact = plugins.filter((plugin) => {
+    const binding = pluginChannelBinding(plugin);
+    return binding.status === "exact" && binding.channelId === channel.id;
+  });
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return null;
   if (!channel.pluginName) return null;
   const name = normalize(channel.pluginName);
-  const byName = plugins.filter((plugin) => normalize(plugin.name) === name);
+  const byName = plugins.filter((plugin) => pluginChannelBinding(plugin).status === "fallback" && normalize(plugin.name) === name);
   return byName.length === 1 ? byName[0] : null;
+}
+
+type PluginChannelBinding =
+  | { status: "exact"; channelId: string }
+  | { status: "fallback" }
+  | { status: "invalid" };
+
+function pluginChannelBinding(plugin: StudioPluginInstance): PluginChannelBinding {
+  const idReference = parseChannelReference(plugin.id);
+  const locationReference = parseChannelReference(plugin.location);
+  if (idReference.status === "malformed" || locationReference.status === "malformed") return { status: "invalid" };
+  const references = [idReference, locationReference].filter(
+    (reference): reference is { status: "valid"; channelId: string } => reference.status === "valid"
+  );
+  if (references.length === 0) return { status: "fallback" };
+  if (references.some((reference) => reference.channelId !== references[0].channelId)) return { status: "invalid" };
+  return { status: "exact", channelId: references[0].channelId };
+}
+
+function parseChannelReference(value: string):
+  | { status: "valid"; channelId: string }
+  | { status: "none" }
+  | { status: "malformed" } {
+  const token = value.trim();
+  if (!token.startsWith("channel:")) return { status: "none" };
+  const match = /^channel:([^:]+)$/.exec(token);
+  return match ? { status: "valid", channelId: match[1] } : { status: "malformed" };
 }
 
 function resolvePluginLocation(plugin: StudioPluginInstance, analysis: StudioAnalysis): PluginMixerTarget | null {
