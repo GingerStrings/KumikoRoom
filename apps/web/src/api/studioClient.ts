@@ -142,10 +142,15 @@ export function getStudioVersions(projectId: string, options: { signal?: AbortSi
   }).then((values) => values.map(mapVersion));
 }
 
-export function confirmStudioVersion(projectId: string, candidateId: string): Promise<StudioBackupAssociation> {
+export function confirmStudioVersion(
+  projectId: string,
+  candidateId: string,
+  options: { signal?: AbortSignal } = {}
+): Promise<StudioBackupAssociation> {
   return request<AssociationApi>(`/api/studio/projects/${encodeURIComponent(projectId)}/versions/confirm`, {
     method: "POST",
-    body: JSON.stringify({ candidate_id: candidateId })
+    body: JSON.stringify({ candidate_id: candidateId }),
+    signal: options.signal
   }).then((value) => ({
     id: value.id,
     projectId: value.project_id,

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as studioApi from "../src/api/studioClient";
 import { VersionTimeline } from "../src/components/studio/VersionTimeline";
@@ -82,7 +82,11 @@ describe("VersionTimeline", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "确认 Untitled.flp 属于此工程" }));
 
-    await waitFor(() => expect(studioApi.confirmStudioVersion).toHaveBeenCalledWith("project-1", "association-2"));
+    await waitFor(() => expect(studioApi.confirmStudioVersion).toHaveBeenCalledWith(
+      "project-1",
+      "association-2",
+      { signal: expect.any(AbortSignal) }
+    ));
     await waitFor(() => expect(studioApi.getStudioVersions).toHaveBeenCalledTimes(2));
   });
 
@@ -98,4 +102,38 @@ describe("VersionTimeline", () => {
     await waitFor(() => expect(signals).toHaveLength(2));
     expect(signals[0].aborted).toBe(true);
   });
+
+  it.each(["resolve", "reject"] as const)(
+    "ignores a stale confirmation that later %s after switching projects",
+    async (outcome) => {
+      let settle!: (value?: unknown) => void;
+      let confirmationSignal: AbortSignal | undefined;
+      vi.mocked(studioApi.confirmStudioVersion).mockImplementation(
+        (_projectId, _candidateId, options) => new Promise((resolve, reject) => {
+          confirmationSignal = options.signal;
+          settle = outcome === "resolve"
+            ? () => resolve({
+                id: "association-2", projectId: "project-1", candidateProjectId: "candidate-project",
+                snapshotId: "candidate", score: 0.63, confirmed: true,
+                createdAt: "2026-07-13T09:40:00Z", updatedAt: "2026-07-14T10:00:00Z"
+              })
+            : () => reject(new Error("stale confirmation failed"));
+        })
+      );
+      const view = render(<VersionTimeline projectId="project-1" />);
+      await screen.findByText("待确认候选");
+      fireEvent.click(screen.getByRole("button", { name: "确认 Untitled.flp 属于此工程" }));
+
+      view.rerender(<VersionTimeline projectId="project-2" />);
+      await waitFor(() => expect(studioApi.getStudioVersions).toHaveBeenCalledTimes(2));
+      await act(async () => {
+        settle();
+        await Promise.resolve();
+      });
+
+      await waitFor(() => expect(confirmationSignal?.aborted).toBe(true));
+      expect(studioApi.getStudioVersions).toHaveBeenCalledTimes(2);
+      expect(screen.queryByText("stale confirmation failed")).toBeNull();
+    }
+  );
 });

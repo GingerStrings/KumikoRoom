@@ -79,6 +79,40 @@ def test_backup_association_requires_high_confidence(tmp_path: Path) -> None:
     assert score_backup_association(main, weak, main_modified_at="2026-07-14T10:00:00Z", candidate_modified_at="2025-01-01T00:00:00Z") < 0.8
 
 
+def test_backup_association_rejects_fuzzy_title_and_empty_evidence(tmp_path: Path) -> None:
+    main = snapshot(tmp_path / "Blue Hour.flp", "main")
+    fuzzy_title = replace(
+        main,
+        source_path=str(tmp_path / "Backups" / "Blue Hour 2 - backup.flp"),
+        source_hash="fuzzy",
+        project=replace(main.project, title="Blue Hour 2"),
+    )
+    empty_main = FlpAnalysisSnapshot(
+        source_path=str(tmp_path / "Untitled.flp"),
+        source_hash="empty-main",
+        status=AnalysisStatus.READY,
+        project=ProjectInfo(title=None),
+    )
+    empty_candidate = replace(
+        empty_main,
+        source_path=str(tmp_path / "Backups" / "Untitled - backup.flp"),
+        source_hash="empty-candidate",
+    )
+
+    assert score_backup_association(
+        main,
+        fuzzy_title,
+        main_modified_at="2026-07-14T10:00:00Z",
+        candidate_modified_at="2026-07-14T09:59:00Z",
+    ) < 0.8
+    assert score_backup_association(
+        empty_main,
+        empty_candidate,
+        main_modified_at="2026-07-14T10:00:00Z",
+        candidate_modified_at="2026-07-14T09:59:00Z",
+    ) < 0.8
+
+
 def test_snapshot_diff_is_semantic_stable_and_complete(tmp_path: Path) -> None:
     before = snapshot(tmp_path / "Blue Hour.flp", "v1", version=1)
     after = snapshot(tmp_path / "Blue Hour.flp", "v2", version=2)
@@ -96,6 +130,48 @@ def test_snapshot_diff_is_semantic_stable_and_complete(tmp_path: Path) -> None:
     assert result["dependencies"]["changed"][0]["before"]["path"].endswith("kick.wav")
     assert diff_snapshots(after, before)["patterns"]["removed"] == result["patterns"]["added"]
     assert diff_snapshots(before, before)["summary"]["change_count"] == 0
+
+
+def test_snapshot_diff_reports_all_parsed_project_and_inference_metrics(
+    tmp_path: Path,
+) -> None:
+    before = snapshot(tmp_path / "Blue Hour.flp", "v1")
+    after = replace(
+        before,
+        source_hash="v2",
+        project=replace(
+            before.project,
+            title="Blue Hour Final",
+            author="Kumiko",
+            fl_version="21.2",
+            created_at="2026-07-01T00:00:00Z",
+            time_spent_seconds=7200,
+        ),
+        fingerprint=replace(
+            before.fingerprint,
+            inferred_key="A minor",
+            inferred_key_confidence=0.82,
+            inferred_key_evidence=["pitch classes", "cadence"],
+        ),
+        unknown_event_count=4,
+    )
+
+    fields = {
+        item["field"]
+        for item in diff_snapshots(before, after)["project_metrics"]["changed"]
+    }
+
+    assert {
+        "title",
+        "author",
+        "fl_version",
+        "created_at",
+        "time_spent_seconds",
+        "inferred_key",
+        "inferred_key_confidence",
+        "inferred_key_evidence",
+        "unknown_event_count",
+    } <= fields
 
 
 def test_diff_matches_ids_and_duplicate_names_without_list_order(tmp_path: Path) -> None:

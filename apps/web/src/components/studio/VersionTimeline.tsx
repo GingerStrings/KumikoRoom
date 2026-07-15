@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { confirmStudioVersion, getStudioDiff, getStudioVersions } from "../../api/studioClient";
 import type { StudioSnapshotDiff, StudioVersion } from "../../api/studioTypes";
 import studioCss from "./Studio.module.css";
@@ -37,6 +37,9 @@ export function VersionTimeline({ projectId }: VersionTimelineProps) {
   const [toId, setToId] = useState("");
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [diffState, setDiffState] = useState<DiffState>({ phase: "idle" });
+  const confirmationController = useRef<AbortController | null>(null);
+  const projectIdentity = useRef(projectId);
+  projectIdentity.current = projectId;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -58,6 +61,13 @@ export function VersionTimeline({ projectId }: VersionTimelineProps) {
       });
     return () => controller.abort();
   }, [projectId, refreshKey]);
+
+  useEffect(() => {
+    confirmationController.current?.abort();
+    confirmationController.current = null;
+    setConfirmingId(null);
+    return () => confirmationController.current?.abort();
+  }, [projectId]);
 
   useEffect(() => {
     if (!fromId || !toId) {
@@ -83,14 +93,33 @@ export function VersionTimeline({ projectId }: VersionTimelineProps) {
 
   async function confirmCandidate(version: StudioVersion) {
     if (!version.associationId) return;
+    confirmationController.current?.abort();
+    const controller = new AbortController();
+    const requestedProjectId = projectId;
+    confirmationController.current = controller;
     setConfirmingId(version.associationId);
     try {
-      await confirmStudioVersion(projectId, version.associationId);
+      await confirmStudioVersion(projectId, version.associationId, {
+        signal: controller.signal
+      });
+      if (
+        controller.signal.aborted
+        || projectIdentity.current !== requestedProjectId
+      ) return;
       setRefreshKey((value) => value + 1);
     } catch (cause) {
+      if (
+        controller.signal.aborted
+        || projectIdentity.current !== requestedProjectId
+      ) return;
       setState({ phase: "error", message: errorMessage(cause) });
     } finally {
-      setConfirmingId(null);
+      if (confirmationController.current === controller) {
+        confirmationController.current = null;
+        if (projectIdentity.current === requestedProjectId) {
+          setConfirmingId(null);
+        }
+      }
     }
   }
 

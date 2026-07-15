@@ -28,10 +28,11 @@ def score_backup_association(
     ).ratio()
     main_title = _normalized_text(main.project.title)
     candidate_title = _normalized_text(candidate.project.title)
-    title_score = (
-        SequenceMatcher(None, main_title, candidate_title).ratio()
-        if main_title and candidate_title
-        else 0.0
+    title_score = float(
+        bool(main_title and candidate_title and main_title == candidate_title)
+    )
+    title_conflicts = bool(
+        main_title and candidate_title and main_title != candidate_title
     )
     time_score = _time_proximity(main_modified_at, candidate_modified_at)
     pattern_score = _set_overlap(
@@ -54,6 +55,8 @@ def score_backup_association(
         + channel_score * 0.10
         + plugin_score * 0.10
     )
+    if title_conflicts:
+        score = min(score, AUTO_CONFIRM_SCORE - 0.000001)
     return round(max(0.0, min(1.0, score)), 6)
 
 
@@ -105,6 +108,10 @@ def _metric_changes(
     after: FlpAnalysisSnapshot,
 ) -> dict[str, list[dict[str, Any]]]:
     metrics = {
+        "analysis_status": (before.status.value, after.status.value),
+        "title": (before.project.title, after.project.title),
+        "author": (before.project.author, after.project.author),
+        "fl_version": (before.project.fl_version, after.project.fl_version),
         "tempo": (before.project.tempo, after.project.tempo),
         "ppq": (before.project.ppq, after.project.ppq),
         "time_signature_numerator": (
@@ -114,6 +121,11 @@ def _metric_changes(
         "time_signature_denominator": (
             before.project.time_signature_denominator,
             after.project.time_signature_denominator,
+        ),
+        "created_at": (before.project.created_at, after.project.created_at),
+        "time_spent_seconds": (
+            before.project.time_spent_seconds,
+            after.project.time_spent_seconds,
         ),
         "pattern_count": (len(before.patterns), len(after.patterns)),
         "channel_count": (len(before.channels), len(after.channels)),
@@ -126,7 +138,29 @@ def _metric_changes(
             len(before.mixer_inserts),
             len(after.mixer_inserts),
         ),
+        "automation_count": (len(before.automations), len(after.automations)),
+        "related_asset_count": (
+            len(before.related_assets),
+            len(after.related_assets),
+        ),
         "dependency_count": (len(before.dependencies), len(after.dependencies)),
+        "diagnostic_count": (len(before.diagnostics), len(after.diagnostics)),
+        "error_diagnostic_count": (
+            sum(item.severity == "error" for item in before.diagnostics),
+            sum(item.severity == "error" for item in after.diagnostics),
+        ),
+        "warning_diagnostic_count": (
+            sum(item.severity == "warning" for item in before.diagnostics),
+            sum(item.severity == "warning" for item in after.diagnostics),
+        ),
+        "notice_diagnostic_count": (
+            sum(item.severity == "notice" for item in before.diagnostics),
+            sum(item.severity == "notice" for item in after.diagnostics),
+        ),
+        "unknown_event_count": (
+            before.unknown_event_count,
+            after.unknown_event_count,
+        ),
         "note_min": (before.fingerprint.note_min, after.fingerprint.note_min),
         "note_max": (before.fingerprint.note_max, after.fingerprint.note_max),
         "note_density": (
@@ -140,6 +174,18 @@ def _metric_changes(
         "pattern_reuse": (
             before.fingerprint.pattern_reuse,
             after.fingerprint.pattern_reuse,
+        ),
+        "inferred_key": (
+            before.fingerprint.inferred_key,
+            after.fingerprint.inferred_key,
+        ),
+        "inferred_key_confidence": (
+            before.fingerprint.inferred_key_confidence,
+            after.fingerprint.inferred_key_confidence,
+        ),
+        "inferred_key_evidence": (
+            tuple(sorted(before.fingerprint.inferred_key_evidence)),
+            tuple(sorted(after.fingerprint.inferred_key_evidence)),
         ),
     }
     changed = [
@@ -296,8 +342,6 @@ def _path_key(path: str) -> str:
 
 
 def _set_overlap(left: set[str], right: set[str]) -> float:
-    if not left and not right:
-        return 1.0
     if not left or not right:
         return 0.0
     return len(left & right) / len(left | right)

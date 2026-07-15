@@ -35,10 +35,11 @@ describe("Studio API client", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(getStudioVersions("p/1")).resolves.toMatchObject([{ snapshotId: "s1", patternCount: 4 }]);
-    await expect(confirmStudioVersion("p/1", "a/1")).resolves.toMatchObject({ id: "a1", confirmed: true });
+    const confirmationController = new AbortController();
+    await expect(confirmStudioVersion("p/1", "a/1", { signal: confirmationController.signal })).resolves.toMatchObject({ id: "a1", confirmed: true });
     await expect(getStudioDiff("p/1", "s/2", "s/1")).resolves.toMatchObject({ fromSnapshotId: "s2", summary: { changeCount: 0 } });
     expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/studio/projects/p%2F1/versions", expect.any(Object));
-    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/studio/projects/p%2F1/versions/confirm", expect.objectContaining({ method: "POST", body: JSON.stringify({ candidate_id: "a/1" }) }));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/studio/projects/p%2F1/versions/confirm", expect.objectContaining({ method: "POST", body: JSON.stringify({ candidate_id: "a/1" }), signal: confirmationController.signal }));
     expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/studio/projects/p%2F1/diff?from=s%2F2&to=s%2F1", expect.any(Object));
   });
   it("maps roots and project summaries to camel case", async () => {
