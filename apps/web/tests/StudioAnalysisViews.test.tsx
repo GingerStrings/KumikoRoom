@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useState } from "react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as studioApi from "../src/api/studioClient";
 import type { StudioAnalysis, StudioProjectDetail } from "../src/api/studioTypes";
 import { ArrangementAnalysis } from "../src/components/studio/ArrangementAnalysis";
@@ -102,6 +103,10 @@ const analysis: StudioAnalysis = {
 beforeEach(() => {
   vi.mocked(studioApi.getStudioProject).mockResolvedValue(project);
   vi.mocked(studioApi.getStudioAnalysis).mockResolvedValue(analysis);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe("arrangement and Pattern workspace", () => {
@@ -272,6 +277,78 @@ describe("Pattern Explorer", () => {
       const activeId = list.getAttribute("aria-activedescendant");
       expect(activeId).toBeTruthy();
       expect(document.getElementById(activeId as string)?.textContent).toContain("Pattern 120");
+    });
+  });
+
+  it("uses the measured mobile viewport for external selection and PageDown", async () => {
+    const manyPatterns: StudioAnalysis = {
+      ...analysis,
+      patterns: Array.from({ length: 150 }, (_, index) => ({
+        id: `pat-${index}`,
+        name: `Pattern ${String(index).padStart(3, "0")}`,
+        usedInPlaylist: false,
+        notes: []
+      }))
+    };
+    function Harness() {
+      const [selected, setSelected] = useState("pat-0");
+      return <>
+        <button type="button" onClick={() => setSelected("pat-149")}>Select last Pattern</button>
+        <PatternExplorer analysis={manyPatterns} selectedPatternId={selected} onSelectPattern={setSelected} />
+      </>;
+    }
+    render(<Harness />);
+    const list = screen.getByRole("listbox", { name: "Pattern 列表" }) as HTMLElement;
+    Object.defineProperty(list, "clientHeight", { configurable: true, value: 260 });
+    fireEvent(window, new Event("resize"));
+
+    fireEvent.keyDown(list, { key: "PageDown" });
+    await waitFor(() => {
+      const active = document.getElementById(list.getAttribute("aria-activedescendant") as string) as HTMLElement;
+      expect(active.textContent).toContain("Pattern 005");
+      expect(active.getAttribute("aria-selected")).toBe("true");
+      expect(Number.parseInt(active.style.top, 10)).toBeGreaterThanOrEqual(list.scrollTop);
+      expect(Number.parseInt(active.style.top, 10) + 52).toBeLessThanOrEqual(list.scrollTop + 260);
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Select last Pattern" }));
+    await waitFor(() => {
+      const selected = within(list).getByRole("option", { name: /Pattern 149/ }) as HTMLElement;
+      expect(Number.parseInt(selected.style.top, 10)).toBeGreaterThanOrEqual(list.scrollTop);
+      expect(Number.parseInt(selected.style.top, 10) + 52).toBeLessThanOrEqual(list.scrollTop + 260);
+    });
+  });
+
+  it("recomputes the virtual window when ResizeObserver reports a shorter viewport", async () => {
+    let resizeCallback: ResizeObserverCallback | null = null;
+    class ResizeObserverMock {
+      constructor(callback: ResizeObserverCallback) { resizeCallback = callback; }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal("ResizeObserver", ResizeObserverMock);
+    const manyPatterns: StudioAnalysis = {
+      ...analysis,
+      patterns: Array.from({ length: 150 }, (_, index) => ({
+        id: `pat-${index}`,
+        name: `Pattern ${String(index).padStart(3, "0")}`,
+        usedInPlaylist: false,
+        notes: []
+      }))
+    };
+    render(<PatternExplorer analysis={manyPatterns} selectedPatternId="pat-149" onSelectPattern={() => undefined} />);
+    const list = screen.getByRole("listbox", { name: "Pattern 列表" }) as HTMLElement;
+    let height = 364;
+    Object.defineProperty(list, "clientHeight", { configurable: true, get: () => height });
+
+    height = 260;
+    act(() => resizeCallback?.([], {} as ResizeObserver));
+
+    await waitFor(() => {
+      const selected = within(list).getByRole("option", { name: /Pattern 149/ }) as HTMLElement;
+      expect(Number.parseInt(selected.style.top, 10) + 52).toBeLessThanOrEqual(list.scrollTop + 260);
+      expect(list.scrollTop).toBe(149 * 52 + 52 - 260);
     });
   });
 

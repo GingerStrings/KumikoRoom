@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { StudioAnalysis, StudioNoteSummary, StudioPatternSummary } from "../../api/studioTypes";
 import studioCss from "./Studio.module.css";
@@ -106,12 +106,32 @@ function PatternList({
   const [activePatternId, setActivePatternId] = useState<string | null>(
     selectedIndex >= 0 ? patterns[selectedIndex].id : patterns[0]?.id ?? null
   );
+  const [viewportHeight, setViewportHeight] = useState(LIST_HEIGHT);
   const activeIndex = Math.max(0, patterns.findIndex((pattern) => pattern.id === activePatternId));
   const start = virtualized ? Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN) : 0;
   const end = virtualized
-    ? Math.min(patterns.length, Math.ceil((scrollTop + LIST_HEIGHT) / ROW_HEIGHT) + OVERSCAN)
+    ? Math.min(patterns.length, Math.ceil((scrollTop + viewportHeight) / ROW_HEIGHT) + OVERSCAN)
     : patterns.length;
   const visible = patterns.slice(start, end);
+
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const measure = () => {
+      const measured = list.clientHeight;
+      if (Number.isFinite(measured) && measured > 0) {
+        setViewportHeight((current) => current === measured ? current : measured);
+      }
+    };
+    measure();
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(measure);
+      observer.observe(list);
+      return () => observer.disconnect();
+    }
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [listRef]);
 
   function optionId(patternId: string): string {
     return `${listId}-pattern-${encodeURIComponent(patternId)}`;
@@ -124,7 +144,7 @@ function PatternList({
     const rowBottom = rowTop + ROW_HEIGHT;
     let nextScrollTop = list.scrollTop;
     if (rowTop < list.scrollTop) nextScrollTop = rowTop;
-    else if (rowBottom > list.scrollTop + LIST_HEIGHT) nextScrollTop = rowBottom - LIST_HEIGHT;
+    else if (rowBottom > list.scrollTop + viewportHeight) nextScrollTop = rowBottom - viewportHeight;
     if (nextScrollTop !== list.scrollTop) {
       list.scrollTop = nextScrollTop;
       onScroll(nextScrollTop);
@@ -141,7 +161,7 @@ function PatternList({
       return;
     }
     ensureIndexVisible(nextIndex);
-  }, [patterns, selectedPatternId]);
+  }, [patterns, selectedPatternId, viewportHeight]);
 
   function selectIndex(index: number) {
     const next = patterns[Math.max(0, Math.min(patterns.length - 1, index))];
@@ -154,7 +174,7 @@ function PatternList({
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (patterns.length === 0) return;
-    const page = Math.max(1, Math.floor(LIST_HEIGHT / ROW_HEIGHT));
+    const page = Math.max(1, Math.floor(viewportHeight / ROW_HEIGHT));
     let nextIndex: number;
     if (event.key === "ArrowDown") nextIndex = activeIndex + 1;
     else if (event.key === "ArrowUp") nextIndex = activeIndex - 1;
