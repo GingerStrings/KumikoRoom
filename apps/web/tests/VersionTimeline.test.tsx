@@ -154,4 +154,39 @@ describe("VersionTimeline", () => {
       expect.objectContaining({ cursor: "page-2", signal: expect.any(AbortSignal) })
     );
   });
+
+  it("keeps loaded versions visible and retries an inline load-more failure", async () => {
+    vi.mocked(studioApi.getStudioVersions)
+      .mockResolvedValueOnce({ items: [versions[0]], nextCursor: "page-2" })
+      .mockRejectedValueOnce(new Error("更多版本读取失败"))
+      .mockResolvedValueOnce({ items: [versions[2]], nextCursor: null });
+    render(<VersionTimeline projectId="project-1" />);
+    await screen.findByText("当前工程");
+
+    fireEvent.click(screen.getByRole("button", { name: "加载更多版本" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("更多版本读取失败");
+    expect(screen.getByText("当前工程")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "重试加载更多" }));
+
+    expect(await screen.findByText("待确认候选")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText("更多版本读取失败")).toBeNull());
+    expect(studioApi.getStudioVersions).toHaveBeenCalledTimes(3);
+  });
+
+  it("deduplicates a confirmed candidate by association identity across pages", async () => {
+    vi.mocked(studioApi.getStudioVersions)
+      .mockResolvedValueOnce({ items: [versions[0], versions[2]], nextCursor: "page-2" })
+      .mockResolvedValueOnce({ items: [versions[2], versions[1]], nextCursor: null });
+    render(<VersionTimeline projectId="project-1" />);
+    await screen.findByText("待确认候选");
+
+    fireEvent.click(screen.getByRole("button", { name: "确认 Untitled.flp 属于此工程" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "确认 Untitled.flp 属于此工程" })).toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: "加载更多版本" }));
+
+    await screen.findByText("Blue Hour backup.flp");
+    expect(screen.queryByRole("button", { name: "确认 Untitled.flp 属于此工程" })).toBeNull();
+  });
 });

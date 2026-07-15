@@ -83,7 +83,7 @@ type AnalysisApi = {
 type VersionApi = {
   snapshot_id: string; source_path: string; source_hash: string; analyzed_at: string;
   kind: StudioVersion["kind"]; association_id: string | null; score: number | null;
-  confirmed: boolean; title: string | null; tempo: number | null; pattern_count: number;
+  confirmed: boolean; title: string | null; tempo: number | null; pattern_count: number | null;
 };
 type VersionPageApi = { items: VersionApi[]; next_cursor: string | null };
 type AssociationApi = {

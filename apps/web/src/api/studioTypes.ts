@@ -176,7 +176,7 @@ export interface StudioVersion {
   confirmed: boolean;
   title: string | null;
   tempo: number | null;
-  patternCount: number;
+  patternCount: number | null;
 }
 
 export interface StudioVersionPage {

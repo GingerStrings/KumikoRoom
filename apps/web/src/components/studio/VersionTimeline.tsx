@@ -37,6 +37,7 @@ export function VersionTimeline({ projectId }: VersionTimelineProps) {
   const [toId, setToId] = useState("");
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [loadMoreError, setLoadMoreError] = useState<string | null>(null);
   const [diffState, setDiffState] = useState<DiffState>({ phase: "idle" });
   const confirmationController = useRef<AbortController | null>(null);
   const loadMoreController = useRef<AbortController | null>(null);
@@ -72,6 +73,7 @@ export function VersionTimeline({ projectId }: VersionTimelineProps) {
     loadMoreController.current = null;
     setConfirmingId(null);
     setLoadingMore(false);
+    setLoadMoreError(null);
     return () => {
       confirmationController.current?.abort();
       loadMoreController.current?.abort();
@@ -150,6 +152,7 @@ export function VersionTimeline({ projectId }: VersionTimelineProps) {
     const requestedCursor = state.nextCursor;
     loadMoreController.current = controller;
     setLoadingMore(true);
+    setLoadMoreError(null);
     try {
       const page = await getStudioVersions(projectId, {
         cursor: requestedCursor,
@@ -158,16 +161,25 @@ export function VersionTimeline({ projectId }: VersionTimelineProps) {
       if (controller.signal.aborted || projectIdentity.current !== requestedProjectId) return;
       setState((current) => {
         if (current.phase !== "ready" || current.nextCursor !== requestedCursor) return current;
-        const known = new Set(current.versions.map((item) => `${item.kind}:${item.snapshotId}`));
+        const known = new Set(current.versions.map(versionIdentity));
+        const newVersions = page.items.filter((item) => {
+          const identity = versionIdentity(item);
+          if (known.has(identity)) return false;
+          known.add(identity);
+          return true;
+        });
         return {
           phase: "ready",
           versions: [
             ...current.versions,
-            ...page.items.filter((item) => !known.has(`${item.kind}:${item.snapshotId}`))
+            ...newVersions
           ],
           nextCursor: page.nextCursor
         };
       });
+    } catch (cause) {
+      if (controller.signal.aborted || projectIdentity.current !== requestedProjectId) return;
+      setLoadMoreError(errorMessage(cause));
     } finally {
       if (loadMoreController.current === controller) {
         loadMoreController.current = null;
@@ -230,12 +242,13 @@ export function VersionTimeline({ projectId }: VersionTimelineProps) {
           ))}
           {state.nextCursor && (
             <li className={studioCss.versionMore}>
+              {loadMoreError && <p role="alert">{loadMoreError}</p>}
               <button
                 type="button"
                 disabled={loadingMore}
                 onClick={() => void loadMoreVersions()}
               >
-                {loadingMore ? "正在加载…" : "加载更多版本"}
+                {loadingMore ? "正在加载…" : loadMoreError ? "重试加载更多" : "加载更多版本"}
               </button>
             </li>
           )}
@@ -293,9 +306,18 @@ function kindLabel(kind: StudioVersion["kind"]): string {
 }
 
 function formatVersionSummary(version: StudioVersion): string {
-  const values = [version.tempo === null ? null : `${version.tempo} BPM`, `${version.patternCount} Patterns`];
+  const values = [
+    version.tempo === null ? null : `${version.tempo} BPM`,
+    version.patternCount === null ? "Patterns 未知" : `${version.patternCount} Patterns`
+  ];
   if (version.score !== null) values.push(`可信度 ${Math.round(version.score * 100)}%`);
   return values.filter(Boolean).join(" · ");
+}
+
+function versionIdentity(version: StudioVersion): string {
+  return version.associationId
+    ? `association:${version.associationId}`
+    : `snapshot:${version.snapshotId}`;
 }
 
 function formatDate(value: string): string {

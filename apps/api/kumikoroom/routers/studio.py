@@ -114,7 +114,7 @@ class VersionOut(StudioModel):
     confirmed: bool
     title: str | None = None
     tempo: float | None = None
-    pattern_count: int = 0
+    pattern_count: int | None = None
 
 
 class VersionPageOut(StudioModel):

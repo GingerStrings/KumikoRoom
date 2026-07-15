@@ -376,7 +376,8 @@ def test_service_associates_backup_snapshots_idempotently(tmp_path: Path) -> Non
 
 
 def test_versions_api_hides_corrupt_payload_and_caps_history(tmp_path: Path) -> None:
-    repository = StudioRepository(tmp_path / "studio.sqlite3")
+    db_path = tmp_path / "studio.sqlite3"
+    repository = StudioRepository(db_path)
     path = tmp_path / "Blue Hour.flp"
     project = repository.upsert_project(path, display_name="Blue Hour")
     records = [
@@ -385,10 +386,22 @@ def test_versions_api_hides_corrupt_payload_and_caps_history(tmp_path: Path) -> 
     ]
     with repository._connect() as connection:
         connection.execute(
-            "UPDATE studio_snapshots SET payload_json = ? WHERE id = ?",
+            """
+            UPDATE studio_snapshots
+            SET payload_json = ?, summary_json = NULL
+            WHERE id = ?
+            """,
             ("{private-corrupt-payload", records[-1].id),
         )
-    app.dependency_overrides[studio.studio_repository] = lambda: repository
+        connection.execute("ALTER TABLE studio_snapshots DROP COLUMN summary_json")
+    migrated = StudioRepository(db_path)
+    with migrated._connect() as connection:
+        corrupt_summary = connection.execute(
+            "SELECT summary_json FROM studio_snapshots WHERE id = ?",
+            (records[-1].id,),
+        ).fetchone()[0]
+    assert '"state":"corrupt"' in corrupt_summary
+    app.dependency_overrides[studio.studio_repository] = lambda: migrated
     try:
         with TestClient(app, raise_server_exceptions=False) as client:
             response = client.get(f"/api/studio/projects/{project.id}/versions?limit=10")
@@ -398,6 +411,8 @@ def test_versions_api_hides_corrupt_payload_and_caps_history(tmp_path: Path) -> 
             )
         assert response.status_code == 200
         assert len(response.json()["items"]) == 10
+        current = next(item for item in response.json()["items"] if item["kind"] == "current")
+        assert current["pattern_count"] is None
         assert "private-corrupt-payload" not in response.text
         assert compared.status_code == 409
         assert "private-corrupt-payload" not in compared.text
@@ -495,6 +510,11 @@ def test_version_cursor_is_stable_when_newer_backups_arrive_between_pages(
         initial_ids.add(record.id)
 
     first = repository.list_project_versions_page(main.id, limit=10)
+    new_current = repository.save_snapshot(
+        main.id,
+        snapshot(main_path, "new-current"),
+        analyzed_at="2031-01-01T00:00:00Z",
+    )
     late_path = tmp_path / "Backups" / "Concurrent newest.flp"
     late_project = repository.upsert_project(late_path, display_name=late_path.stem)
     late = repository.save_snapshot(
@@ -507,15 +527,20 @@ def test_version_cursor_is_stable_when_newer_backups_arrive_between_pages(
     )
 
     seen = [item.snapshot_id for item in first.items]
+    seen_versions = list(first.items)
     cursor = first.next_cursor
     while cursor is not None:
         page = repository.list_project_versions_page(main.id, limit=10, cursor=cursor)
         seen.extend(item.snapshot_id for item in page.items)
+        seen_versions.extend(page.items)
         cursor = page.next_cursor
 
     assert set(seen) == initial_ids
     assert len(seen) == len(initial_ids)
     assert late.id not in seen
+    assert new_current.id not in seen
+    current_versions = [item for item in seen_versions if item.kind == "current"]
+    assert [item.snapshot_id for item in current_versions] == [current.id]
 
 
 def test_snapshot_summary_migration_is_bounded_and_version_query_avoids_payloads(
@@ -527,6 +552,13 @@ def test_snapshot_summary_migration_is_bounded_and_version_query_avoids_payloads
     project = repository.upsert_project(path, display_name="Legacy")
     for index in range(105):
         repository.save_snapshot(project.id, snapshot(path, f"legacy-{index}"))
+    other_path = tmp_path / "Very Old.flp"
+    other = repository.upsert_project(other_path, display_name="Very Old")
+    repository.save_snapshot(
+        other.id,
+        snapshot(other_path, "very-old"),
+        analyzed_at="2000-01-01T00:00:00Z",
+    )
 
     with repository._connect() as connection:
         connection.execute("ALTER TABLE studio_snapshots DROP COLUMN summary_json")
@@ -541,17 +573,26 @@ def test_snapshot_summary_migration_is_bounded_and_version_query_avoids_payloads
         ).fetchone()[0]
     assert "summary_json" in columns
     assert backfilled == 100
+    reopened = StudioRepository(db_path)
+    with reopened._connect() as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM studio_snapshots WHERE summary_json IS NOT NULL"
+        ).fetchone()[0] == 100
+    unknown = reopened.list_project_versions_page(other.id, limit=10).items
+    assert len(unknown) == 1
+    assert unknown[0].pattern_count is None
+    assert unknown[0].tempo is None
 
     statements: list[str] = []
     connection = migrated._connect()
     connection.set_trace_callback(statements.append)
     try:
+        view = migrated._capture_version_view(connection, project.id)
         migrated._select_project_versions_page(
             connection,
-            project.id,
-            latest_snapshot_id=migrated.get_project(project.id).latest_snapshot_id,
+            view,
             limit=10,
-            cursor=None,
+            after=None,
         )
     finally:
         connection.close()

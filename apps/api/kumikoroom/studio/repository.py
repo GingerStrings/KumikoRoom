@@ -84,7 +84,7 @@ class StudioVersionRecord:
     analyzed_at: str
     title: str | None
     tempo: float | None
-    pattern_count: int
+    pattern_count: int | None
     kind: Literal["current", "history", "backup", "candidate"]
     association_id: str | None = None
     score: float | None = None
@@ -95,6 +95,20 @@ class StudioVersionRecord:
 class StudioVersionPage:
     items: list[StudioVersionRecord]
     next_cursor: str | None
+
+
+@dataclass(frozen=True)
+class _VersionView:
+    project_id: str
+    latest_snapshot_id: str | None
+    snapshot_rowid: int
+    association_rowid: int
+
+
+@dataclass(frozen=True)
+class _VersionCursor:
+    view: _VersionView
+    after: tuple[int, str, str]
 
 
 @dataclass(frozen=True)
@@ -535,41 +549,66 @@ class StudioRepository:
         decoded_cursor = _decode_version_cursor(cursor)
         connection = self._connect()
         try:
-            project = connection.execute(
-                "SELECT latest_snapshot_id FROM studio_projects WHERE id = ?",
-                (project_id,),
-            ).fetchone()
-            if project is None:
-                raise KeyError(project_id)
+            connection.execute("BEGIN")
+            if decoded_cursor is None:
+                view = self._capture_version_view(connection, project_id)
+                after = None
+            else:
+                if decoded_cursor.view.project_id != project_id:
+                    raise ValueError("version cursor belongs to another project")
+                if connection.execute(
+                    "SELECT id FROM studio_projects WHERE id = ?",
+                    (project_id,),
+                ).fetchone() is None:
+                    raise KeyError(project_id)
+                view = decoded_cursor.view
+                after = decoded_cursor.after
             return self._select_project_versions_page(
                 connection,
-                project_id,
-                project["latest_snapshot_id"],
+                view,
                 limit,
-                decoded_cursor,
+                after,
             )
         finally:
             connection.close()
 
+    @staticmethod
+    def _capture_version_view(
+        connection: sqlite3.Connection,
+        project_id: str,
+    ) -> _VersionView:
+        project = connection.execute(
+            "SELECT latest_snapshot_id FROM studio_projects WHERE id = ?",
+            (project_id,),
+        ).fetchone()
+        if project is None:
+            raise KeyError(project_id)
+        snapshot_rowid = connection.execute(
+            "SELECT COALESCE(MAX(rowid), 0) FROM studio_snapshots"
+        ).fetchone()[0]
+        association_rowid = connection.execute(
+            "SELECT COALESCE(MAX(rowid), 0) FROM studio_backup_associations"
+        ).fetchone()[0]
+        return _VersionView(
+            project_id=project_id,
+            latest_snapshot_id=project["latest_snapshot_id"],
+            snapshot_rowid=int(snapshot_rowid),
+            association_rowid=int(association_rowid),
+        )
+
     def _select_project_versions_page(
         self,
         connection: sqlite3.Connection,
-        project_id: str,
-        latest_snapshot_id: str | None,
+        view: _VersionView,
         limit: int,
-        cursor: tuple[int, str, str] | str | None,
+        after: tuple[int, str, str] | None,
     ) -> StudioVersionPage:
         _validate_page_limit(limit)
-        decoded_cursor = (
-            _decode_version_cursor(cursor)
-            if isinstance(cursor, str) or cursor is None
-            else cursor
-        )
-        if decoded_cursor is None:
+        if after is None:
             cursor_priority, cursor_time, cursor_id = -1, "", ""
             has_cursor = 0
         else:
-            cursor_priority, cursor_time, cursor_id = decoded_cursor
+            cursor_priority, cursor_time, cursor_id = after
             has_cursor = 1
         rows = connection.execute(
             """
@@ -581,7 +620,7 @@ class StudioRepository:
                        CASE WHEN snapshots.id = ? THEN 'current' ELSE 'history' END AS kind,
                        CASE WHEN snapshots.id = ? THEN 0 ELSE 2 END AS sort_priority
                 FROM studio_snapshots AS snapshots
-                WHERE snapshots.project_id = ?
+                WHERE snapshots.project_id = ? AND snapshots.rowid <= ?
                 UNION ALL
                 SELECT snapshots.id, snapshots.project_id,
                        snapshots.source_path, snapshots.source_hash,
@@ -593,6 +632,8 @@ class StudioRepository:
                 FROM studio_backup_associations AS associations
                 JOIN studio_snapshots AS snapshots ON snapshots.id = associations.snapshot_id
                 WHERE associations.project_id = ?
+                  AND associations.rowid <= ?
+                  AND snapshots.rowid <= ?
             )
             SELECT id, project_id, source_path, source_hash, analyzed_at,
                    summary_json, association_id, score, confirmed, kind,
@@ -610,10 +651,13 @@ class StudioRepository:
             LIMIT ?
             """,
             (
-                latest_snapshot_id,
-                latest_snapshot_id,
-                project_id,
-                project_id,
+                view.latest_snapshot_id,
+                view.latest_snapshot_id,
+                view.project_id,
+                view.snapshot_rowid,
+                view.project_id,
+                view.association_rowid,
+                view.snapshot_rowid,
                 has_cursor,
                 cursor_priority,
                 cursor_priority,
@@ -629,9 +673,14 @@ class StudioRepository:
         if len(rows) > limit and page_rows:
             last = page_rows[-1]
             next_cursor = _encode_version_cursor(
-                int(last["sort_priority"]),
-                last["analyzed_at"],
-                last["id"],
+                _VersionCursor(
+                    view=view,
+                    after=(
+                        int(last["sort_priority"]),
+                        last["analyzed_at"],
+                        last["id"],
+                    ),
+                )
             )
         return StudioVersionPage(items=items, next_cursor=next_cursor)
 
@@ -1068,7 +1117,7 @@ class StudioRepository:
                     connection.execute(
                         "ALTER TABLE studio_snapshots ADD COLUMN summary_json TEXT NULL"
                     )
-                self._backfill_snapshot_summaries(connection)
+                    self._backfill_snapshot_summaries(connection)
         finally:
             connection.close()
 
@@ -1259,13 +1308,15 @@ def _snapshot_summary_json(snapshot: FlpAnalysisSnapshot) -> str:
 
 def _empty_snapshot_summary_json() -> str:
     return json.dumps(
-        {"title": None, "tempo": None, "pattern_count": 0},
+        {"state": "corrupt"},
         separators=(",", ":"),
         sort_keys=True,
     )
 
 
-def _parse_snapshot_summary(value: object) -> tuple[str | None, float | None, int]:
+def _parse_snapshot_summary(
+    value: object,
+) -> tuple[str | None, float | None, int | None]:
     try:
         payload = json.loads(value) if isinstance(value, str) else {}
     except (TypeError, ValueError):
@@ -1281,25 +1332,33 @@ def _parse_snapshot_summary(value: object) -> tuple[str | None, float | None, in
         else None
     )
     pattern_value = payload.get("pattern_count")
-    pattern_count = (
+    pattern_count: int | None = (
         pattern_value
         if isinstance(pattern_value, int)
         and not isinstance(pattern_value, bool)
         and pattern_value >= 0
-        else 0
+        else None
     )
     return title, tempo, pattern_count
 
 
-def _encode_version_cursor(priority: int, analyzed_at: str, snapshot_id: str) -> str:
+def _encode_version_cursor(cursor: _VersionCursor) -> str:
     raw = json.dumps(
-        [priority, analyzed_at, snapshot_id],
+        {
+            "v": 1,
+            "project": cursor.view.project_id,
+            "latest": cursor.view.latest_snapshot_id,
+            "snapshot_rowid": cursor.view.snapshot_rowid,
+            "association_rowid": cursor.view.association_rowid,
+            "after": list(cursor.after),
+        },
         separators=(",", ":"),
+        sort_keys=True,
     ).encode("utf-8")
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
-def _decode_version_cursor(value: str | None) -> tuple[int, str, str] | None:
+def _decode_version_cursor(value: str | None) -> _VersionCursor | None:
     if value is None:
         return None
     if not isinstance(value, str) or not value:
@@ -1309,20 +1368,47 @@ def _decode_version_cursor(value: str | None) -> tuple[int, str, str] | None:
         payload = json.loads(base64.b64decode(padded, altchars=b"-_", validate=True))
     except (ValueError, TypeError, json.JSONDecodeError) as exc:
         raise ValueError("invalid version cursor") from exc
+    if not isinstance(payload, dict) or payload.get("v") != 1:
+        raise ValueError("invalid version cursor")
+    project_id = payload.get("project")
+    latest_snapshot_id = payload.get("latest")
+    snapshot_rowid = payload.get("snapshot_rowid")
+    association_rowid = payload.get("association_rowid")
+    after = payload.get("after")
+    if not isinstance(project_id, str) or not project_id:
+        raise ValueError("invalid version cursor")
+    if latest_snapshot_id is not None and (
+        not isinstance(latest_snapshot_id, str) or not latest_snapshot_id
+    ):
+        raise ValueError("invalid version cursor")
     if (
-        not isinstance(payload, list)
-        or len(payload) != 3
-        or isinstance(payload[0], bool)
-        or not isinstance(payload[0], int)
-        or payload[0] not in {0, 1, 2}
-        or not isinstance(payload[1], str)
-        or not payload[1]
-        or not isinstance(payload[2], str)
-        or not payload[2]
+        isinstance(snapshot_rowid, bool)
+        or not isinstance(snapshot_rowid, int)
+        or snapshot_rowid < 0
+        or isinstance(association_rowid, bool)
+        or not isinstance(association_rowid, int)
+        or association_rowid < 0
+        or not isinstance(after, list)
+        or len(after) != 3
+        or isinstance(after[0], bool)
+        or not isinstance(after[0], int)
+        or after[0] not in {0, 1, 2}
+        or not isinstance(after[1], str)
+        or not after[1]
+        or not isinstance(after[2], str)
+        or not after[2]
     ):
         raise ValueError("invalid version cursor")
     try:
-        _normalize_utc_iso(payload[1])
+        _normalize_utc_iso(after[1])
     except ValueError as exc:
         raise ValueError("invalid version cursor") from exc
-    return payload[0], payload[1], payload[2]
+    return _VersionCursor(
+        view=_VersionView(
+            project_id=project_id,
+            latest_snapshot_id=latest_snapshot_id,
+            snapshot_rowid=snapshot_rowid,
+            association_rowid=association_rowid,
+        ),
+        after=(after[0], after[1], after[2]),
+    )
