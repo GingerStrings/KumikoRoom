@@ -868,12 +868,57 @@ button.timelineClip:hover { border-color: #4d7e88; background: #c8e0e2; }
 .diagnosticTargetGroup li button { min-width: 72px; min-height: 31px; border: 1px solid #bfd0cc; background: #f5faf7; color: #426a71; font-size: 10px; font-weight: 850; }
 .diagnosticTargetGroup li button:disabled { border-color: #d7ddd9; background: #f4f4f0; color: #9a9f99; }
 
-.pluginKindFilters button:focus-visible, .signalRows button:focus-visible, .locationButton:focus-visible, .effectChains button:focus-visible, .automationSection button:focus-visible, .diagnosticTargetGroup button:focus-visible { outline: 2px solid #2f7eba; outline-offset: 2px; }
+.versionArchive { min-height: 100%; padding: clamp(14px, 2vw, 24px); background: repeating-linear-gradient(0deg, transparent 0 39px, rgba(143, 172, 138, .07) 39px 40px), #f8faf6; color: #385356; container-type: inline-size; }
+.versionHeader { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; padding: 0 0 18px; border-bottom: 1px solid #cbdad5; }
+.versionHeader p { margin: 0; color: #667b7b; font-size: 10px; font-weight: 850; letter-spacing: .12em; }
+.versionHeader h2 { margin: 5px 0 0; color: #304b4e; font-family: var(--font-serif); font-size: clamp(22px, 3vw, 34px); font-weight: 550; }
+.readOnlyNote { max-width: 260px; padding-bottom: 4px; text-align: right; text-wrap: pretty; }
+.versionLayout { min-width: 0; display: grid; grid-template-columns: minmax(230px, .36fr) minmax(0, .64fr); gap: clamp(18px, 3vw, 34px); padding-top: 22px; }
+.versionRail { position: relative; margin: 0; padding: 0 0 0 22px; list-style: none; }
+.versionRail::before { content: ""; position: absolute; top: 8px; bottom: 10px; left: 6px; width: 1px; background: #a9c0bb; }
+.versionRail > li { position: relative; padding: 0 0 14px; }
+.versionDot { position: absolute; top: 8px; left: -21px; width: 11px; height: 11px; border: 2px solid #f8faf6; border-radius: 50%; background: #6e9893; box-shadow: 0 0 0 1px #6e9893; }
+.versionRail > li[data-kind="current"] .versionDot { background: #2f7eba; box-shadow: 0 0 0 1px #2f7eba; }
+.versionRail > li[data-kind="candidate"] .versionDot { background: #c09b69; box-shadow: 0 0 0 1px #c09b69; }
+.versionCard { padding: 0 0 13px 13px; border-bottom: 1px solid #dce6e1; }
+.versionCard > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.versionCard strong { color: #3f6567; font-size: 10px; font-weight: 900; letter-spacing: .06em; }
+.versionCard time, .versionCard small { color: #6d7f7e; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; }
+.versionCard h3 { margin: 7px 0 3px; color: #314d50; font-family: var(--font-serif); font-size: 16px; font-weight: 600; }
+.versionCard p { margin: 0 0 5px; color: #5d7273; font-size: 10px; line-height: 1.5; }
+.versionCard small { max-width: 100%; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.versionCard button, .versionState button { min-height: 34px; margin-top: 9px; border: 1px solid #b8ccc6; padding: 0 11px; background: #f5faf6; color: #416b6d; font-size: 10px; font-weight: 850; }
+.versionCard button:hover { background: #e4f0eb; }
+.versionCard button:disabled { color: #8b9691; cursor: wait; }
+.diffDesk { min-width: 0; align-self: start; border: 1px solid #cad9d4; background: rgba(255, 254, 250, .94); box-shadow: 0 16px 36px rgba(46, 77, 72, .07); }
+.diffHeading { display: grid; grid-template-columns: auto minmax(280px, 1fr); gap: 18px; align-items: end; padding: 14px 16px; border-bottom: 1px solid #d7e2dd; }
+.diffHeading span { color: #758684; font-size: 9px; font-weight: 900; letter-spacing: .12em; }
+.diffHeading h3 { margin: 3px 0 0; color: #304d50; font-family: var(--font-serif); font-size: 20px; font-weight: 550; }
+.diffSelectors { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 8px; align-items: end; }
+.diffSelectors label { min-width: 0; display: grid; gap: 4px; color: #657978; font-size: 9px; font-weight: 850; }
+.diffSelectors select { width: 100%; min-height: 36px; border: 1px solid #cbd9d4; border-radius: 0; padding: 0 8px; background: #fffefa; color: #365255; font-size: 10px; }
+.diffSelectors > span { padding-bottom: 9px; }
+.diffResults { padding: 14px 16px 18px; }
+.diffSummary { margin: 0 0 12px; color: #2f6870; font-family: var(--font-serif); font-size: 17px; font-weight: 600; }
+.diffResults > ul, .diffResults section ul { margin: 0; padding: 0; list-style: none; }
+.diffResults li { padding: 7px 0; border-bottom: 1px solid #e5ece8; color: #4e6667; font-size: 10px; line-height: 1.45; text-wrap: pretty; }
+.diffResults section h4 { margin: 15px 0 2px; color: #365d61; font-size: 10px; font-weight: 900; letter-spacing: .07em; }
+.diffEmpty, .diffError { margin: 0; padding: 36px 16px; color: #657978; font-size: 11px; text-align: center; text-wrap: pretty; }
+.diffError { color: #80553f; }
+.versionState { min-height: 280px; display: grid; place-content: center; justify-items: center; gap: 8px; padding: 28px; color: #607577; font-size: 12px; text-align: center; }
+.versionState p { margin: 0; }
+.versionState strong { color: #3e595c; font-family: var(--font-serif); font-size: 18px; }
+
+.pluginKindFilters button:focus-visible, .signalRows button:focus-visible, .locationButton:focus-visible, .effectChains button:focus-visible, .automationSection button:focus-visible, .diagnosticTargetGroup button:focus-visible, .versionCard button:focus-visible, .versionState button:focus-visible, .diffSelectors select:focus-visible { outline: 2px solid #2f7eba; outline-offset: 2px; }
 
 @media (max-width: 900px) {
   .signalGrid { grid-template-columns: 1fr; }
   .dependencyColumns { grid-template-columns: 1fr 1fr; }
   .dependencyGroup[data-tone="unknown"] { grid-column: 1 / -1; }
+  .versionLayout { grid-template-columns: 1fr; }
+  .versionRail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; }
+  .versionRail::before { display: none; }
+  .versionDot { left: -6px; }
 }
 
 @media (max-width: 660px) {
@@ -885,8 +930,13 @@ button.timelineClip:hover { border-color: #4d7e88; background: #c8e0e2; }
   .dependencyGroup[data-tone="unknown"] { grid-column: auto; }
   .automationSection > ul > li { grid-template-columns: 1fr; gap: 6px; }
   .routeFigure figcaption { align-items: flex-start; flex-direction: column; }
+  .versionHeader, .diffHeading { align-items: flex-start; grid-template-columns: 1fr; flex-direction: column; }
+  .readOnlyNote { text-align: left; }
+  .versionRail { grid-template-columns: 1fr; }
+  .diffSelectors { grid-template-columns: 1fr; }
+  .diffSelectors > span { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .pluginKindFilters button, .signalRows button, .locationButton, .effectChains button, .automationSection button, .diagnosticTargetGroup button { transition: none; }
+  .pluginKindFilters button, .signalRows button, .locationButton, .effectChains button, .automationSection button, .diagnosticTargetGroup button, .versionCard button { transition: none; }
 }

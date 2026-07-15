@@ -2,9 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   addStudioRoot,
   getStudioAnalysis,
+  confirmStudioVersion,
+  getStudioDiff,
   getStudioProject,
   getStudioProjects,
   getStudioRoots,
+  getStudioVersions,
   removeStudioRoot,
   startStudioScan
 } from "../src/api/studioClient";
@@ -24,6 +27,20 @@ function response(body: unknown, status = 200) {
 }
 
 describe("Studio API client", () => {
+  it("maps versions and semantic diffs and sends confirmation", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response([{ snapshot_id: "s1", source_path: "D:/Song.flp", source_hash: "h1", analyzed_at: "2026-07-14T10:00:00Z", kind: "current", association_id: null, score: null, confirmed: true, title: "Song", tempo: 128, pattern_count: 4 }]))
+      .mockResolvedValueOnce(response({ id: "a1", project_id: "p1", candidate_project_id: "p2", snapshot_id: "s2", score: 0.7, confirmed: true, created_at: "2026-07-14T09:00:00Z", updated_at: "2026-07-14T10:00:00Z" }))
+      .mockResolvedValueOnce(response({ from_snapshot_id: "s2", to_snapshot_id: "s1", summary: { change_count: 0 }, project_metrics: { added: [], removed: [], changed: [] }, patterns: { added: [], removed: [], changed: [] }, notes: { added: [], removed: [], changed: [] }, channels: { added: [], removed: [], changed: [] }, plugins: { added: [], removed: [], changed: [] }, playlist_clips: { added: [], removed: [], changed: [] }, mixer_inserts: { added: [], removed: [], changed: [] }, dependencies: { added: [], removed: [], changed: [] } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getStudioVersions("p/1")).resolves.toMatchObject([{ snapshotId: "s1", patternCount: 4 }]);
+    await expect(confirmStudioVersion("p/1", "a/1")).resolves.toMatchObject({ id: "a1", confirmed: true });
+    await expect(getStudioDiff("p/1", "s/2", "s/1")).resolves.toMatchObject({ fromSnapshotId: "s2", summary: { changeCount: 0 } });
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/studio/projects/p%2F1/versions", expect.any(Object));
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/studio/projects/p%2F1/versions/confirm", expect.objectContaining({ method: "POST", body: JSON.stringify({ candidate_id: "a/1" }) }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/studio/projects/p%2F1/diff?from=s%2F2&to=s%2F1", expect.any(Object));
+  });
   it("maps roots and project summaries to camel case", async () => {
     const fetchMock = vi
       .fn()

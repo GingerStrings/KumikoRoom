@@ -1,9 +1,9 @@
 import os
 from pathlib import Path
 from threading import RLock
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict
 
 from kumikoroom.config import load_settings
@@ -23,6 +23,7 @@ from kumikoroom.studio.models import (
     ProjectInfo,
 )
 from kumikoroom.studio.parsers import PyFlpParser
+from kumikoroom.studio.diff import diff_snapshots
 from kumikoroom.studio.repository import (
     ScanJobStatus,
     StudioProject,
@@ -100,6 +101,35 @@ class AnalysisOut(StudioModel):
     fingerprint: MusicalFingerprint
     diagnostics: list[AnalysisDiagnostic]
     unknown_event_count: int
+
+
+class VersionOut(StudioModel):
+    snapshot_id: str
+    source_path: str
+    source_hash: str
+    analyzed_at: str
+    kind: Literal["current", "history", "backup", "candidate"]
+    association_id: str | None = None
+    score: float | None = None
+    confirmed: bool
+    title: str | None = None
+    tempo: float | None = None
+    pattern_count: int = 0
+
+
+class ConfirmVersionIn(BaseModel):
+    candidate_id: str
+
+
+class ConfirmVersionOut(StudioModel):
+    id: str
+    project_id: str
+    candidate_project_id: str
+    snapshot_id: str
+    score: float
+    confirmed: bool
+    created_at: str
+    updated_at: str
 
 
 def studio_repository() -> StudioRepository:
@@ -225,6 +255,7 @@ def list_projects(
     return [
         _project_out(project, record)
         for project, record in repository.list_projects_with_latest_snapshots()
+        if not _is_backup_candidate_path(project.canonical_path)
     ]
 
 
@@ -267,6 +298,99 @@ def get_project_analysis(
             status_code=409,
             detail="Stored analysis is invalid; rescan the project.",
         ) from None
+
+
+@router.get("/projects/{project_id}/versions", response_model=list[VersionOut])
+def list_project_versions(
+    project_id: str,
+    repository: StudioRepositoryDependency,
+    limit: int = Query(default=100, ge=1, le=200),
+) -> list[VersionOut]:
+    try:
+        versions = repository.list_project_versions(project_id, limit=limit)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Studio project not found") from None
+    output: list[VersionOut] = []
+    for version in versions:
+        try:
+            snapshot = version.snapshot.snapshot
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=409,
+                detail="Stored version analysis is invalid; rescan the project.",
+            ) from None
+        output.append(
+            VersionOut(
+                snapshot_id=version.snapshot.id,
+                source_path=version.snapshot.source_path,
+                source_hash=version.snapshot.source_hash,
+                analyzed_at=version.snapshot.analyzed_at,
+                kind=version.kind,
+                association_id=version.association_id,
+                score=version.score,
+                confirmed=version.confirmed,
+                title=snapshot.project.title,
+                tempo=snapshot.project.tempo,
+                pattern_count=len(snapshot.patterns),
+            )
+        )
+    return output
+
+
+@router.post(
+    "/projects/{project_id}/versions/confirm",
+    response_model=ConfirmVersionOut,
+)
+def confirm_project_version(
+    project_id: str,
+    payload: ConfirmVersionIn,
+    repository: StudioRepositoryDependency,
+) -> ConfirmVersionOut:
+    try:
+        association = repository.confirm_backup_association(
+            project_id, payload.candidate_id
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Backup candidate not found") from None
+    except ValueError:
+        raise HTTPException(
+            status_code=400, detail="Backup candidate does not belong to project"
+        ) from None
+    return ConfirmVersionOut.model_validate(association)
+
+
+@router.get("/projects/{project_id}/diff")
+def get_project_diff(
+    project_id: str,
+    repository: StudioRepositoryDependency,
+    from_snapshot_id: str = Query(alias="from"),
+    to_snapshot_id: str = Query(alias="to"),
+) -> dict[str, object]:
+    try:
+        repository.get_project(project_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Studio project not found") from None
+    try:
+        before_record = repository.get_project_version_snapshot(
+            project_id, from_snapshot_id
+        )
+        after_record = repository.get_project_version_snapshot(
+            project_id, to_snapshot_id
+        )
+    except ValueError:
+        raise HTTPException(
+            status_code=400, detail="Snapshot does not belong to project"
+        ) from None
+    try:
+        result = diff_snapshots(before_record.snapshot, after_record.snapshot)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=409,
+            detail="Stored version analysis is invalid; rescan the project.",
+        ) from None
+    result["from_snapshot_id"] = from_snapshot_id
+    result["to_snapshot_id"] = to_snapshot_id
+    return result
 
 
 def _scan_job_out(job: StudioScanJob) -> ScanJobOut:
@@ -316,3 +440,10 @@ def _snapshot_value(
         return record.snapshot
     except (TypeError, ValueError):
         return None
+
+
+def _is_backup_candidate_path(path: str) -> bool:
+    return any(
+        part.casefold() in {"backup", "backups"}
+        for part in Path(path).parts[:-1]
+    )

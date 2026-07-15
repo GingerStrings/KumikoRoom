@@ -162,3 +162,50 @@ export interface StudioAnalysis {
   diagnostics: StudioAnalysisDiagnostic[];
   unknownEventCount: number;
 }
+
+export type StudioVersionKind = "current" | "history" | "backup" | "candidate";
+
+export interface StudioVersion {
+  snapshotId: string;
+  sourcePath: string;
+  sourceHash: string;
+  analyzedAt: string;
+  kind: StudioVersionKind;
+  associationId: string | null;
+  score: number | null;
+  confirmed: boolean;
+  title: string | null;
+  tempo: number | null;
+  patternCount: number;
+}
+
+export interface StudioBackupAssociation {
+  id: string;
+  projectId: string;
+  candidateProjectId: string;
+  snapshotId: string;
+  score: number;
+  confirmed: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface StudioDiffSection {
+  added: Array<Record<string, unknown>>;
+  removed: Array<Record<string, unknown>>;
+  changed: Array<Record<string, unknown>>;
+}
+
+export interface StudioSnapshotDiff {
+  fromSnapshotId: string;
+  toSnapshotId: string;
+  summary: { changeCount: number };
+  projectMetrics: StudioDiffSection;
+  patterns: StudioDiffSection;
+  notes: StudioDiffSection;
+  channels: StudioDiffSection;
+  plugins: StudioDiffSection;
+  playlistClips: StudioDiffSection;
+  mixerInserts: StudioDiffSection;
+  dependencies: StudioDiffSection;
+}

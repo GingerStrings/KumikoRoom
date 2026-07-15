@@ -247,7 +247,7 @@ describe("Project workspace", () => {
     for (const name of ["编曲", "Pattern", "插件与 Mixer", "依赖"]) {
       expect((within(tabs).getByRole("tab", { name }) as HTMLButtonElement).disabled).toBe(false);
     }
-    expect((within(tabs).getByRole("tab", { name: "版本" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(tabs).getByRole("tab", { name: "版本" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("marks partial analysis while keeping available analysis visible", async () => {

@@ -15,7 +15,10 @@ import type {
   StudioProjectInfo,
   StudioProjectSummary,
   StudioRoot,
-  StudioScanJob
+  StudioScanJob,
+  StudioBackupAssociation,
+  StudioSnapshotDiff,
+  StudioVersion
 } from "./studioTypes";
 
 type RootApi = { id: string; path: string; created_at: string };
@@ -76,6 +79,23 @@ type AnalysisApi = {
   unknown_event_count: number;
 };
 
+type VersionApi = {
+  snapshot_id: string; source_path: string; source_hash: string; analyzed_at: string;
+  kind: StudioVersion["kind"]; association_id: string | null; score: number | null;
+  confirmed: boolean; title: string | null; tempo: number | null; pattern_count: number;
+};
+type AssociationApi = {
+  id: string; project_id: string; candidate_project_id: string; snapshot_id: string;
+  score: number; confirmed: boolean; created_at: string; updated_at: string;
+};
+type DiffSectionApi = { added: Array<Record<string, unknown>>; removed: Array<Record<string, unknown>>; changed: Array<Record<string, unknown>> };
+type DiffApi = {
+  from_snapshot_id: string; to_snapshot_id: string; summary: { change_count: number };
+  project_metrics: DiffSectionApi; patterns: DiffSectionApi; notes: DiffSectionApi;
+  channels: DiffSectionApi; plugins: DiffSectionApi; playlist_clips: DiffSectionApi;
+  mixer_inserts: DiffSectionApi; dependencies: DiffSectionApi;
+};
+
 export function getStudioRoots(): Promise<StudioRoot[]> {
   return request<RootApi[]>("/api/studio/roots").then((values) => values.map(mapRoot));
 }
@@ -116,6 +136,40 @@ export function getStudioAnalysis(projectId: string, options: { signal?: AbortSi
   }).then(mapAnalysis);
 }
 
+export function getStudioVersions(projectId: string, options: { signal?: AbortSignal } = {}): Promise<StudioVersion[]> {
+  return request<VersionApi[]>(`/api/studio/projects/${encodeURIComponent(projectId)}/versions`, {
+    signal: options.signal
+  }).then((values) => values.map(mapVersion));
+}
+
+export function confirmStudioVersion(projectId: string, candidateId: string): Promise<StudioBackupAssociation> {
+  return request<AssociationApi>(`/api/studio/projects/${encodeURIComponent(projectId)}/versions/confirm`, {
+    method: "POST",
+    body: JSON.stringify({ candidate_id: candidateId })
+  }).then((value) => ({
+    id: value.id,
+    projectId: value.project_id,
+    candidateProjectId: value.candidate_project_id,
+    snapshotId: value.snapshot_id,
+    score: value.score,
+    confirmed: value.confirmed,
+    createdAt: value.created_at,
+    updatedAt: value.updated_at
+  }));
+}
+
+export function getStudioDiff(
+  projectId: string,
+  fromSnapshotId: string,
+  toSnapshotId: string,
+  options: { signal?: AbortSignal } = {}
+): Promise<StudioSnapshotDiff> {
+  const query = `from=${encodeURIComponent(fromSnapshotId)}&to=${encodeURIComponent(toSnapshotId)}`;
+  return request<DiffApi>(`/api/studio/projects/${encodeURIComponent(projectId)}/diff?${query}`, {
+    signal: options.signal
+  }).then(mapDiff);
+}
+
 function mapRoot(value: RootApi): StudioRoot {
   return { id: value.id, path: value.path, createdAt: value.created_at };
 }
@@ -127,6 +181,38 @@ function mapProject(value: ProjectApi): StudioProjectSummary {
     updatedAt: value.updated_at, tempo: value.tempo, patternCount: value.pattern_count,
     warningCount: value.warning_count, errorCount: value.error_count, diagnosticCount: value.diagnostic_count,
     inferredKey: value.inferred_key
+  };
+}
+
+function mapVersion(value: VersionApi): StudioVersion {
+  return {
+    snapshotId: value.snapshot_id,
+    sourcePath: value.source_path,
+    sourceHash: value.source_hash,
+    analyzedAt: value.analyzed_at,
+    kind: value.kind,
+    associationId: value.association_id,
+    score: value.score,
+    confirmed: value.confirmed,
+    title: value.title,
+    tempo: value.tempo,
+    patternCount: value.pattern_count
+  };
+}
+
+function mapDiff(value: DiffApi): StudioSnapshotDiff {
+  return {
+    fromSnapshotId: value.from_snapshot_id,
+    toSnapshotId: value.to_snapshot_id,
+    summary: { changeCount: value.summary.change_count },
+    projectMetrics: value.project_metrics,
+    patterns: value.patterns,
+    notes: value.notes,
+    channels: value.channels,
+    plugins: value.plugins,
+    playlistClips: value.playlist_clips,
+    mixerInserts: value.mixer_inserts,
+    dependencies: value.dependencies
   };
 }
 

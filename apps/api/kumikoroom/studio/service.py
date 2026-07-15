@@ -7,14 +7,16 @@ from pathlib import Path
 from threading import RLock
 
 from .analyzer import analyze_snapshot
+from .diff import AUTO_CONFIRM_SCORE, score_backup_association
 from .models import AnalysisStatus
 from .parsers.base import FlpParseError, FlpParser
-from .repository import StudioRepository, StudioScanJob
+from .repository import StudioProject, StudioRepository, StudioScanJob
 from .scanner import (
     FileChangedDuringRead,
     FileObservation,
     discover_flp_files,
     discover_project_assets,
+    default_fl_studio_backup_root,
     is_stable,
     observe_file,
     sha256_file,
@@ -112,6 +114,11 @@ class StudioService:
         try:
             self._update_job(job_id, status="running")
             roots = [Path(root.path) for root in self._repository.list_roots()]
+            global_backup_root = default_fl_studio_backup_root()
+            if global_backup_root is not None:
+                global_identity = str(global_backup_root.resolve()).casefold()
+                if all(str(root.resolve()).casefold() != global_identity for root in roots):
+                    roots.append(global_backup_root)
             discovered_files = discover_flp_files(roots)
             counts["discovered_count"] = len(discovered_files)
             self._update_job(job_id, **counts)
@@ -257,6 +264,7 @@ class StudioService:
                 counts["parsed_count"] += 1
                 self._update_job(job_id, **counts)
 
+            self._associate_backup_snapshots()
             self._update_job(job_id, status="completed", **counts)
         except Exception as exc:
             self._update_job(
@@ -281,6 +289,52 @@ class StudioService:
             )
         except Exception:
             pass
+
+    def _associate_backup_snapshots(self) -> None:
+        rows = self._repository.list_projects_with_latest_snapshots()
+        mains = [
+            (project, record)
+            for project, record in rows
+            if record is not None and not _is_backup_path(Path(project.canonical_path))
+        ]
+        candidates = [
+            (project, record)
+            for project, record in rows
+            if record is not None and _is_backup_path(Path(project.canonical_path))
+        ]
+        for candidate_project, candidate_record in candidates:
+            assert candidate_record is not None
+            try:
+                candidate_snapshot = candidate_record.snapshot
+            except (TypeError, ValueError):
+                continue
+            scored: list[tuple[float, str, StudioProject]] = []
+            for main_project, main_record in mains:
+                assert main_record is not None
+                try:
+                    main_snapshot = main_record.snapshot
+                except (TypeError, ValueError):
+                    continue
+                score = score_backup_association(
+                    main_snapshot,
+                    candidate_snapshot,
+                    main_modified_at=main_project.modified_at,
+                    candidate_modified_at=candidate_project.modified_at,
+                )
+                scored.append((score, main_project.id, main_project))
+            if not scored:
+                continue
+            score, _, main_project = max(scored, key=lambda item: (item[0], item[1]))
+            try:
+                self._repository.save_backup_association(
+                    main_project.id,
+                    candidate_project.id,
+                    candidate_record.id,
+                    score=score,
+                    confirmed=score >= AUTO_CONFIRM_SCORE,
+                )
+            except ValueError:
+                continue
 
     def _record_stale_file(
         self,
@@ -352,6 +406,10 @@ def _modified_ns_to_utc_iso(modified_ns: int) -> str:
     return datetime.fromtimestamp(seconds, timezone.utc).replace(
         microsecond=nanoseconds // 1_000
     ).isoformat()
+
+
+def _is_backup_path(path: Path) -> bool:
+    return any(part.casefold() in {"backup", "backups"} for part in path.parts[:-1])
 
 
 def _verify_source_hash(

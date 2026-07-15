@@ -9,6 +9,7 @@ import { PatternExplorer } from "./PatternExplorer";
 import { ProjectDashboard } from "./ProjectDashboard";
 import { DependencyReport, type DiagnosticNavigation } from "./DependencyReport";
 import { PluginMixerView, type PluginMixerTarget } from "./PluginMixerView";
+import { VersionTimeline } from "./VersionTimeline";
 import studioCss from "./Studio.module.css";
 
 interface ProjectWorkspaceProps {
@@ -31,7 +32,7 @@ const tabs: Array<{ id: WorkspaceTab; label: string; available: boolean }> = [
   { id: "pattern", label: "Pattern", available: true },
   { id: "plugins", label: "插件与 Mixer", available: true },
   { id: "dependencies", label: "依赖", available: true },
-  { id: "versions", label: "版本", available: false }
+  { id: "versions", label: "版本", available: true }
 ] as const;
 
 export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
@@ -143,6 +144,7 @@ export function ProjectWorkspace({ projectId }: ProjectWorkspaceProps) {
           {activeTab === "dependencies" && (
             <DependencyReport analysis={state.analysis} onNavigate={(navigation) => navigateDiagnostic(navigation, setActiveTab, setSelectedPatternId, setSelectedPluginTarget)} />
           )}
+          {activeTab === "versions" && <VersionTimeline projectId={projectId} />}
         </div>
       </div>
     </WorkspaceShell>

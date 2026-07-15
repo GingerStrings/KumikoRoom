@@ -62,6 +62,27 @@ class StudioSnapshotRecord:
 
 
 @dataclass(frozen=True)
+class BackupAssociation:
+    id: str
+    project_id: str
+    candidate_project_id: str
+    snapshot_id: str
+    score: float
+    confirmed: bool
+    created_at: str
+    updated_at: str
+
+
+@dataclass(frozen=True)
+class StudioVersionRecord:
+    snapshot: StudioSnapshotRecord
+    kind: Literal["current", "history", "backup", "candidate"]
+    association_id: str | None = None
+    score: float | None = None
+    confirmed: bool = True
+
+
+@dataclass(frozen=True)
 class StudioScanJob:
     id: str
     status: ScanJobStatus
@@ -309,6 +330,273 @@ class StudioRepository:
         if row is None:
             raise KeyError(project_id)
         return self._project_from_row(row)
+
+    def get_project_by_path(self, path: Path) -> StudioProject:
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                """
+                SELECT id, canonical_path, display_name, status, modified_at,
+                       latest_snapshot_id, created_at, updated_at
+                FROM studio_projects
+                WHERE canonical_path_identity = ?
+                """,
+                (_path_identity(path),),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise KeyError(str(path))
+        return self._project_from_row(row)
+
+    def save_backup_association(
+        self,
+        project_id: str,
+        candidate_project_id: str,
+        snapshot_id: str,
+        *,
+        score: float,
+        confirmed: bool = False,
+    ) -> BackupAssociation:
+        if project_id == candidate_project_id:
+            raise ValueError("backup association cannot reference self")
+        if isinstance(score, bool) or not isinstance(score, (int, float)) or not 0 <= score <= 1:
+            raise ValueError("association score must be between 0 and 1")
+        now = _utc_now()
+        connection = self._connect()
+        try:
+            with connection:
+                projects = {
+                    row["id"]
+                    for row in connection.execute(
+                        "SELECT id FROM studio_projects WHERE id IN (?, ?)",
+                        (project_id, candidate_project_id),
+                    )
+                }
+                if project_id not in projects:
+                    raise KeyError(project_id)
+                if candidate_project_id not in projects:
+                    raise KeyError(candidate_project_id)
+                snapshot = connection.execute(
+                    "SELECT project_id FROM studio_snapshots WHERE id = ?",
+                    (snapshot_id,),
+                ).fetchone()
+                if snapshot is None:
+                    raise KeyError(snapshot_id)
+                if snapshot["project_id"] != candidate_project_id:
+                    raise ValueError("snapshot must belong to candidate project")
+                existing_owner = connection.execute(
+                    "SELECT project_id FROM studio_backup_associations WHERE snapshot_id = ?",
+                    (snapshot_id,),
+                ).fetchone()
+                if existing_owner is not None and existing_owner["project_id"] != project_id:
+                    raise ValueError("backup snapshot is already associated with another project")
+                association_id = str(uuid.uuid4())
+                connection.execute(
+                    """
+                    INSERT INTO studio_backup_associations (
+                        id, project_id, candidate_project_id, snapshot_id,
+                        score, confirmed, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(project_id, snapshot_id) DO UPDATE SET
+                        candidate_project_id = excluded.candidate_project_id,
+                        score = MAX(studio_backup_associations.score, excluded.score),
+                        confirmed = MAX(studio_backup_associations.confirmed, excluded.confirmed),
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        association_id,
+                        project_id,
+                        candidate_project_id,
+                        snapshot_id,
+                        float(score),
+                        int(confirmed),
+                        now,
+                        now,
+                    ),
+                )
+                row = connection.execute(
+                    """
+                    SELECT id, project_id, candidate_project_id, snapshot_id,
+                           score, confirmed, created_at, updated_at
+                    FROM studio_backup_associations
+                    WHERE project_id = ? AND snapshot_id = ?
+                    """,
+                    (project_id, snapshot_id),
+                ).fetchone()
+        finally:
+            connection.close()
+        assert row is not None
+        return self._association_from_row(row)
+
+    def confirm_backup_association(
+        self,
+        project_id: str,
+        association_id: str,
+    ) -> BackupAssociation:
+        connection = self._connect()
+        try:
+            with connection:
+                project = connection.execute(
+                    "SELECT id FROM studio_projects WHERE id = ?", (project_id,)
+                ).fetchone()
+                if project is None:
+                    raise KeyError(project_id)
+                row = connection.execute(
+                    """
+                    SELECT id, project_id, candidate_project_id, snapshot_id,
+                           score, confirmed, created_at, updated_at
+                    FROM studio_backup_associations
+                    WHERE id = ?
+                    """,
+                    (association_id,),
+                ).fetchone()
+                if row is None:
+                    raise KeyError(association_id)
+                if row["project_id"] != project_id:
+                    raise ValueError("candidate does not belong to project")
+                if not row["confirmed"]:
+                    connection.execute(
+                        "UPDATE studio_backup_associations SET confirmed = 1, updated_at = ? WHERE id = ?",
+                        (_utc_now(), association_id),
+                    )
+                    row = connection.execute(
+                        """
+                        SELECT id, project_id, candidate_project_id, snapshot_id,
+                               score, confirmed, created_at, updated_at
+                        FROM studio_backup_associations WHERE id = ?
+                        """,
+                        (association_id,),
+                    ).fetchone()
+        finally:
+            connection.close()
+        assert row is not None
+        return self._association_from_row(row)
+
+    def list_backup_associations(
+        self,
+        project_id: str,
+        *,
+        limit: int = 200,
+    ) -> list[BackupAssociation]:
+        _validate_version_limit(limit)
+        connection = self._connect()
+        try:
+            if connection.execute(
+                "SELECT id FROM studio_projects WHERE id = ?", (project_id,)
+            ).fetchone() is None:
+                raise KeyError(project_id)
+            rows = connection.execute(
+                """
+                SELECT id, project_id, candidate_project_id, snapshot_id,
+                       score, confirmed, created_at, updated_at
+                FROM studio_backup_associations
+                WHERE project_id = ?
+                ORDER BY confirmed DESC, updated_at DESC, id
+                LIMIT ?
+                """,
+                (project_id, limit),
+            ).fetchall()
+        finally:
+            connection.close()
+        return [self._association_from_row(row) for row in rows]
+
+    def list_project_versions(
+        self,
+        project_id: str,
+        *,
+        limit: int = 100,
+    ) -> list[StudioVersionRecord]:
+        _validate_version_limit(limit)
+        project = self.get_project(project_id)
+        connection = self._connect()
+        try:
+            rows = connection.execute(
+                """
+                SELECT snapshots.id, snapshots.project_id,
+                       snapshots.source_path, snapshots.source_hash,
+                       snapshots.analyzed_at, snapshots.payload_json,
+                       NULL AS association_id, NULL AS score, 1 AS confirmed,
+                       CASE WHEN snapshots.id = ? THEN 'current' ELSE 'history' END AS kind,
+                       CASE WHEN snapshots.id = ? THEN 0 ELSE 2 END AS sort_priority
+                FROM studio_snapshots AS snapshots
+                WHERE snapshots.project_id = ?
+                UNION ALL
+                SELECT snapshots.id, snapshots.project_id,
+                       snapshots.source_path, snapshots.source_hash,
+                       snapshots.analyzed_at, snapshots.payload_json,
+                       associations.id AS association_id,
+                       associations.score, associations.confirmed,
+                       CASE WHEN associations.confirmed = 1 THEN 'backup' ELSE 'candidate' END AS kind,
+                       1 AS sort_priority
+                FROM studio_backup_associations AS associations
+                JOIN studio_snapshots AS snapshots ON snapshots.id = associations.snapshot_id
+                WHERE associations.project_id = ?
+                ORDER BY sort_priority, analyzed_at DESC, id
+                LIMIT ?
+                """,
+                (
+                    project.latest_snapshot_id,
+                    project.latest_snapshot_id,
+                    project_id,
+                    project_id,
+                    limit,
+                ),
+            ).fetchall()
+        finally:
+            connection.close()
+        versions = [
+            StudioVersionRecord(
+                snapshot=self._snapshot_from_row(row),
+                kind=row["kind"],
+                association_id=row["association_id"],
+                score=row["score"],
+                confirmed=bool(row["confirmed"]),
+            )
+            for row in rows
+        ]
+        return sorted(
+            versions,
+            key=lambda item: (
+                item.kind != "current",
+                -datetime.fromisoformat(item.snapshot.analyzed_at).timestamp(),
+                item.snapshot.id,
+            ),
+        )
+
+    def get_project_version_snapshot(
+        self,
+        project_id: str,
+        snapshot_id: str,
+    ) -> StudioSnapshotRecord:
+        connection = self._connect()
+        try:
+            if connection.execute(
+                "SELECT id FROM studio_projects WHERE id = ?", (project_id,)
+            ).fetchone() is None:
+                raise KeyError(project_id)
+            row = connection.execute(
+                """
+                SELECT snapshots.id, snapshots.project_id,
+                       snapshots.source_path, snapshots.source_hash,
+                       snapshots.analyzed_at, snapshots.payload_json
+                FROM studio_snapshots AS snapshots
+                WHERE snapshots.id = ? AND (
+                    snapshots.project_id = ? OR EXISTS (
+                        SELECT 1 FROM studio_backup_associations AS associations
+                        WHERE associations.project_id = ?
+                          AND associations.snapshot_id = snapshots.id
+                          AND associations.confirmed = 1
+                    )
+                )
+                """,
+                (snapshot_id, project_id, project_id),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise ValueError("snapshot does not belong to project")
+        return self._snapshot_from_row(row)
 
     def save_snapshot(
         self,
@@ -664,6 +952,28 @@ class StudioRepository:
                         updated_at TEXT NOT NULL
                     );
 
+                    CREATE TABLE IF NOT EXISTS studio_backup_associations (
+                        id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL
+                            REFERENCES studio_projects(id) ON DELETE CASCADE,
+                        candidate_project_id TEXT NOT NULL
+                            REFERENCES studio_projects(id) ON DELETE CASCADE,
+                        snapshot_id TEXT NOT NULL
+                            REFERENCES studio_snapshots(id) ON DELETE CASCADE,
+                        score REAL NOT NULL CHECK (score >= 0 AND score <= 1),
+                        confirmed INTEGER NOT NULL DEFAULT 0 CHECK (confirmed IN (0, 1)),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        CHECK (project_id != candidate_project_id),
+                        UNIQUE(project_id, snapshot_id)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS studio_backup_associations_project_idx
+                    ON studio_backup_associations(project_id, confirmed, updated_at);
+
+                    CREATE UNIQUE INDEX IF NOT EXISTS studio_backup_associations_snapshot_idx
+                    ON studio_backup_associations(snapshot_id);
+
                     """
                 )
         finally:
@@ -736,6 +1046,19 @@ class StudioRepository:
             updated_at=row["updated_at"],
         )
 
+    @staticmethod
+    def _association_from_row(row: sqlite3.Row) -> BackupAssociation:
+        return BackupAssociation(
+            id=row["id"],
+            project_id=row["project_id"],
+            candidate_project_id=row["candidate_project_id"],
+            snapshot_id=row["snapshot_id"],
+            score=float(row["score"]),
+            confirmed=bool(row["confirmed"]),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
 
 def _canonical_path(path: Path) -> str:
     return str(path.expanduser().resolve())
@@ -770,3 +1093,8 @@ def _scan_job_status(status: object) -> ScanJobStatus:
     if not isinstance(status, str) or status not in _SCAN_JOB_STATUSES:
         raise ValueError(f"Unknown scan job status: {status}")
     return status  # type: ignore[return-value]
+
+
+def _validate_version_limit(limit: int) -> None:
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+        raise ValueError("version limit must be between 1 and 200")
