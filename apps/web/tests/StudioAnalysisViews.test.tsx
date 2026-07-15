@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as studioApi from "../src/api/studioClient";
@@ -135,6 +137,39 @@ describe("arrangement and Pattern workspace", () => {
     expect(screen.getAllByTitle(/长空白/).length).toBeGreaterThan(0);
     expect(timeline.querySelectorAll("[data-grid-cell]")).toHaveLength(0);
   });
+
+  it("aligns ruler, density, gaps, and clips to one gutter-free time field", () => {
+    render(<ArrangementAnalysis analysis={analysis} onSelectPattern={() => undefined} />);
+
+    const timeField = screen.getByTestId("arrangement-time-field");
+    const clip = screen.getByRole("button", { name: "Verse clip at bar 1" });
+    expect(timeField.getAttribute("data-time-origin")).toBe("track-gutter");
+    expect(within(timeField).getByLabelText("编曲密度覆盖层")).toBeTruthy();
+    expect(within(timeField).getAllByTitle(/长空白/).length).toBeGreaterThan(0);
+    expect(clip.parentElement?.getAttribute("data-time-origin")).toBe("track-gutter");
+    expect(timeField.querySelector('[data-ruler-tick="0"]')?.getAttribute("style")).toContain("left: 0%");
+    expect(clip.getAttribute("style")).toContain("left: 0%");
+
+    const css = fs.readFileSync(path.resolve(__dirname, "../src/components/studio/Studio.module.css"), "utf8");
+    expect(css).toContain("--track-gutter: 72px;");
+    expect(css).toMatch(/\.arrangementTimeField\s*\{[^}]*left:\s*var\(--track-gutter\)[^}]*right:\s*var\(--time-field-end\)/s);
+    expect(css).toMatch(/\.trackLane\s*\{[^}]*grid-template-columns:\s*var\(--track-gutter\) minmax\(0, 1fr\)/s);
+  });
+
+  it("labels half-open long gaps without including the ending bar", () => {
+    const gapBoundary: StudioAnalysis = {
+      ...analysis,
+      playlistClips: [
+        { id: "before-gap", trackIndex: 1, start: 0, length: 768, clipType: "pattern", sourceId: "pat-verse" },
+        { id: "after-gap", trackIndex: 1, start: 3072, length: 384, clipType: "pattern", sourceId: "pat-verse" }
+      ]
+    };
+
+    render(<ArrangementAnalysis analysis={gapBoundary} onSelectPattern={() => undefined} />);
+
+    expect(screen.getByTitle("长空白：第 3–8 小节")).toBeTruthy();
+    expect(screen.queryByTitle("长空白：第 3–9 小节")).toBeNull();
+  });
 });
 
 describe("Pattern Explorer", () => {
@@ -179,6 +214,94 @@ describe("Pattern Explorer", () => {
 
     fireEvent.change(screen.getByRole("searchbox", { name: "搜索 Pattern" }), { target: { value: "Pattern 120" } });
     expect(within(list).getByText("Pattern 120")).toBeTruthy();
+  });
+
+  it("supports listbox keyboard selection with truthful active options", async () => {
+    const onSelectPattern = vi.fn();
+    const { rerender } = render(
+      <PatternExplorer analysis={analysis} selectedPatternId="pat-verse" onSelectPattern={onSelectPattern} />
+    );
+    const list = screen.getByRole("listbox", { name: "Pattern 列表" });
+
+    expect(list.getAttribute("tabindex")).toBe("0");
+    const initialActiveId = list.getAttribute("aria-activedescendant");
+    expect(initialActiveId).toBeTruthy();
+    expect(document.getElementById(initialActiveId as string)?.textContent).toContain("Verse");
+
+    fireEvent.keyDown(list, { key: "ArrowDown" });
+    expect(onSelectPattern).toHaveBeenLastCalledWith("pat-verse-alt");
+    rerender(<PatternExplorer analysis={analysis} selectedPatternId="pat-verse-alt" onSelectPattern={onSelectPattern} />);
+    await waitFor(() => {
+      const active = document.getElementById(list.getAttribute("aria-activedescendant") as string);
+      expect(active?.textContent).toContain("Verse Alt");
+      expect(active?.getAttribute("aria-selected")).toBe("true");
+    });
+
+    fireEvent.keyDown(list, { key: "End" });
+    expect(onSelectPattern).toHaveBeenLastCalledWith("pat-empty");
+    fireEvent.keyDown(list, { key: "Home" });
+    expect(onSelectPattern).toHaveBeenLastCalledWith("pat-verse");
+  });
+
+  it("scrolls an externally selected virtual Pattern into the rendered window", async () => {
+    const manyPatterns: StudioAnalysis = {
+      ...analysis,
+      patterns: Array.from({ length: 150 }, (_, index) => ({
+        id: `pat-${index}`,
+        name: `Pattern ${String(index).padStart(3, "0")}`,
+        usedInPlaylist: false,
+        notes: []
+      }))
+    };
+    const { rerender } = render(
+      <PatternExplorer analysis={manyPatterns} selectedPatternId="pat-0" onSelectPattern={() => undefined} />
+    );
+    const list = screen.getByRole("listbox", { name: "Pattern 列表" }) as HTMLElement;
+
+    rerender(<PatternExplorer analysis={manyPatterns} selectedPatternId="pat-149" onSelectPattern={() => undefined} />);
+
+    await waitFor(() => {
+      const selected = within(list).getByRole("option", { name: /Pattern 149/ });
+      expect(selected.getAttribute("aria-selected")).toBe("true");
+      expect(list.getAttribute("aria-activedescendant")).toBe(selected.id);
+      expect(list.scrollTop).toBeGreaterThan(0);
+    });
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "搜索 Pattern" }), { target: { value: "Pattern 120" } });
+    await waitFor(() => {
+      const activeId = list.getAttribute("aria-activedescendant");
+      expect(activeId).toBeTruthy();
+      expect(document.getElementById(activeId as string)?.textContent).toContain("Pattern 120");
+    });
+  });
+
+  it("keeps full MIDI metrics while bounding Piano Roll note nodes", () => {
+    const total = 20_000;
+    const large: StudioAnalysis = {
+      ...analysis,
+      patterns: [{
+        id: "pat-large",
+        name: "Large MIDI",
+        usedInPlaylist: true,
+        notes: Array.from({ length: total }, (_, index) => ({
+          key: index === 0 ? 0 : index === total - 1 ? 127 : 36 + (index % 48),
+          position: index * 12,
+          length: 12,
+          velocity: 64 + (index % 32),
+          channelId: "ch-keys"
+        }))
+      }]
+    };
+
+    render(<PatternExplorer analysis={large} selectedPatternId="pat-large" onSelectPattern={() => undefined} />);
+
+    expect(screen.getByLabelText("Large MIDI 音符摘要").textContent).toContain("20000 个音符");
+    expect(screen.getByLabelText("Large MIDI 音符摘要").textContent).toContain("音域 0–127");
+    expect(screen.getByLabelText("Piano Roll 绘制范围").textContent).toMatch(/绘制 \d+ \/ 总 20000 个音符/);
+    const pianoRoll = screen.getByLabelText("Large MIDI Piano Roll");
+    expect(pianoRoll.querySelectorAll('[data-drawn-note="true"]')).toHaveLength(1000);
+    expect(pianoRoll.textContent).toContain("音高 0");
+    expect(pianoRoll.textContent).toContain("音高 127");
   });
 
   it("keeps unavailable timing, empty notes, unknown channels, and invalid coordinates truthful", () => {

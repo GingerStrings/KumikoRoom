@@ -76,36 +76,42 @@ export function ArrangementAnalysis({ analysis, onSelectPattern }: ArrangementAn
             data-zoom={zoom}
             style={{ width: `${zoom * 100}%` }}
           >
-            <div className={studioCss.arrangementRuler} aria-hidden="true">
-              {arrangement.ruler.map((mark) => (
-                <span key={mark.position} style={{ left: `${mark.position}%` }}>{mark.label}</span>
-              ))}
-            </div>
+            <div
+              className={studioCss.arrangementTimeField}
+              data-testid="arrangement-time-field"
+              data-time-origin="track-gutter"
+            >
+              <div className={studioCss.arrangementRuler} aria-hidden="true">
+                {arrangement.ruler.map((mark, index) => (
+                  <span key={mark.position} data-ruler-tick={index} style={{ left: `${mark.position}%` }}>{mark.label}</span>
+                ))}
+              </div>
 
-            <div className={studioCss.densityOverlay} aria-label="编曲密度覆盖层">
-              {arrangement.density.map((density, index) => (
+              <div className={studioCss.densityOverlay} aria-label="编曲密度覆盖层">
+                {arrangement.density.map((density, index) => (
+                  <span
+                    key={index}
+                    title={`区间 ${index + 1}：${density} 个重叠片段`}
+                    style={{ opacity: Math.min(0.78, 0.08 + density * 0.14) }}
+                  />
+                ))}
+              </div>
+
+              {arrangement.gaps.map((gap) => (
                 <span
-                  key={index}
-                  title={`区间 ${index + 1}：${density} 个重叠片段`}
-                  style={{ opacity: Math.min(0.78, 0.08 + density * 0.14) }}
+                  key={`${gap.start}-${gap.end}`}
+                  className={studioCss.longGapMarker}
+                  title={gap.title}
+                  style={{ left: percent(gap.start, arrangement.projectEnd), width: percent(gap.end - gap.start, arrangement.projectEnd) }}
                 />
               ))}
             </div>
-
-            {arrangement.gaps.map((gap) => (
-              <span
-                key={`${gap.start}-${gap.end}`}
-                className={studioCss.longGapMarker}
-                title={gap.title}
-                style={{ left: percent(gap.start, arrangement.projectEnd), width: percent(gap.end - gap.start, arrangement.projectEnd) }}
-              />
-            ))}
 
             <div className={studioCss.trackStack}>
               {arrangement.tracks.map((trackIndex) => (
                 <section key={trackIndex} className={studioCss.trackLane} aria-label={`Playlist track ${trackIndex}`}>
                   <span className={studioCss.trackLabel}>TRACK {trackIndex}</span>
-                  <div className={studioCss.trackClips}>
+                  <div className={studioCss.trackClips} data-time-origin="track-gutter">
                     {(arrangement.clipsByTrack.get(trackIndex) ?? []).map((item) => (
                       <Clip
                         key={item.clip.id}
@@ -287,7 +293,7 @@ function longGaps(clips: PositionedClip[], projectEnd: number, barTicks: number 
     const end = merged[index + 1].start;
     if (end - start < threshold || end > projectEnd) return [];
     const firstBar = Math.floor(start / barTicks) + 1;
-    const lastBar = Math.floor(end / barTicks) + 1;
+    const lastBar = Math.ceil(end / barTicks);
     return [{ start, end, title: `长空白：第 ${firstBar}–${lastBar} 小节` }];
   });
 }

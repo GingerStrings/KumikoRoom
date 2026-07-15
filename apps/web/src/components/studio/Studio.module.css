@@ -575,7 +575,8 @@
   scrollbar-color: #8da9a7 #eef2ef;
 }
 
-.arrangementCanvas { position: relative; min-width: 720px; padding: 35px 0 0; overflow: hidden; }
+.arrangementCanvas { --track-gutter: 72px; --time-field-end: 8px; position: relative; min-width: 720px; padding: 35px 0 0; overflow: hidden; }
+.arrangementTimeField { position: absolute; top: 0; bottom: 0; left: var(--track-gutter); right: var(--time-field-end); pointer-events: none; }
 .arrangementRuler { position: absolute; z-index: 4; top: 0; right: 0; left: 0; height: 35px; border-bottom: 1px solid #dce5e0; background: rgba(247, 250, 246, .96); }
 .arrangementRuler span { position: absolute; bottom: 7px; color: #607577; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 9px; transform: translateX(-50%); }
 .arrangementRuler span:first-child { transform: none; }
@@ -587,7 +588,7 @@
 .longGapMarker { position: absolute; z-index: 1; top: 35px; bottom: 0; border-right: 1px dashed rgba(156, 117, 86, .46); border-left: 1px dashed rgba(156, 117, 86, .46); background: repeating-linear-gradient(112deg, rgba(177, 142, 108, .05) 0 8px, rgba(177, 142, 108, .12) 8px 9px); pointer-events: none; }
 
 .trackStack { position: relative; z-index: 2; }
-.trackLane { min-width: 0; display: grid; grid-template-columns: 72px minmax(0, 1fr); min-height: 58px; border-bottom: 1px solid rgba(202, 216, 210, .8); }
+.trackLane { min-width: 0; display: grid; grid-template-columns: var(--track-gutter) minmax(0, 1fr); min-height: 58px; border-bottom: 1px solid rgba(202, 216, 210, .8); }
 .trackLane:last-child { border-bottom: 0; }
 .trackLabel { display: grid; place-items: center; border-right: 1px solid rgba(202, 216, 210, .85); background: rgba(248, 249, 245, .82); color: #5d7476; font-size: 8px; font-weight: 900; letter-spacing: .08em; }
 .trackClips { position: relative; min-width: 0; margin: 8px 8px 8px 0; }
@@ -742,7 +743,7 @@ button.timelineClip:hover { border-color: #4d7e88; background: #c8e0e2; }
   .analysisFootnote { flex-direction: column; gap: 5px; }
   .zoomControls { width: 100%; }
   .zoomControls button { flex: 1; }
-  .trackLane { grid-template-columns: 54px minmax(0, 1fr); }
+  .arrangementCanvas { --track-gutter: 54px; }
   .trackLabel { font-size: 7px; }
 }
 

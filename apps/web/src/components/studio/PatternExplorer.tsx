@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { StudioAnalysis, StudioNoteSummary, StudioPatternSummary } from "../../api/studioTypes";
 import studioCss from "./Studio.module.css";
 
@@ -21,6 +22,7 @@ interface DrawableNote {
 const ROW_HEIGHT = 52;
 const LIST_HEIGHT = 364;
 const OVERSCAN = 4;
+const MAX_DRAWN_NOTES = 1000;
 
 export function PatternExplorer({ analysis, selectedPatternId, onSelectPattern }: PatternExplorerProps) {
   const [query, setQuery] = useState("");
@@ -34,11 +36,6 @@ export function PatternExplorer({ analysis, selectedPatternId, onSelectPattern }
       ? analysis.patterns.filter((pattern) => displayPatternName(pattern).toLocaleLowerCase().includes(needle))
       : analysis.patterns;
   }, [analysis.patterns, query]);
-
-  useEffect(() => {
-    setScrollTop(0);
-    if (listRef.current) listRef.current.scrollTop = 0;
-  }, [query]);
 
   return (
     <article className={studioCss.analysisView} aria-labelledby="pattern-explorer-heading">
@@ -104,11 +101,71 @@ function PatternList({
   listRef: React.RefObject<HTMLDivElement>;
 }) {
   const virtualized = patterns.length > 100;
+  const listId = useId();
+  const selectedIndex = patterns.findIndex((pattern) => pattern.id === selectedPatternId);
+  const [activePatternId, setActivePatternId] = useState<string | null>(
+    selectedIndex >= 0 ? patterns[selectedIndex].id : patterns[0]?.id ?? null
+  );
+  const activeIndex = Math.max(0, patterns.findIndex((pattern) => pattern.id === activePatternId));
   const start = virtualized ? Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN) : 0;
   const end = virtualized
     ? Math.min(patterns.length, Math.ceil((scrollTop + LIST_HEIGHT) / ROW_HEIGHT) + OVERSCAN)
     : patterns.length;
   const visible = patterns.slice(start, end);
+
+  function optionId(patternId: string): string {
+    return `${listId}-pattern-${encodeURIComponent(patternId)}`;
+  }
+
+  function ensureIndexVisible(index: number) {
+    const list = listRef.current;
+    if (!list || !virtualized || index < 0) return;
+    const rowTop = index * ROW_HEIGHT;
+    const rowBottom = rowTop + ROW_HEIGHT;
+    let nextScrollTop = list.scrollTop;
+    if (rowTop < list.scrollTop) nextScrollTop = rowTop;
+    else if (rowBottom > list.scrollTop + LIST_HEIGHT) nextScrollTop = rowBottom - LIST_HEIGHT;
+    if (nextScrollTop !== list.scrollTop) {
+      list.scrollTop = nextScrollTop;
+      onScroll(nextScrollTop);
+    }
+  }
+
+  useEffect(() => {
+    const nextIndex = selectedIndex >= 0 ? selectedIndex : 0;
+    const nextPattern = patterns[nextIndex] ?? null;
+    setActivePatternId(nextPattern?.id ?? null);
+    if (nextPattern === null) {
+      if (listRef.current) listRef.current.scrollTop = 0;
+      onScroll(0);
+      return;
+    }
+    ensureIndexVisible(nextIndex);
+  }, [patterns, selectedPatternId]);
+
+  function selectIndex(index: number) {
+    const next = patterns[Math.max(0, Math.min(patterns.length - 1, index))];
+    if (!next) return;
+    const nextIndex = patterns.indexOf(next);
+    setActivePatternId(next.id);
+    ensureIndexVisible(nextIndex);
+    onSelectPattern(next.id);
+  }
+
+  function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (patterns.length === 0) return;
+    const page = Math.max(1, Math.floor(LIST_HEIGHT / ROW_HEIGHT));
+    let nextIndex: number;
+    if (event.key === "ArrowDown") nextIndex = activeIndex + 1;
+    else if (event.key === "ArrowUp") nextIndex = activeIndex - 1;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = patterns.length - 1;
+    else if (event.key === "PageDown") nextIndex = activeIndex + page;
+    else if (event.key === "PageUp") nextIndex = activeIndex - page;
+    else return;
+    event.preventDefault();
+    selectIndex(nextIndex);
+  }
 
   return (
     <aside className={studioCss.patternIndex} aria-label="Pattern 索引">
@@ -121,8 +178,11 @@ function PatternList({
           className={studioCss.patternList}
           role="listbox"
           aria-label="Pattern 列表"
+          aria-activedescendant={patterns.length > 0 ? optionId(patterns[activeIndex].id) : undefined}
+          tabIndex={0}
           data-virtualized={virtualized ? "true" : "false"}
           onScroll={(event) => onScroll(event.currentTarget.scrollTop)}
+          onKeyDown={handleKeyDown}
         >
           <div className={studioCss.patternListWindow} style={{ height: virtualized ? `${patterns.length * ROW_HEIGHT}px` : "auto" }}>
             {visible.map((pattern, offset) => {
@@ -132,14 +192,19 @@ function PatternList({
               return (
                 <button
                   key={pattern.id}
+                  id={optionId(pattern.id)}
                   type="button"
                   role="option"
+                  tabIndex={-1}
                   aria-selected={pattern.id === selectedPatternId}
                   aria-posinset={index + 1}
                   aria-setsize={patterns.length}
                   className={studioCss.patternRow}
                   style={virtualized ? { position: "absolute", top: `${index * ROW_HEIGHT}px` } : undefined}
-                  onClick={() => onSelectPattern(pattern.id)}
+                  onClick={() => {
+                    setActivePatternId(pattern.id);
+                    onSelectPattern(pattern.id);
+                  }}
                 >
                   <span>
                     <strong>{displayPatternName(pattern)}</strong>
@@ -238,35 +303,37 @@ function PianoRoll({ name, notes, channelNames }: {
   notes: DrawableNote[];
   channelNames: Map<string, string>;
 }) {
-  const minKey = Math.min(...notes.map((note) => note.key));
-  const maxKey = Math.max(...notes.map((note) => note.key));
-  const duration = Math.max(1, ...notes.map((note) => note.position + note.length));
+  const { minKey, maxKey, duration } = noteExtent(notes);
+  const drawnNotes = sampleNotes(notes, MAX_DRAWN_NOTES);
   const pitchSpan = Math.max(1, maxKey - minKey + 1);
   const toneByChannel = toneMap(notes);
 
   return (
     <figure className={studioCss.pianoFigure}>
-      <figcaption><strong>Piano Roll</strong><span>上方音高 · 下方力度</span></figcaption>
+      <figcaption>
+        <strong>Piano Roll</strong>
+        <span aria-label="Piano Roll 绘制范围">绘制 {drawnNotes.length} / 总 {notes.length} 个音符 · 上方音高 · 下方力度</span>
+      </figcaption>
       <svg
         className={studioCss.pianoRoll}
         viewBox="0 0 1000 280"
         role="img"
         aria-label={`${name} Piano Roll`}
       >
-        <title>{`${name} Piano Roll：${notes.length} 个可绘制音符，音域 ${minKey}–${maxKey}`}</title>
+        <title>{`${name} Piano Roll：绘制 ${drawnNotes.length} / 总 ${notes.length} 个音符，音域 ${minKey}–${maxKey}`}</title>
         <rect className={studioCss.pianoBackground} x="0" y="0" width="1000" height="220" />
         {Array.from({ length: 13 }, (_, index) => (
           <line key={index} className={studioCss.pianoGuide} x1="0" x2="1000" y1={index * (220 / 12)} y2={index * (220 / 12)} />
         ))}
         <g aria-label={`${name} 音符与力度条`}>
-          {notes.map((note, index) => {
+          {drawnNotes.map((note, index) => {
             const x = note.position / duration * 1000;
             const width = Math.max(2, note.length / duration * 1000);
             const y = (maxKey - note.key) / pitchSpan * 210 + 4;
             const tone = toneByChannel.get(note.channelId ?? "__unknown__") ?? 0;
             const channelName = note.channelId === null ? "未知 Channel" : channelNames.get(note.channelId) ?? "未知 Channel";
             return (
-              <g key={`${note.key}-${note.position}-${index}`}>
+              <g key={`${note.key}-${note.position}-${index}`} data-drawn-note="true">
                 <rect className={`${studioCss.pianoNote} ${studioCss[`noteTone${tone}`]}`} x={x} y={y} width={width} height="9" rx="1">
                   <title>{`音高 ${note.key} · tick ${formatNumber(note.position)} · 力度 ${note.velocity} · ${channelName}`}</title>
                 </rect>
@@ -387,7 +454,7 @@ function DistributionPanel({ label, title, summary, bins, note }: {
   bins: Array<{ label: string; count: number }>;
   note?: string;
 }) {
-  const maximum = Math.max(1, ...bins.map((bin) => bin.count));
+  const maximum = bins.reduce((largest, bin) => Math.max(largest, bin.count), 1);
   return (
     <section className={studioCss.distributionPanel} aria-label={label}>
       <header><h3>{title}</h3><span>{bins.reduce((total, bin) => total + bin.count, 0)} notes</span></header>
@@ -443,9 +510,7 @@ function patternMetrics(notes: DrawableNote[], ppq: number | null) {
       maxKey: null
     };
   }
-  const minKey = Math.min(...notes.map((note) => note.key));
-  const maxKey = Math.max(...notes.map((note) => note.key));
-  const end = Math.max(...notes.map((note) => note.position + note.length));
+  const { minKey, maxKey, duration: end } = noteExtent(notes);
   const density = ppq !== null && end > 0 ? notes.length / (end / ppq) : null;
   const velocity = notes.reduce((total, note) => total + note.velocity, 0) / notes.length;
   return {
@@ -481,8 +546,12 @@ function buildChannelLegend(notes: DrawableNote[], channelNames: Map<string, str
 }
 
 function toneMap(notes: DrawableNote[]): Map<string, number> {
-  const ids = [...new Set(notes.map((note) => note.channelId ?? "__unknown__"))];
-  return new Map(ids.map((id, index) => [id, index % 4]));
+  const tones = new Map<string, number>();
+  for (const note of notes) {
+    const id = note.channelId ?? "__unknown__";
+    if (!tones.has(id)) tones.set(id, tones.size % 4);
+  }
+  return tones;
 }
 
 function similarPatterns(selected: StudioPatternSummary, patterns: StudioPatternSummary[]) {
@@ -502,13 +571,56 @@ function similarPatterns(selected: StudioPatternSummary, patterns: StudioPattern
 }
 
 function noteSignature(notes: DrawableNote[]): Set<string> {
-  const minKey = Math.min(...notes.map((note) => note.key));
-  const duration = Math.max(1, ...notes.map((note) => note.position + note.length));
+  const { minKey, duration } = noteExtent(notes);
   return new Set(notes.map((note) => {
     const positionBin = Math.round(note.position / duration * 16);
     const lengthBin = Math.round(note.length / duration * 16);
     return `${note.key - minKey}:${positionBin}:${lengthBin}`;
   }));
+}
+
+function noteExtent(notes: DrawableNote[]): { minKey: number; maxKey: number; duration: number } {
+  let minKey = 127;
+  let maxKey = 0;
+  let duration = 1;
+  for (const note of notes) {
+    minKey = Math.min(minKey, note.key);
+    maxKey = Math.max(maxKey, note.key);
+    duration = Math.max(duration, note.position + note.length);
+  }
+  return { minKey, maxKey, duration };
+}
+
+function sampleNotes(notes: DrawableNote[], limit: number): DrawableNote[] {
+  if (notes.length <= limit) return notes;
+  const chronological = notes
+    .map((note, index) => ({ note, index }))
+    .sort((left, right) => (
+      left.note.position - right.note.position
+      || left.note.key - right.note.key
+      || left.index - right.index
+    ));
+  let minPitchIndex = 0;
+  let maxPitchIndex = 0;
+  let earliestIndex = 0;
+  let latestEndIndex = 0;
+  for (let index = 1; index < notes.length; index += 1) {
+    if (notes[index].key < notes[minPitchIndex].key) minPitchIndex = index;
+    if (notes[index].key > notes[maxPitchIndex].key) maxPitchIndex = index;
+    if (notes[index].position < notes[earliestIndex].position) earliestIndex = index;
+    if (notes[index].position + notes[index].length > notes[latestEndIndex].position + notes[latestEndIndex].length) latestEndIndex = index;
+  }
+  const selected = new Set([minPitchIndex, maxPitchIndex, earliestIndex, latestEndIndex]);
+  const remaining = limit - selected.size;
+  for (let slot = 0; slot < remaining; slot += 1) {
+    const chronologicalIndex = Math.floor((slot + 0.5) * chronological.length / remaining);
+    selected.add(chronological[Math.min(chronological.length - 1, chronologicalIndex)].index);
+  }
+  for (const item of chronological) {
+    if (selected.size >= limit) break;
+    selected.add(item.index);
+  }
+  return chronological.filter((item) => selected.has(item.index)).map((item) => item.note);
 }
 
 function jaccard(left: Set<string>, right: Set<string>): number {
