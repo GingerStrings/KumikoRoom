@@ -28,6 +28,7 @@ _SCAN_JOB_UPDATE_FIELDS: frozenset[str] = frozenset(
 _SCAN_JOB_COUNT_FIELDS: frozenset[str] = frozenset(
     {"discovered_count", "parsed_count", "cached_count", "failed_count"}
 )
+_SQLITE_MAX_INT = 2**63 - 1
 
 
 @dataclass(frozen=True)
@@ -1382,12 +1383,8 @@ def _decode_version_cursor(value: str | None) -> _VersionCursor | None:
     ):
         raise ValueError("invalid version cursor")
     if (
-        isinstance(snapshot_rowid, bool)
-        or not isinstance(snapshot_rowid, int)
-        or snapshot_rowid < 0
-        or isinstance(association_rowid, bool)
-        or not isinstance(association_rowid, int)
-        or association_rowid < 0
+        not _is_sqlite_nonnegative_int(snapshot_rowid)
+        or not _is_sqlite_nonnegative_int(association_rowid)
         or not isinstance(after, list)
         or len(after) != 3
         or isinstance(after[0], bool)
@@ -1411,4 +1408,12 @@ def _decode_version_cursor(value: str | None) -> _VersionCursor | None:
             association_rowid=association_rowid,
         ),
         after=(after[0], after[1], after[2]),
+    )
+
+
+def _is_sqlite_nonnegative_int(value: object) -> bool:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value <= _SQLITE_MAX_INT
     )

@@ -1,3 +1,5 @@
+import base64
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -22,6 +24,15 @@ from kumikoroom.studio.models import (
 from kumikoroom.studio.repository import StudioRepository
 from kumikoroom.studio.service import StudioService
 from kumikoroom.studio import service as service_module
+
+
+def tamper_version_cursor(cursor: str, field: str, value: int) -> str:
+    padded = cursor + "=" * (-len(cursor) % 4)
+    payload = json.loads(base64.urlsafe_b64decode(padded))
+    payload[field] = value
+    return base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii").rstrip("=")
 
 
 def snapshot(path: Path, source_hash: str, *, version: int = 1) -> FlpAnalysisSnapshot:
@@ -486,6 +497,52 @@ def test_version_cursor_reaches_large_history_and_rejects_invalid_cursor(
     assert candidate_seen
     with pytest.raises(ValueError, match="cursor"):
         repository.list_project_versions_page(main.id, cursor="not-a-cursor")
+
+
+@pytest.mark.parametrize("field", ["snapshot_rowid", "association_rowid"])
+@pytest.mark.parametrize(
+    ("value", "valid"),
+    [(-1, False), (2**63, False), (2**63 - 1, True)],
+)
+def test_version_cursor_rowid_bounds_are_repository_and_api_safe(
+    tmp_path: Path,
+    field: str,
+    value: int,
+    valid: bool,
+) -> None:
+    repository = StudioRepository(tmp_path / f"{field}-{value}.sqlite3")
+    path = tmp_path / f"{field}.flp"
+    project = repository.upsert_project(path, display_name=field)
+    repository.save_snapshot(project.id, snapshot(path, "first"))
+    repository.save_snapshot(project.id, snapshot(path, "second"))
+    cursor = repository.list_project_versions_page(project.id, limit=1).next_cursor
+    assert cursor is not None
+    tampered = tamper_version_cursor(cursor, field, value)
+
+    if valid:
+        assert repository.list_project_versions_page(
+            project.id,
+            limit=1,
+            cursor=tampered,
+        ).items
+    else:
+        with pytest.raises(ValueError, match="cursor"):
+            repository.list_project_versions_page(
+                project.id,
+                limit=1,
+                cursor=tampered,
+            )
+
+    app.dependency_overrides[studio.studio_repository] = lambda: repository
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            response = client.get(
+                f"/api/studio/projects/{project.id}/versions",
+                params={"limit": 1, "cursor": tampered},
+            )
+        assert response.status_code == (200 if valid else 400)
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_version_cursor_is_stable_when_newer_backups_arrive_between_pages(
