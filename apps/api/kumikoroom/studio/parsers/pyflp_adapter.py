@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 import re
+import sys
+from threading import Lock
 from typing import Any, TypeVar
 
 import pyflp
@@ -27,6 +29,8 @@ from .base import FlpParseError
 _MISSING = object()
 _NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
 _T = TypeVar("_T")
+_PYFLP_ENUM_COMPATIBILITY_LOCK = Lock()
+_PYFLP_ENUM_COMPATIBILITY_MEMBER = "_KumikoRoomPython313Compatibility"
 
 
 class PyFlpParser:
@@ -40,6 +44,7 @@ class PyFlpParser:
             )
 
         try:
+            _ensure_pyflp_event_enum_compatibility()
             project = pyflp.parse(source_path)
         except Exception as cause:
             raise FlpParseError(
@@ -113,6 +118,34 @@ class PyFlpParser:
             diagnostics=diagnostics,
             unknown_event_count=unknown_event_count,
         )
+
+
+def _ensure_pyflp_event_enum_compatibility() -> None:
+    """Keep PyFLP 2.x's empty event base enum callable on Python 3.13+."""
+    if sys.version_info < (3, 13):
+        return
+
+    from pyflp._events import EventEnum
+
+    if EventEnum._member_map_:
+        return
+
+    with _PYFLP_ENUM_COMPATIBILITY_LOCK:
+        if EventEnum._member_map_:
+            return
+
+        member = int.__new__(EventEnum, -1)
+        member._name_ = _PYFLP_ENUM_COMPATIBILITY_MEMBER
+        member._value_ = -1
+        member.type = None
+        type.__setattr__(
+            EventEnum,
+            _PYFLP_ENUM_COMPATIBILITY_MEMBER,
+            member,
+        )
+        EventEnum._member_names_.append(_PYFLP_ENUM_COMPATIBILITY_MEMBER)
+        EventEnum._value2member_map_[-1] = member
+        EventEnum._member_map_[_PYFLP_ENUM_COMPATIBILITY_MEMBER] = member
 
 
 def _project_info(project: Any) -> ProjectInfo:
@@ -288,6 +321,7 @@ def _mixer(
     project: Any, diagnostics: list[AnalysisDiagnostic]
 ) -> list[MixerInsertSummary]:
     summaries: list[MixerInsertSummary] = []
+    route_limitation_reported = False
     mixer = _public_attr(project, "mixer", None)
     for insert_index, insert in enumerate(_public_items(mixer)):
         insert_id = _identifier(
@@ -308,7 +342,7 @@ def _mixer(
             slot_plugin_ids.append(
                 f"mixer:{insert_id}:slot:{public_slot_index}"
             )
-        if _public_items(insert, "routes"):
+        if _public_items(insert, "routes") and not route_limitation_reported:
             diagnostics.append(
                 AnalysisDiagnostic(
                     code="unsupported_structure",
@@ -321,6 +355,7 @@ def _mixer(
                     target_id=insert_id,
                 )
             )
+            route_limitation_reported = True
         summaries.append(
             MixerInsertSummary(
                 id=insert_id,

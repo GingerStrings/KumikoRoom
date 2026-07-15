@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from pathlib import Path
+import sys
 from typing import Any, Iterator
 
 import pytest
@@ -189,8 +190,11 @@ def test_mixer_send_levels_do_not_become_route_target_ids(
     insert = PublicObject(
         items=(slot,), iid=6, name="Send source", routes=(6400, 12800)
     )
+    another_insert = PublicObject(
+        items=(), iid=7, name="Another send", routes=(3200,)
+    )
     project = PublicObject(
-        mixer=PublicObject(items=(insert,)),
+        mixer=PublicObject(items=(insert, another_insert)),
         unknown_event_count=0,
     )
     monkeypatch.setattr(pyflp_adapter.pyflp, "parse", lambda _path: project)
@@ -398,6 +402,41 @@ def test_pyflp_parse_failure_is_wrapped_with_its_cause(
     assert raised.value.stage == "open"
     assert raised.value.cause is cause
     assert raised.value.__cause__ is cause
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 13),
+    reason="PyFLP's empty base enum is accepted before Python 3.13",
+)
+def test_parser_supports_pyflp_event_ids_on_python_313(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    from pyflp._events import EventEnum
+
+    from kumikoroom.studio.parsers import pyflp_adapter
+
+    source = tmp_path / "python-313.flp"
+    source.write_bytes(b"FLhd")
+    project = PublicObject(
+        version="21.2.3.4004",
+        tempo=120,
+        patterns=(),
+        channels=PublicObject(items=(), automations=()),
+        arrangements=PublicObject(items=()),
+        mixer=PublicObject(items=()),
+        unknown_event_count=0,
+    )
+
+    def fake_parse(_path: Path) -> PublicObject:
+        EventEnum(199)
+        return project
+
+    monkeypatch.setattr(pyflp_adapter.pyflp, "parse", fake_parse)
+
+    snapshot = pyflp_adapter.PyFlpParser().parse(source, source_hash="hash")
+
+    assert snapshot.project.fl_version == "21.2.3.4004"
+    assert snapshot.project.tempo == 120
 
 
 class ExplodingIterable:

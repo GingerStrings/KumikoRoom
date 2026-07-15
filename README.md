@@ -44,6 +44,12 @@ Open:
 http://127.0.0.1:3000/room
 ```
 
+The FL Studio creative archive is available at:
+
+```text
+http://127.0.0.1:3000/studio
+```
+
 If you want a different web port:
 
 ```powershell
@@ -102,6 +108,54 @@ $env:KUMIKOROOM_MEMORY_DB_PATH="user-data/memory/kumikoroom-memory.sqlite3"
 ```
 
 Do not commit `.env`, `.env.local`, API keys, or SQLite memory databases.
+
+## FL Studio Creative Archive
+
+The creative archive turns local FL Studio 21 projects into a searchable,
+read-only library with project dashboards, arrangement and Pattern views,
+plugin and Mixer inspection, dependency diagnostics, automatic-backup
+timelines, semantic snapshot comparison, and printable project reports.
+
+1. Start the API and Web app, then open `/studio`.
+2. Use **Add project directory** to register one or more folders containing
+   `.flp` files. Each root is scanned incrementally; cached results remain
+   available while changed files are analyzed in the background.
+3. Open a project card to inspect its dashboard and analysis tabs. Local open
+   actions only resolve files already registered under a configured root.
+
+Analysis metadata is stored in SQLite at
+`user-data/studio/kumikoroom-studio.sqlite3` by default. Override it with
+`KUMIKOROOM_STUDIO_DB_PATH`. The database contains local paths and parsed
+structure, so treat it as private data and do not share it casually.
+
+Source FLPs are opened for reading and are never saved, copied, restored, or
+overwritten. Backup discovery checks `Backup`/`Backups` folders inside project
+data and the standard FL Studio user backup directory. High-confidence matches
+join the version timeline automatically; uncertain candidates remain separate
+until confirmed. Confirmation only records an association in SQLite.
+
+Current boundaries:
+
+- The verified target is FL Studio 21. Newer or substantially older save
+  formats can return partial analysis or a parse diagnostic.
+- Third-party plugin internals, every native-plugin state block, and every
+  Mixer route are not guaranteed to decode completely.
+- Music-theory labels and section suggestions include confidence because they
+  are structural inferences. Audio waveform, spectrum, loudness, mastering,
+  project editing, cleanup, and restore are outside this release.
+- Unavailable local dependencies remain diagnostics; the archive does not
+  download or repair them.
+
+To run the opt-in read-only contract against a private FLP outside Git:
+
+```powershell
+$env:KUMIKOROOM_TEST_FLP_PATH="D:\private\project.flp"
+python -m pytest apps/api/tests/test_studio_local_flp.py -q
+```
+
+The contract verifies the source hash before and after parsing plus FL version,
+tempo, Pattern, and Channel Rack structure. Leave the variable unset during
+normal test runs; the local contract then reports as skipped.
 
 ## Local Novel RAG
 

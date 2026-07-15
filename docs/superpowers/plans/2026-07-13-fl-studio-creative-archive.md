@@ -1110,7 +1110,7 @@ git commit -m "feat: open local FLP assets and print project reports"
 - Modify: `README.zh-CN.md`
 - Modify: `docs/superpowers/specs/2026-07-13-fl-studio-creative-archive-design.md`
 
-- [ ] **Step 1: Add an opt-in local real-FLP contract test**
+- [x] **Step 1: Add an opt-in local real-FLP contract test**
 
 ```python
 @pytest.mark.skipif(
@@ -1130,7 +1130,7 @@ def test_real_flp_is_read_only_and_has_core_structure() -> None:
     assert snapshot.channels
 ```
 
-- [ ] **Step 2: Run the local contract against 3–5 user-selected projects**
+- [x] **Step 2: Run the local contract against 3–5 user-selected projects**
 
 For each selected FLP, set `KUMIKOROOM_TEST_FLP_PATH` and run:
 
@@ -1141,11 +1141,11 @@ python -m pytest apps/api/tests/test_studio_local_flp.py -q
 
 Expected: PASS with identical before/after hashes. Record unsupported structures as adapter fixtures or diagnostics before moving to the next project.
 
-- [ ] **Step 3: Document local configuration and privacy boundaries**
+- [x] **Step 3: Document local configuration and privacy boundaries**
 
 Add `KUMIKOROOM_STUDIO_DB_PATH` to `.env.example`. Document how to add scan roots in the UI, where analysis data lives, that source FLPs are read-only, how automatic backups are discovered, and that real private project fixtures stay outside Git.
 
-- [ ] **Step 4: Run the complete verification matrix**
+- [x] **Step 4: Run the complete verification matrix**
 
 Run:
 
@@ -1163,11 +1163,11 @@ Expected:
 - Desktop TypeScript build succeeds.
 - `git diff --check` prints no errors.
 
-- [ ] **Step 5: Perform visual and accessibility QA**
+- [x] **Step 5: Perform visual and accessibility QA**
 
 Run the API and Web locally, inspect `/studio` plus one project at 1280×720, 1024×768, and 390×844. Verify keyboard navigation, visible focus, readable diagnostics, reduced-motion behavior, empty/loading/partial/failed states, print layout, and no horizontal page overflow. Record screenshots locally under ignored `tmp/studio-qa/`.
 
-- [ ] **Step 6: Commit final verification and docs**
+- [x] **Step 6: Commit final verification and docs**
 
 ```powershell
 git add .env.example README.md README.zh-CN.md apps/api/tests/test_studio_local_flp.py docs/superpowers/specs/2026-07-13-fl-studio-creative-archive-design.md
@@ -1178,15 +1178,15 @@ git commit -m "docs: finish creative archive setup and verification"
 
 ## Final acceptance checklist
 
-- [ ] User can add one or more local project directories.
-- [ ] Studio discovers independent FLPs and project-folder FLPs without escaping configured roots.
-- [ ] Cached projects appear immediately while changed files parse in the background.
-- [ ] Project dashboard shows truthful metadata, diagnostics, arrangement miniature, and musical fingerprint.
-- [ ] Arrangement and Pattern explorers correspond to FL Studio 21 project content.
-- [ ] Plugin, Mixer, automation, and dependency pages show supported/unsupported boundaries.
-- [ ] FL Studio automatic backups appear in a secondary timeline with confidence-aware association.
-- [ ] Snapshot diff reports structural changes without modifying or restoring files.
-- [ ] Safe open actions resolve targets only from registered project data.
-- [ ] Report view prints cleanly in the approved editorial style.
-- [ ] Real FLP hashes remain unchanged before and after parsing.
-- [ ] Full automated tests and both production builds pass.
+- [x] User can add one or more local project directories. Evidence: Studio root API and library root controls.
+- [x] Studio discovers independent FLPs and project-folder FLPs without escaping configured roots. Evidence: scanner boundary, junction, and symlink tests.
+- [x] Cached projects appear immediately while changed files parse in the background. Evidence: repository/service cache and stale-state tests.
+- [x] Project dashboard shows truthful metadata, diagnostics, arrangement miniature, and musical fingerprint. Evidence: dashboard component tests and responsive QA.
+- [x] Arrangement and Pattern explorers correspond to FL Studio 21 project content. Evidence: adapter/analyzer contracts and five real-FLP runs.
+- [x] Plugin, Mixer, automation, and dependency pages show supported/unsupported boundaries. Evidence: analysis-view and dependency-report tests.
+- [x] FL Studio automatic backups appear in a secondary timeline with confidence-aware association. Evidence: association, pagination, and timeline tests.
+- [x] Snapshot diff reports structural changes without modifying or restoring files. Evidence: deterministic semantic diff and ownership tests.
+- [x] Safe open actions resolve targets only from registered project data. Evidence: registered-identity and open-target API tests.
+- [x] Report view prints cleanly in the approved editorial style. Evidence: report tests and print QA.
+- [x] Real FLP hashes remain unchanged before and after parsing. Evidence: `local-flp-01` through `local-flp-05`, 5/5 identical SHA-256.
+- [x] Full automated tests and both production builds pass. Evidence: Web 336/336, desktop 3/3, API 443 passed with the opt-in local test skipped by default; Next.js and desktop TypeScript production builds both exited 0.

@@ -1,7 +1,7 @@
 # FL Studio 创作资料室设计
 
 日期：2026-07-13
-状态：已完成产品讨论，等待用户审阅
+状态：第一版已实现并完成本机验收
 
 ## 1. 产品目标
 
@@ -349,3 +349,22 @@ discovered → queued → parsing → ready / partial / failed
 - [Image-Line：FL Studio Project File](https://www.image-line.com/fl-studio-learning/fl-studio-online-manual/html/fformats_open_flp.htm)
 - [Image-Line：File Settings 与自动备份](https://www.image-line.com/fl-studio-learning/fl-studio-online-manual/html/envsettings_files.htm)
 - [Image-Line：Project Data Folder](https://www.image-line.com/fl-studio-learning/fl-studio-online-manual/html/songsettings_settings.htm)
+
+## 13. 本机配置、隐私与验收记录
+
+运行入口为 `/studio`。扫描根目录通过页面登记；分析数据库默认位于 `user-data/studio/kumikoroom-studio.sqlite3`，可由 `KUMIKOROOM_STUDIO_DB_PATH` 覆盖。源 FLP、自动备份、依赖文件和本机分析数据库均视为私人数据，不进入 Git。
+
+解析器只读打开源 FLP。版本确认只写入数据库关联关系；产品没有保存、复制、恢复或覆盖 FLP 的入口。自动备份发现范围包括工程数据目录中的 `Backup`/`Backups` 和 FL Studio 标准用户备份目录。高可信度关联自动进入时间线，低可信度候选等待确认。
+
+可选真实工程契约由 `KUMIKOROOM_TEST_FLP_PATH` 启用：
+
+```powershell
+$env:KUMIKOROOM_TEST_FLP_PATH="D:\private\project.flp"
+python -m pytest apps/api/tests/test_studio_local_flp.py -q
+```
+
+2026-07-15 的本机验收从用户现有目录中发现 22 个有效大小的真实 FLP，筛出 12 个具备 Pattern 与 Channel 核心结构的 FL Studio `21.2.3.4004` 样本。最终以匿名编号 `local-flp-01` 至 `local-flp-05` 运行契约，覆盖两个工程组、主工程与自动备份：5/5 解析成功，版本、速度、Pattern、Channel 均可读取，且每个文件解析前后 SHA-256 完全相同。私人路径、工程名、FLP、数据库和截图均未提交。
+
+验收同时确认一个运行时边界：PyFLP 2.2.1 的空事件基类枚举在 Python 3.13 行为发生变化。适配器提供幂等兼容处理，并有独立回归测试；兼容处理不读取额外文件，也不改变 FLP 数据。
+
+第一版限制继续遵循第 5 节：解析重点为 FL Studio 21；插件内部状态和部分路由可能产生部分解析；音乐理论与段落结果属于带可信度的推断；音频分析、工程编辑、自动修复和版本恢复暂不提供。

@@ -44,6 +44,12 @@ npm run dev --workspace apps/web
 http://127.0.0.1:3000/room
 ```
 
+FL Studio 创作资料室入口：
+
+```text
+http://127.0.0.1:3000/studio
+```
+
 如果想使用其他 Web 端口：
 
 ```powershell
@@ -102,6 +108,34 @@ $env:KUMIKOROOM_MEMORY_DB_PATH="user-data/memory/kumikoroom-memory.sqlite3"
 ```
 
 不要提交 `.env`、`.env.local`、API Key 或 SQLite 记忆数据库。
+
+## FL Studio 创作资料室
+
+创作资料室以只读方式把本机 FL Studio 21 工程整理成可搜索的工程库，提供单工程仪表盘、编曲与 Pattern 浏览、插件和 Mixer 检查、依赖诊断、自动备份时间线、结构化版本比较，以及适合打印的工程报告。
+
+1. 启动 API 与 Web，打开 `/studio`。
+2. 点击“添加工程目录”，登记一个或多个包含 `.flp` 的文件夹。资料室会执行增量扫描；文件发生变化时在后台重新分析，已有缓存继续可用。
+3. 打开工程卡片，在仪表盘和各分析页签中查看工程结构。本地打开操作只会解析已登记扫描根目录中的文件。
+
+分析数据默认保存在 `user-data/studio/kumikoroom-studio.sqlite3`，可通过 `KUMIKOROOM_STUDIO_DB_PATH` 修改位置。数据库包含本机路径和解析后的工程结构，也属于私人数据，请谨慎分享。
+
+源 FLP 仅用于读取，资料室不会保存、复制、恢复或覆盖它。备份发现会检查工程数据目录中的 `Backup`/`Backups`，以及 FL Studio 标准用户备份目录。高可信度匹配会自动进入版本时间线；不确定候选保持独立，等待用户确认。确认操作只在 SQLite 中记录关联。
+
+当前能力边界：
+
+- 已验证目标为 FL Studio 21。较新或相差较大的旧版本可能只得到部分分析或解析诊断。
+- 第三方插件内部状态、全部原生插件状态块和所有 Mixer 路由暂不保证完整解析。
+- 调式、和弦和段落建议属于结构推断，界面会显示可信度。音频波形、频谱、响度、母带分析、工程编辑、自动清理和恢复不在当前版本范围内。
+- 找不到的本地依赖会保留为诊断，资料室不会自动下载或修复。
+
+可以对 Git 仓库外的私人 FLP 运行可选只读契约：
+
+```powershell
+$env:KUMIKOROOM_TEST_FLP_PATH="D:\private\project.flp"
+python -m pytest apps/api/tests/test_studio_local_flp.py -q
+```
+
+契约会核对解析前后源文件哈希，并检查 FL 版本、速度、Pattern 和 Channel Rack 核心结构。正常测试不设置该变量时，这项本机契约会显示为跳过。
 
 ## 本地小说 RAG
 
