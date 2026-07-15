@@ -1,5 +1,6 @@
 "use client";
 
+import { useId } from "react";
 import type { StudioAnalysis, StudioAnalysisDiagnostic, StudioDependencyReference } from "../../api/studioTypes";
 import type { PluginMixerTarget } from "./PluginMixerView";
 import studioCss from "./Studio.module.css";
@@ -15,8 +16,15 @@ interface DependencyReportProps {
 }
 
 export function DependencyReport({ analysis, onNavigate }: DependencyReportProps) {
+  const instanceId = useId();
+  const diagnosticReportHeadingId = `${instanceId}-diagnostic-report-heading`;
   const unresolvedTargets = new Set(analysis.diagnostics
-    .filter((diagnostic) => diagnostic.code === "unresolved_dependency" && diagnostic.targetId !== null)
+    .filter((diagnostic) => (
+      diagnostic.code === "unresolved_dependency"
+      && normalizeTargetType(diagnostic.targetType) === "dependency"
+      && typeof diagnostic.targetId === "string"
+      && diagnostic.targetId.length > 0
+    ))
     .map((diagnostic) => diagnostic.targetId as string));
   const missing = analysis.dependencies.filter((dependency) => dependency.exists === false && !unresolvedTargets.has(dependency.path));
   const available = analysis.dependencies.filter((dependency) => dependency.exists === true);
@@ -34,9 +42,10 @@ export function DependencyReport({ analysis, onNavigate }: DependencyReportProps
       </header>
 
       <section className={studioCss.dependencyColumns} aria-label="依赖分组">
-        <DependencyGroup title="缺失" tone="missing" dependencies={missing} empty="没有已报告的缺失依赖。" />
-        <DependencyGroup title="可用" tone="available" dependencies={available} empty="没有已报告的可用依赖。" />
+        <DependencyGroup idPrefix={instanceId} title="缺失" tone="missing" dependencies={missing} empty="没有已报告的缺失依赖。" />
+        <DependencyGroup idPrefix={instanceId} title="可用" tone="available" dependencies={available} empty="没有已报告的可用依赖。" />
         <DependencyGroup
+          idPrefix={instanceId}
           title="未知"
           tone="unknown"
           dependencies={unknown}
@@ -49,46 +58,51 @@ export function DependencyReport({ analysis, onNavigate }: DependencyReportProps
         />
       </section>
 
-      <section className={studioCss.diagnosticReport} aria-labelledby="diagnostic-report-heading">
-        <header><div><p className={studioCss.panelKicker}>PARSER NOTES</p><h2 id="diagnostic-report-heading">解析说明</h2></div><span>{analysis.diagnostics.length}</span></header>
+      <section className={studioCss.diagnosticReport} aria-labelledby={diagnosticReportHeadingId}>
+        <header><div><p className={studioCss.panelKicker}>PARSER NOTES</p><h2 id={diagnosticReportHeadingId}>解析说明</h2></div><span>{analysis.diagnostics.length}</span></header>
         {analysis.diagnostics.length > 0 ? severities.map(({ severity, diagnostics }) => diagnostics.length > 0 && (
-          <DiagnosticSeverity key={severity} severity={severity} diagnostics={diagnostics} analysis={analysis} onNavigate={onNavigate} />
+          <DiagnosticSeverity key={severity} idPrefix={instanceId} severity={severity} diagnostics={diagnostics} analysis={analysis} onNavigate={onNavigate} />
         )) : <p className={studioCss.signalEmpty}>快照没有报告解析诊断。</p>}
       </section>
     </article>
   );
 }
 
-function DependencyGroup({ title, tone, dependencies, empty, description }: {
+function DependencyGroup({ idPrefix, title, tone, dependencies, empty, description }: {
+  idPrefix: string;
   title: string;
   tone: "missing" | "available" | "unknown";
   dependencies: StudioDependencyReference[];
   empty: string;
   description?: string;
 }) {
+  const headingId = `${idPrefix}-dependency-${tone}-heading`;
+  const locateCapabilityId = `${idPrefix}-locate-capability-${tone}`;
   return (
-    <section className={studioCss.dependencyGroup} data-tone={tone} aria-labelledby={`dependency-${tone}-heading`}>
-      <header><h2 id={`dependency-${tone}-heading`}>{title}</h2><span>{dependencies.length}</span></header>
+    <section className={studioCss.dependencyGroup} data-tone={tone} aria-labelledby={headingId}>
+      <header><h2 id={headingId}>{title}</h2><span>{dependencies.length}</span></header>
       {description && <p className={studioCss.dependencyUnknown}>{description}</p>}
       {dependencies.length > 0 ? <ul>{dependencies.map((dependency, index) => {
         const name = fileName(dependency.path);
-        return <li key={`${dependency.path}-${index}`}><div><strong title={dependency.path}>{name}</strong><small>{dependency.kind || "类型未知"} · {dependency.path}</small></div><button type="button" disabled aria-describedby={`locate-capability-${tone}`} aria-label={`查看 ${name} 所在位置`}>定位</button></li>;
+        return <li key={`${dependency.path}-${index}`}><div><strong title={dependency.path}>{name}</strong><small>{dependency.kind || "类型未知"} · {dependency.path}</small></div><button type="button" disabled aria-describedby={locateCapabilityId} aria-label={`查看 ${name} 所在位置`}>定位</button></li>;
       })}</ul> : <p>{empty}</p>}
-      <small id={`locate-capability-${tone}`} className={studioCss.locateNote}>Task13 本地打开能力接入后可用</small>
+      <small id={locateCapabilityId} className={studioCss.locateNote}>Task13 本地打开能力接入后可用</small>
     </section>
   );
 }
 
-function DiagnosticSeverity({ severity, diagnostics, analysis, onNavigate }: {
+function DiagnosticSeverity({ idPrefix, severity, diagnostics, analysis, onNavigate }: {
+  idPrefix: string;
   severity: StudioAnalysisDiagnostic["severity"];
   diagnostics: StudioAnalysisDiagnostic[];
   analysis: StudioAnalysis;
   onNavigate?: (navigation: DiagnosticNavigation) => void;
 }) {
   const groups = groupByTarget(diagnostics);
+  const headingId = `${idPrefix}-diagnostic-${severity}-heading`;
   return (
-    <section className={studioCss.diagnosticSeverity} data-severity={severity} aria-labelledby={`diagnostic-${severity}-heading`}>
-      <h3 id={`diagnostic-${severity}-heading`}>{severityLabel(severity)} · {diagnostics.length}</h3>
+    <section className={studioCss.diagnosticSeverity} data-severity={severity} aria-labelledby={headingId}>
+      <h3 id={headingId}>{severityLabel(severity)} · {diagnostics.length}</h3>
       {groups.map((group) => <section key={group.key} className={studioCss.diagnosticTargetGroup}>
         <h4>{group.label}</h4>
         <ul>{group.items.map((diagnostic, index) => {
@@ -114,14 +128,22 @@ function groupByTarget(diagnostics: StudioAnalysisDiagnostic[]) {
 
 function diagnosticNavigation(diagnostic: StudioAnalysisDiagnostic, analysis: StudioAnalysis): DiagnosticNavigation | null {
   if (!diagnostic.targetType || !diagnostic.targetId) return null;
-  const type = diagnostic.targetType.trim().toLowerCase().replace(/-/g, "_");
+  const type = normalizeTargetType(diagnostic.targetType);
   const id = diagnostic.targetId;
-  if (type === "pattern" && analysis.patterns.some((item) => item.id === id)) return { tab: "pattern", patternId: id };
-  if (type === "channel" && analysis.channels.some((item) => item.id === id)) return { tab: "plugins", target: { type: "channel", id } };
-  if (type === "plugin" && analysis.plugins.some((item) => item.id === id)) return { tab: "plugins", target: { type: "plugin", id } };
-  if (["mixer", "mixer_insert", "insert"].includes(type) && analysis.mixerInserts.some((item) => item.id === id)) return { tab: "plugins", target: { type: "mixer_insert", id } };
-  if (["dependency", "asset", "path"].includes(type) && analysis.dependencies.some((item) => item.path === id)) return { tab: "dependencies" };
+  if (type === "pattern" && countMatches(analysis.patterns, (item) => item.id === id) === 1) return { tab: "pattern", patternId: id };
+  if (type === "channel" && countMatches(analysis.channels, (item) => item.id === id) === 1) return { tab: "plugins", target: { type: "channel", id } };
+  if (type === "plugin" && countMatches(analysis.plugins, (item) => item.id === id) === 1) return { tab: "plugins", target: { type: "plugin", id } };
+  if (["mixer", "mixer_insert", "insert"].includes(type) && countMatches(analysis.mixerInserts, (item) => item.id === id) === 1) return { tab: "plugins", target: { type: "mixer_insert", id } };
+  if (["dependency", "asset", "path"].includes(type) && countMatches(analysis.dependencies, (item) => item.path === id) === 1) return { tab: "dependencies" };
   return null;
+}
+
+function normalizeTargetType(targetType: string | null): string {
+  return targetType?.trim().toLowerCase().replace(/-/g, "_") ?? "";
+}
+
+function countMatches<T>(items: T[], predicate: (item: T) => boolean): number {
+  return items.reduce((count, item) => count + (predicate(item) ? 1 : 0), 0);
 }
 
 function severityLabel(severity: StudioAnalysisDiagnostic["severity"]): string {

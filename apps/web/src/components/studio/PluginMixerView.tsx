@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import type {
   StudioAnalysis,
   StudioAutomationSummary,
@@ -26,10 +26,15 @@ type PluginKindFilter = "all" | "generator" | "effect" | "unknown";
 const MAX_ROUTE_NODES = 64;
 const MAX_ROUTE_EDGES = 128;
 
-export function PluginMixerView({ analysis, selectedTarget = null, onSelectTarget }: PluginMixerViewProps) {
+export function PluginMixerView({ analysis, selectedTarget, onSelectTarget }: PluginMixerViewProps) {
+  const instanceId = useId();
   const [kindFilter, setKindFilter] = useState<PluginKindFilter>("all");
   const [localTarget, setLocalTarget] = useState<PluginMixerTarget | null>(null);
-  const currentTarget = selectedTarget ?? localTarget;
+  const currentTarget = selectedTarget !== undefined ? selectedTarget : localTarget;
+  const channelRackHeadingId = `${instanceId}-channel-rack-heading`;
+  const pluginTableHeadingId = `${instanceId}-plugin-table-heading`;
+  const mixerHeadingId = `${instanceId}-mixer-heading`;
+  const automationHeadingId = `${instanceId}-automation-heading`;
   const selectTarget = (target: PluginMixerTarget) => {
     setLocalTarget(target);
     onSelectTarget?.(target);
@@ -56,8 +61,8 @@ export function PluginMixerView({ analysis, selectedTarget = null, onSelectTarge
       <p className={studioCss.pluginContractNote}>快照未提供原生/第三方来源，只报告生成器、效果器等功能类别。</p>
 
       <section className={studioCss.signalGrid}>
-        <section className={studioCss.signalPanel} aria-labelledby="channel-rack-heading">
-          <PanelHeader id="channel-rack-heading" label="CHANNEL RACK" count={analysis.channels.length} />
+        <section className={studioCss.signalPanel} aria-labelledby={channelRackHeadingId}>
+          <PanelHeader id={channelRackHeadingId} label="CHANNEL RACK" count={analysis.channels.length} />
           {analysis.channels.length > 0 ? (
             <ul className={studioCss.signalRows} aria-label="Channel Rack">
               {analysis.channels.map((channel, channelIndex) => {
@@ -79,8 +84,8 @@ export function PluginMixerView({ analysis, selectedTarget = null, onSelectTarge
           ) : <EmptyCopy>快照没有报告 Channel。</EmptyCopy>}
         </section>
 
-        <section className={studioCss.signalPanel} aria-labelledby="plugin-table-heading">
-          <PanelHeader id="plugin-table-heading" label="PLUGIN INSTANCES" count={visiblePlugins.length} />
+        <section className={studioCss.signalPanel} aria-labelledby={pluginTableHeadingId}>
+          <PanelHeader id={pluginTableHeadingId} label="PLUGIN INSTANCES" count={visiblePlugins.length} />
           {visiblePlugins.length > 0 ? (
             <div className={studioCss.pluginTableWrap}>
               <table className={studioCss.pluginTable}>
@@ -111,9 +116,9 @@ export function PluginMixerView({ analysis, selectedTarget = null, onSelectTarge
         </section>
       </section>
 
-      <section className={studioCss.mixerSection} aria-labelledby="mixer-heading">
+      <section className={studioCss.mixerSection} aria-labelledby={mixerHeadingId}>
         <div className={studioCss.mixerHeading}>
-          <div><p className={studioCss.panelKicker}>MIXER MAP</p><h2 id="mixer-heading">效果链与路由</h2></div>
+          <div><p className={studioCss.panelKicker}>MIXER MAP</p><h2 id={mixerHeadingId}>效果链与路由</h2></div>
           <span>{activeInserts.length} / {analysis.mixerInserts.length} 个有效 Insert</span>
         </div>
         {activeInserts.length > 0 ? (
@@ -128,7 +133,7 @@ export function PluginMixerView({ analysis, selectedTarget = null, onSelectTarge
         ) : <EmptyCopy>没有带插件或路由的 Mixer Insert；空 Insert 已折叠。</EmptyCopy>}
       </section>
 
-      <AutomationSection analysis={analysis} automations={analysis.automations} onSelect={selectTarget} />
+      <AutomationSection analysis={analysis} automations={analysis.automations} onSelect={selectTarget} headingId={automationHeadingId} />
     </article>
   );
 }
@@ -200,7 +205,10 @@ function MixerRouteGraph({ inserts, knownInsertIds, selectedTarget, onSelect }: 
           return (
             <g key={insert.id} role="button" tabIndex={0} aria-label={`选择 ${insert.name}`} data-route-node="true" data-selected={selected}
               onClick={() => onSelect({ type: "mixer_insert", id: insert.id })}
-              onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onSelect({ type: "mixer_insert", id: insert.id }); }}>
+              onKeyDown={(event) => {
+                if (event.key === " ") event.preventDefault();
+                if (event.key === "Enter" || event.key === " ") onSelect({ type: "mixer_insert", id: insert.id });
+              }}>
               <rect x={point.x} y={point.y} width="140" height="44" rx="2" />
               <text x={point.x + 10} y={point.y + 19}>{shortLabel(insert.name)}</text>
               <text x={point.x + 10} y={point.y + 34}>{insert.slotPluginIds.length} FX · {insert.routeTargetIds.length} routes</text>
@@ -214,14 +222,15 @@ function MixerRouteGraph({ inserts, knownInsertIds, selectedTarget, onSelect }: 
   );
 }
 
-function AutomationSection({ analysis, automations, onSelect }: {
+function AutomationSection({ analysis, automations, onSelect, headingId }: {
   analysis: StudioAnalysis;
   automations: StudioAutomationSummary[];
   onSelect: (target: PluginMixerTarget) => void;
+  headingId: string;
 }) {
   return (
-    <section className={studioCss.automationSection} aria-labelledby="automation-heading">
-      <header><div><p className={studioCss.panelKicker}>CONTROL LINKS</p><h2 id="automation-heading">自动化目标</h2></div><span>{automations.length}</span></header>
+    <section className={studioCss.automationSection} aria-labelledby={headingId}>
+      <header><div><p className={studioCss.panelKicker}>CONTROL LINKS</p><h2 id={headingId}>自动化目标</h2></div><span>{automations.length}</span></header>
       {automations.length > 0 ? <ul>{automations.map((automation) => {
         const target = resolveAutomationTarget(automation, analysis);
         return <li key={automation.id}>

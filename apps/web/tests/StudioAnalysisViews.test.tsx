@@ -296,6 +296,105 @@ describe("plugin, Mixer, and dependency workspace", () => {
     }
   });
 
+  it("treats selectedTarget null as a controlled clear and undefined as uncontrolled", () => {
+    const detailed = signalAnalysis();
+    const flexTarget = { type: "plugin", id: "plugin-flex" } as const;
+    const { rerender } = render(<PluginMixerView analysis={detailed} selectedTarget={flexTarget} />);
+    const row = (name: string) => within(screen.getByRole("table")).getByRole("row", { name: new RegExp(name) });
+    expect(row("FLEX").getAttribute("data-selected")).toBe("true");
+
+    fireEvent.click(within(row("Audio Clip")).getByRole("button", { name: "mixer:insert-4:slot:x" }));
+    expect(row("FLEX").getAttribute("data-selected")).toBe("true");
+    expect(row("Audio Clip").getAttribute("data-selected")).toBe("false");
+
+    rerender(<PluginMixerView analysis={detailed} selectedTarget={null} />);
+    expect(row("FLEX").getAttribute("data-selected")).toBe("false");
+    expect(row("Audio Clip").getAttribute("data-selected")).toBe("false");
+
+    rerender(<PluginMixerView analysis={detailed} selectedTarget={undefined} />);
+    expect(row("Audio Clip").getAttribute("data-selected")).toBe("true");
+  });
+
+  it("disables diagnostic navigation for duplicate Pattern, Channel, plugin, and Mixer ids", () => {
+    const duplicateTargets: StudioAnalysis = {
+      ...analysis,
+      patterns: [analysis.patterns[0], { ...analysis.patterns[0], name: "Verse duplicate" }],
+      channels: [analysis.channels[0], { ...analysis.channels[0], name: "Keys duplicate" }],
+      plugins: [
+        { id: "plugin-dup", name: "One", kind: "generator", location: "", stateSupported: true },
+        { id: "plugin-dup", name: "Two", kind: "generator", location: "", stateSupported: true }
+      ],
+      mixerInserts: [
+        { id: "insert-dup", name: "One", slotPluginIds: [], routeTargetIds: [] },
+        { id: "insert-dup", name: "Two", slotPluginIds: [], routeTargetIds: [] }
+      ],
+      diagnostics: [
+        { code: "dup-pattern", severity: "warning", message: "duplicate", targetType: "pattern", targetId: analysis.patterns[0].id },
+        { code: "dup-channel", severity: "warning", message: "duplicate", targetType: "channel", targetId: analysis.channels[0].id },
+        { code: "dup-plugin", severity: "warning", message: "duplicate", targetType: "plugin", targetId: "plugin-dup" },
+        { code: "dup-mixer", severity: "warning", message: "duplicate", targetType: "mixer_insert", targetId: "insert-dup" }
+      ]
+    };
+    render(<DependencyReport analysis={duplicateTargets} />);
+    const disabled = screen.getAllByRole("button", { name: "无法定位" });
+    expect(disabled).toHaveLength(4);
+    expect(disabled.every((button) => button.hasAttribute("disabled"))).toBe(true);
+  });
+
+  it("keeps ARIA ids unique and references inside each Task11 view instance", () => {
+    const detailed = signalAnalysis();
+    const { container } = render(<>
+      <PluginMixerView analysis={detailed} />
+      <PluginMixerView analysis={detailed} />
+      <DependencyReport analysis={detailed} />
+      <DependencyReport analysis={detailed} />
+    </>);
+    const ids = [...container.querySelectorAll<HTMLElement>("[id]")].map((element) => element.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const article of container.querySelectorAll("article")) {
+      for (const element of article.querySelectorAll<HTMLElement>("[aria-labelledby]")) {
+        for (const id of (element.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean)) {
+          const target = document.getElementById(id);
+          expect(target, `missing ${id}`).toBeTruthy();
+          expect(article.contains(target), `${id} escaped its instance`).toBe(true);
+        }
+      }
+    }
+  });
+
+  it("prevents Space on Mixer SVG nodes from scrolling while activating selection", () => {
+    const onSelect = vi.fn();
+    render(<PluginMixerView analysis={signalAnalysis()} onSelectTarget={onSelect} />);
+    const graph = screen.getByLabelText("Mixer 路由图");
+    const node = graph.querySelector<SVGGElement>('[data-route-node="true"]')!;
+    const scrollHost = graph.closest("figure") as HTMLElement;
+    scrollHost.scrollTop = 17;
+    const event = new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true });
+    act(() => node.dispatchEvent(event));
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(scrollHost.scrollTop).toBe(17);
+    expect(onSelect).toHaveBeenCalledWith({ type: "mixer_insert", id: "insert-4" });
+  });
+
+  it("keeps Task11 metadata at readable sizes and WCAG contrast", () => {
+    const css = fs.readFileSync(path.resolve(__dirname, "../src/components/studio/Studio.module.css"), "utf8");
+    const cases = [
+      [".sourceBadge, .stateBadge", "#fffefa", "color"],
+      [".effectChains li > small", "#fffefa", "color"],
+      [".dependencyGroup li small", "#fffefa", "color"],
+      [".diagnosticTargetGroup > h4", "#fffefa", "color"],
+      [".routeGraph text + text", "#f7faf6", "fill"]
+    ] as const;
+    for (const [selector, background, colorProperty] of cases) {
+      const rule = cssRule(css, selector);
+      const size = Number.parseFloat(cssDeclaration(rule, "font-size"));
+      const color = cssDeclaration(rule, colorProperty);
+      expect(size, `${selector} font-size`).toBeGreaterThanOrEqual(10);
+      expect(contrastRatio(color, background), `${selector} contrast`).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
   it("bounds large cyclic Mixer graphs and reports hidden and unresolved routes in text", () => {
     const total = 110;
     const inserts = Array.from({ length: total }, (_, index) => ({
@@ -345,12 +444,14 @@ describe("plugin, Mixer, and dependency workspace", () => {
         { path: factoryPath, kind: "factory_data", exists: true },
         { path: "C:/Samples/plain-missing.wav", kind: "audio", exists: false },
         { path: "C:/Samples/no-target.wav", kind: "audio", exists: false },
-        { path: "C:/Samples/mismatch.wav", kind: "audio", exists: false }
+        { path: "C:/Samples/mismatch.wav", kind: "audio", exists: false },
+        { path: "C:/Samples/wrong-type.wav", kind: "audio", exists: false }
       ],
       diagnostics: [
         { code: "unresolved_dependency", severity: "warning", message: "Factory lookup unavailable", targetType: "dependency", targetId: factoryPath },
         { code: "unresolved_dependency", severity: "warning", message: "No target", targetType: "dependency", targetId: null },
-        { code: "unresolved_dependency", severity: "warning", message: "Different path", targetType: "dependency", targetId: "C:/Samples/other.wav" }
+        { code: "unresolved_dependency", severity: "warning", message: "Different path", targetType: "dependency", targetId: "C:/Samples/other.wav" },
+        { code: "unresolved_dependency", severity: "warning", message: "Wrong target type", targetType: "channel", targetId: "C:/Samples/wrong-type.wav" }
       ]
     };
     render(<DependencyReport analysis={boundary} />);
@@ -363,6 +464,7 @@ describe("plugin, Mixer, and dependency workspace", () => {
     expect(within(missing).getByText("plain-missing.wav")).toBeTruthy();
     expect(within(missing).getByText("no-target.wav")).toBeTruthy();
     expect(within(missing).getByText("mismatch.wav")).toBeTruthy();
+    expect(within(missing).getByText("wrong-type.wav")).toBeTruthy();
     expect(within(unknown).getAllByRole("button", { name: "查看 FactoryData 所在位置" })).toHaveLength(2);
   });
 
@@ -908,3 +1010,28 @@ describe("Pattern Explorer", () => {
     expect(screen.getByLabelText("起音节奏分布").textContent).toContain("没有有效音符可统计起音位置");
   });
 });
+
+function cssRule(css: string, selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = css.match(new RegExp(`${escaped}\\s*\\{(?<body>[^}]*)\\}`));
+  expect(match, `Expected ${selector} rule to exist`).not.toBeNull();
+  return match?.groups?.body ?? "";
+}
+
+function cssDeclaration(rule: string, property: string): string {
+  const match = rule.match(new RegExp(`(?:^|[;\\s])${property}:\\s*([^;]+)`));
+  expect(match, `Expected ${property} declaration`).not.toBeNull();
+  return match?.[1].trim() ?? "";
+}
+
+function contrastRatio(foreground: string, background: string): number {
+  const lighter = Math.max(relativeLuminance(foreground), relativeLuminance(background));
+  const darker = Math.min(relativeLuminance(foreground), relativeLuminance(background));
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function relativeLuminance(hex: string): number {
+  const rgb = [1, 3, 5].map((offset) => Number.parseInt(hex.slice(offset, offset + 2), 16) / 255);
+  const linear = rgb.map((channel) => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+}
